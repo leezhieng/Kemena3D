@@ -172,74 +172,25 @@ namespace kemena
 
     json kCamera::serialize()
     {
-        json childrenData = json::array();
-        if (getChildren().size() > 0)
-        {
-            for (size_t i = 0; i < getChildren().size(); ++i)
-            {
-                // Make sure UUID is not empty (means it's added by engine and children from import)
-                if (!getChildren().at(i)->getUuid().empty())
-                    childrenData.push_back(getChildren().at(i)->serialize());
-            }
-        }
-
-        json scriptsData = json::array();
-        if (getScripts().size() > 0)
-        {
-            for (size_t j = 0; j < getScripts().size(); ++j)
-            {
-                scriptsData.push_back({
-                    {"uuid", getScripts().at(j).uuid},
-                    {"active", getScripts().at(j).isActive},
-                });
-            }
-        }
-
         kString typeDisplay = "unknown";
         if (getCameraType() == kCameraType::CAMERA_TYPE_FREE)
             typeDisplay = "free";
         else if (getCameraType() == kCameraType::CAMERA_TYPE_LOCKED)
             typeDisplay = "locked";
 
-        json data =
-            {
-                {"type", "camera"},
-                {"uuid", getUuid()},
-                {"name", getName()},
-                {"camera_type", typeDisplay},
-                {"active", getActive()},
-                {"position",
-                 {{"x", getPosition().x},
-                  {"y", getPosition().y},
-                  {"z", getPosition().z}}},
-                {"rotation",
-                 {{"x", getRotationEuler().x},
-                  {"y", getRotationEuler().y},
-                  {"z", getRotationEuler().z}}},
-                {"scale",
-                 {{"x", getScale().x},
-                  {"y", getScale().y},
-                  {"z", getScale().z}}},
-                {"children", childrenData},
-                {"script", scriptsData},
-                {"look_at",
-                 {{"x", getLookAt().x},
-                  {"y", getLookAt().y},
-                  {"z", getLookAt().z}}},
-                {"up_axis",
-                 {{"x", calculateUp().x},
-                  {"y", calculateUp().y},
-                  {"z", calculateUp().z}}},
-                {"fov", getFOV()},
-                {"near_clip", getNearClip()},
-                {"far_clip", getFarClip()},
-                {"aspect_ratio", getAspectRatio()},
-                {"scene_uuid", sceneUuid},
-            };
-
-        if (!getPrefabRef().empty())    data["prefab_ref"]    = getPrefabRef();
-        if (!getTemplateUuid().empty()) data["template_uuid"] = getTemplateUuid();
-
+        // Delegate to the base so transform, children, scripts, physics,
+        // character and navigation components serialize consistently, then add
+        // the camera-specific fields.
+        json data = kObject::serialize();
+        data["type"]         = "camera";
+        data["camera_type"]  = typeDisplay;
+        data["look_at"]      = {{"x", getLookAt().x}, {"y", getLookAt().y}, {"z", getLookAt().z}};
+        data["up_axis"]      = {{"x", calculateUp().x}, {"y", calculateUp().y}, {"z", calculateUp().z}};
+        data["fov"]          = getFOV();
+        data["near_clip"]    = getNearClip();
+        data["far_clip"]     = getFarClip();
+        data["aspect_ratio"] = getAspectRatio();
+        data["scene_uuid"]   = sceneUuid;
         return data;
     }
 

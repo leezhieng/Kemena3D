@@ -9,6 +9,7 @@
 #include "kexport.h"
 #include "kdatatype.h"
 #include "kphysicsobject.h"
+#include "kcharactercontroller.h"
 
 namespace kemena
 {
@@ -110,6 +111,24 @@ namespace kemena
          * @param object Pointer returned by createObject().
          */
         void destroyObject(kPhysicsObject *object);
+
+        /**
+         * @brief Creates a character controller in this physics world.
+         *
+         * The returned pointer is owned by the manager; release it with
+         * destroyCharacter(). Each character's ground state is refreshed inside
+         * update() after the world steps.
+         *
+         * @param desc Capsule + motion parameters.
+         * @return Pointer to the new kCharacterController, or nullptr on failure.
+         */
+        kCharacterController *createCharacter(const kCharacterControllerDesc &desc);
+
+        /**
+         * @brief Removes a character controller from the simulation and destroys it.
+         * @param character Pointer returned by createCharacter().
+         */
+        void destroyCharacter(kCharacterController *character);
 
         // --- Queries ---------------------------------------------------------
 

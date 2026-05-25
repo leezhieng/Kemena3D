@@ -1,6 +1,17 @@
 /**
  * @file kscriptmanager.h
- * @brief AngelScript engine wrapper for loading and executing scripts.
+ * @brief AngelScript engine wrapper: script-asset registry, text/bytecode
+ *        compilation, and per-object script instances.
+ *
+ * A *script asset* is a UUID-keyed source file (a text @c .as file, or the
+ * @c .as text generated from a node graph). The manager can compile a script
+ * asset to AngelScript bytecode (@c SaveByteCode) and, at runtime, build a
+ * private @c asIScriptModule for each object that attaches the script —
+ * preferring the precompiled bytecode and falling back to the source text.
+ *
+ * Each object gets its own module instance so that script-global variables
+ * are independent per object (the lifecycle-function script style used by
+ * the editor's @c sample.as template).
  */
 
 #ifndef KSCRIPTMANAGER_H
@@ -10,6 +21,8 @@
 
 #include <cassert>
 #include <vector>
+#include <map>
+#include <cstdio>
 #include <iostream>
 
 #include <angelscript.h>
@@ -22,108 +35,125 @@
 
 namespace kemena
 {
+    class kObject;
+
     /**
-     * @brief Descriptor for a single registered script function.
-     *
-     * Stores both the AngelScript function pointer and the native C function
-     * pointer so that the binding can be recreated after a reload.
+     * @brief How a script asset's source is authored.
      */
-    struct KEMENA3D_API kScriptFunc
+    enum kScriptSourceType
     {
-        kString             decl;   ///< AngelScript function declaration kString.
-        asIScriptFunction *asFunc; ///< Compiled AngelScript function handle.
-        asSFuncPtr         cFunc;  ///< Native C function pointer for re-registration.
+        K_SCRIPT_TEXT      = 0, ///< Hand-written AngelScript text (.as).
+        K_SCRIPT_NODEGRAPH = 1, ///< Visual node graph; sourcePath points at its generated .as.
     };
 
     /**
-     * @brief Represents one loaded AngelScript module (script file).
+     * @brief Lifecycle events dispatched to every active script each frame.
      *
-     * Holds all AngelScript objects needed to compile and execute a single
-     * script file.  Call call() to invoke a function by its declaration kString,
-     * or run() to execute all functions in the module sequentially.
+     * The integer order matters: K_SCRIPT_EVENT_COUNT must stay last so it can
+     * size per-instance arrays.
+     */
+    enum kScriptEvent
+    {
+        K_SCRIPT_AWAKE = 0,   ///< void Awake()       — once, before any Start().
+        K_SCRIPT_START,       ///< void Start()       — once, on the first frame.
+        K_SCRIPT_UPDATE,      ///< void Update()      — every frame.
+        K_SCRIPT_FIXED_UPDATE,///< void FixedUpdate() — every fixed (physics) step.
+        K_SCRIPT_LATE_UPDATE, ///< void LateUpdate()  — every frame, after Update().
+        K_SCRIPT_ON_ENABLE,   ///< void OnEnable()    — when the component activates.
+        K_SCRIPT_ON_DISABLE,  ///< void OnDisable()   — when the component deactivates.
+        K_SCRIPT_ON_DESTROY,  ///< void OnDestroy()   — when the instance is torn down.
+        K_SCRIPT_EVENT_COUNT  ///< Sentinel — number of lifecycle events.
+    };
+
+    /// AngelScript declaration string for each kScriptEvent (indexed by enum).
+    KEMENA3D_API const char *kScriptEventDecl(kScriptEvent evt);
+
+    /**
+     * @brief Per-object script *component* descriptor.
+     *
+     * This is the lightweight, serialisable record stored on a kObject. It only
+     * references a script *asset* by UUID — the live compiled module is owned by
+     * kScriptManager and looked up via @c uuid (the component UUID).
      */
     struct KEMENA3D_API kScript
     {
-        kString uuid;             ///< Script node UUID.
-        bool   isActive = true;  ///< Whether the script is executed each frame.
-        kString checksum;         ///< File checksum used to detect changes.
-
-        kString             fileName;   ///< Source file path.
-        kString             moduleName; ///< AngelScript module identifier.
-        asIScriptEngine   *engine  = nullptr; ///< Shared script engine.
-        asIScriptContext  *context = nullptr; ///< Execution context for this script.
-        asIScriptModule   *module  = nullptr; ///< Compiled module.
-        bool               loaded  = false;   ///< true once the script has been compiled.
-
-        /**
-         * @brief Calls a single function by its AngelScript declaration.
-         * @param declaration Full function declaration, e.g. @c "void onUpdate()".
-         */
-        void call(kString declaration)
-        {
-            context->Prepare(module->GetFunctionByDecl(declaration.c_str()));
-
-            int result = context->Execute();
-            if (result != asEXECUTION_FINISHED)
-            {
-                if (result == asEXECUTION_EXCEPTION)
-                {
-                    printf("An exception '%s' occurred. Please correct the code and try again.\n", context->GetExceptionString());
-                }
-            }
-        }
-
-        /**
-         * @brief Executes every function defined in the module sequentially.
-         *
-         * Intended for quick testing only; prefer calling individual functions
-         * by declaration in production code.
-         */
-        void run()
-        {
-            if (module->GetFunctionCount() > 0)
-            {
-                for (int j = 0; j < (int)module->GetFunctionCount(); ++j)
-                {
-                    context->Prepare(module->GetFunctionByIndex(j));
-
-                    int result = context->Execute();
-                    if (result != asEXECUTION_FINISHED)
-                    {
-                        if (result == asEXECUTION_EXCEPTION)
-                        {
-                            printf("An exception '%s' occurred. Please correct the code and try again.\n", context->GetExceptionString());
-                        }
-                    }
-                }
-            }
-        }
-
-        /**
-         * @brief Releases the execution context.
-         *
-         * Must be called before the owning kScriptManager is destroyed if the
-         * script is no longer needed.
-         */
-        void destroy()
-        {
-            context->Release();
-        }
+        kString uuid;              ///< UUID of this attachment (unique per object+slot).
+        kString scriptUuid;        ///< UUID of the referenced script asset.
+        kString fileName;          ///< Source file path (editor convenience / fallback).
+        kString checksum;          ///< Source checksum recorded at last compile.
+        bool    isActive = true;   ///< Whether this script runs each frame.
     };
 
     /**
-     * @brief Manages an AngelScript engine instance and a list of loaded scripts.
+     * @brief A registered script asset: a compilable unit of script source.
+     */
+    struct KEMENA3D_API kScriptAsset
+    {
+        kString           uuid;                       ///< Script asset UUID.
+        kString           sourcePath;                 ///< Path to the .as source.
+        kString           bytecodePath;               ///< Path to compiled bytecode, or empty.
+        kScriptSourceType sourceType = K_SCRIPT_TEXT;  ///< Text vs node-graph origin.
+        kString           checksum;                   ///< Source checksum at last compile.
+    };
+
+    /**
+     * @brief A live, per-object compiled script module.
      *
-     * Initialises the AngelScript engine, registers standard kString support,
-     * and provides methods to load scripts from disk and register native C
-     * functions that can be called from scripts.
+     * Created by kScriptManager::createInstance(). Holds a private module so
+     * script globals are not shared between objects, plus cached lifecycle
+     * function handles so per-frame dispatch needs no string lookups.
+     */
+    struct KEMENA3D_API kScriptInstance
+    {
+        kString            componentUuid;          ///< Matches the owning kScript::uuid.
+        kString            scriptUuid;             ///< Script asset this was built from.
+        kString            moduleName;             ///< Private AngelScript module name.
+        asIScriptModule   *module = nullptr;       ///< Private compiled module.
+        asIScriptFunction *fn[K_SCRIPT_EVENT_COUNT] = {}; ///< Cached lifecycle handles.
+        kObject           *owner = nullptr;        ///< Object this instance belongs to.
+        bool               awakeCalled = false;    ///< Awake() has run.
+        bool               startCalled = false;    ///< Start() has run.
+        bool               valid = false;          ///< Module compiled/loaded successfully.
+    };
+
+    /**
+     * @brief Minimal file-backed @c asIBinaryStream for bytecode I/O.
      *
-     * Example:
+     * Used by kScriptManager to write (@c SaveByteCode) and read
+     * (@c LoadByteCode) AngelScript bytecode to and from disk.
+     */
+    class KEMENA3D_API kFileByteStream : public asIBinaryStream
+    {
+    public:
+        /**
+         * @param path    File path to open.
+         * @param writing true to open for writing, false for reading.
+         */
+        kFileByteStream(const kString &path, bool writing);
+        ~kFileByteStream() override;
+
+        /** @brief Returns true if the underlying file opened successfully. */
+        bool isOpen() const { return file != nullptr; }
+
+        int Read(void *ptr, asUINT size) override;
+        int Write(const void *ptr, asUINT size) override;
+
+    private:
+        std::FILE *file = nullptr;
+    };
+
+    /**
+     * @brief Manages the AngelScript engine, a registry of script assets, and
+     *        the live per-object script module instances.
+     *
+     * Typical engine-side flow:
      * @code
      *   kScriptManager mgr;
-     *   mgr.registerGlobalFunction("void print(kString)", FUNCTION(myPrint));
-     *   kScript s = mgr.loadScript("game.as");
-     *   s.call("void onStart()");
+     *   mgr.registerScriptAsset("uuid-1", "Assets/player.as");
+     *   mgr.compileToBytecode("uuid-1", "Library/Scripts/uuid-1.kbc");
+     *   kScriptInstance *inst = mgr.createInstance("comp-1", "uuid-1");
+     *   mgr.setActiveObject(playerObject);
+     *   mgr.callEvent(inst, K_SCRIPT_START);
      * @endcode
      */
     class KEMENA3D_API kScriptManager
@@ -132,34 +162,139 @@ namespace kemena
         kScriptManager();
         virtual ~kScriptManager();
 
-        /**
-         * @brief Compiles and loads a script from a file.
-         * @param fileName Path to the AngelScript source file (.as).
-         * @return kScript descriptor ready for execution.
-         */
-        kScript loadScript(kString fileName);
+        /** @brief Returns the underlying AngelScript engine (for binding setup). */
+        asIScriptEngine *getEngine() { return engine; }
+
+        // --- Script-asset registry ------------------------------------------
 
         /**
-         * @brief Registers a native C function as a global callable from scripts.
-         * @param declaration AngelScript function declaration kString.
-         * @param func        Pointer to the native function (use the FUNCTION macro).
+         * @brief Registers (or updates) a script asset.
+         * @param uuid         Script asset UUID.
+         * @param sourcePath   Path to the .as source file.
+         * @param type         Text or node-graph origin.
+         * @param bytecodePath Optional path to precompiled bytecode.
          */
-        void registerGlobalFunction(kString declaration, asSFuncPtr func);
+        void registerScriptAsset(const kString &uuid, const kString &sourcePath,
+                                 kScriptSourceType type = K_SCRIPT_TEXT,
+                                 const kString &bytecodePath = "");
+
+        /** @brief Returns the asset for @p uuid, or nullptr if unregistered. */
+        kScriptAsset *getScriptAsset(const kString &uuid);
+
+        /** @brief Removes a script asset from the registry. */
+        void unregisterScriptAsset(const kString &uuid);
+
+        /** @brief Records the bytecode path for an already-registered asset. */
+        void setBytecodePath(const kString &uuid, const kString &bytecodePath);
+
+        // --- Compilation -----------------------------------------------------
 
         /**
-         * @brief Executes all functions in all loaded scripts sequentially.
+         * @brief Compiles a registered asset's source to AngelScript bytecode.
+         * @param scriptUuid Asset UUID (must be registered).
+         * @param outPath    Destination bytecode file.
+         * @param stripDebug Strip debug info for a smaller/faster build.
+         * @return true on success; updates the asset's bytecodePath and checksum.
          */
-        void runAll();
+        bool compileToBytecode(const kString &scriptUuid, const kString &outPath,
+                               bool stripDebug = false);
 
         /**
-         * @brief Shuts down the AngelScript engine and releases all resources.
+         * @brief Compiles a source file to bytecode without touching the registry.
+         * @param sourcePath Path to the .as source.
+         * @param outPath    Destination bytecode file.
+         * @param stripDebug Strip debug info.
+         * @return true on success.
          */
+        bool compileFileToBytecode(const kString &sourcePath, const kString &outPath,
+                                   bool stripDebug = false);
+
+        // --- Per-object instances -------------------------------------------
+
+        /**
+         * @brief Builds a private module instance for one object's script slot.
+         *
+         * Prefers loading the asset's bytecode; if absent or stale, compiles the
+         * source text directly. Safe to call again with the same componentUuid —
+         * the previous instance is destroyed first.
+         *
+         * @param componentUuid The owning kScript::uuid.
+         * @param scriptUuid    The script asset to instantiate.
+         * @return Instance pointer (owned by the manager), or nullptr on failure.
+         */
+        kScriptInstance *createInstance(const kString &componentUuid,
+                                        const kString &scriptUuid);
+
+        /** @brief Returns the instance for @p componentUuid, or nullptr. */
+        kScriptInstance *getInstance(const kString &componentUuid);
+
+        /** @brief Destroys one instance and discards its module. */
+        void destroyInstance(const kString &componentUuid);
+
+        /** @brief Destroys every live instance (e.g. when Play stops). */
+        void destroyAllInstances();
+
+        // --- Execution -------------------------------------------------------
+
+        /**
+         * @brief Sets the object scripts see as their owner during dispatch.
+         *
+         * Call immediately before callEvent() so bound host functions (e.g.
+         * @c getSelf()) resolve to the correct object.
+         */
+        void setActiveObject(kObject *obj) { activeObject = obj; }
+
+        /** @brief Returns the object set by setActiveObject(). */
+        kObject *getActiveObject() const { return activeObject; }
+
+        /** @brief Sets the frame delta time exposed to scripts via host bindings. */
+        void setDeltaTime(float dt) { deltaTime = dt; }
+
+        /** @brief Returns the current frame delta time. */
+        float getDeltaTime() const { return deltaTime; }
+
+        /** @brief Sets the fixed (physics) delta time exposed to scripts. */
+        void setFixedDeltaTime(float dt) { fixedDeltaTime = dt; }
+
+        /** @brief Returns the current fixed delta time. */
+        float getFixedDeltaTime() const { return fixedDeltaTime; }
+
+        /**
+         * @brief Invokes one lifecycle function on an instance, if it defines it.
+         * @param inst Instance to dispatch to.
+         * @param evt  Lifecycle event.
+         * @return true if the function existed and finished without exception.
+         */
+        bool callEvent(kScriptInstance *inst, kScriptEvent evt);
+
+        // --- Host bindings ---------------------------------------------------
+
+        /**
+         * @brief Registers a native C function callable from every script.
+         * @param declaration AngelScript declaration string.
+         * @param func        Native function pointer (use the FUNCTION macro).
+         */
+        void registerGlobalFunction(const kString &declaration, asSFuncPtr func);
+
+        /** @brief Shuts down the engine and releases all resources. */
         void destroy();
 
     protected:
     private:
-        asIScriptEngine     *engine;  ///< Shared AngelScript engine instance.
-        std::vector<kScript> scripts; ///< All loaded script modules.
+        /// Loads/compiles a module for @p inst from @p asset; fills cached handles.
+        bool buildInstanceModule(kScriptInstance *inst, const kScriptAsset &asset);
+        /// Caches the lifecycle asIScriptFunction handles on @p inst.
+        void cacheInstanceFunctions(kScriptInstance *inst);
+
+        asIScriptEngine  *engine         = nullptr; ///< Shared AngelScript engine.
+        asIScriptContext *context        = nullptr; ///< Reused execution context.
+        kObject          *activeObject   = nullptr; ///< Object visible to running scripts.
+        unsigned int      moduleCounter  = 0;       ///< Ensures unique module names.
+        float             deltaTime      = 0.0f;    ///< Per-frame delta time for scripts.
+        float             fixedDeltaTime = 0.0f;    ///< Fixed-step delta time for scripts.
+
+        std::map<kString, kScriptAsset>     assets;    ///< Script assets by UUID.
+        std::map<kString, kScriptInstance*> instances; ///< Live instances by component UUID.
     };
 }
 

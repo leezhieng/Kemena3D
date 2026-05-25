@@ -233,7 +233,13 @@ target_include_directories(imguizmo PUBLIC ${{CMAKE_CURRENT_SOURCE_DIR}} {imgui_
     (imguizmo_dir / "CMakeLists.txt").write_text(cmake_txt, encoding="utf-8")
     print(f"[OK] Generated ImGuizmo CMakeLists.txt at '{imguizmo_dir / 'CMakeLists.txt'}'")
 
-def choose(prompt: str, options: dict[str, str]) -> str:
+def choose(prompt: str, options: dict[str, str], env: str | None = None) -> str:
+    # Non-interactive override for CI: if the env var holds a valid key, use it.
+    if env:
+        val = os.environ.get(env, "").strip()
+        if val in options:
+            print(f"{prompt}\n  [{env}={val}] (non-interactive)")
+            return val
     print(prompt)
     for k, v in options.items():
         print(f"{k}: {v}")
@@ -266,11 +272,13 @@ def main():
             {
                 "1": "Build with Visual Studio 2022 (Community Edition)",
                 "2": "Build with MinGW (GCC 14 or above)"
-            }
+            },
+            env="KEMENA_COMPILER"
         )
 
     elif system == "Linux":
         print("Linux detected → using GCC (default).")
+        compiler = "1"
 
     elif system == "Darwin":  # macOS
         compiler = choose(
@@ -278,11 +286,13 @@ def main():
             {
                 "1": "Xcode (Clang/LLVM from Command Line Tools)",
                 "2": "GCC (via Homebrew or custom install)"
-            }
+            },
+            env="KEMENA_COMPILER"
         )
 
     elif system == "FreeBSD":
         print("FreeBSD detected → using GCC (default).")
+        compiler = "1"
 
     else:
         print(f"Unsupported platform: {system}")
@@ -292,14 +302,16 @@ def main():
     linking = choose(
         "\nPlease choose static linking or dynamic linking:",
         {"1": "Static linking (library code built into executable)",
-         "2": "Dynamic linking (library code built into DLL files)"}
+         "2": "Dynamic linking (library code built into DLL files)"},
+        env="KEMENA_LINKING"
     )
-    
+
     # Select supported model formats
     modelformat = choose(
         "\nPlease choose Assimp setting:",
         {"1": "All formats (read and write)",
-         "2": "GLTF only (read only)"}
+         "2": "GLTF only (read only)"},
+        env="KEMENA_ASSIMP"
     )
 
     # Select generator and common flags

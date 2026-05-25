@@ -482,60 +482,17 @@ namespace kemena
 
     json kMesh::serialize()
     {
-        json childrenData = json::array();
-        if (getChildren().size() > 0)
-        {
-            for (size_t i = 0; i < getChildren().size(); ++i)
-            {
-                // Make sure UUID is not empty (means it's added by engine and children from import)
-                if (!getChildren().at(i)->getUuid().empty())
-                    childrenData.push_back(getChildren().at(i)->serialize());
-            }
-        }
-
-        json scriptsData = json::array();
-        if (getScripts().size() > 0)
-        {
-            for (size_t j = 0; j < getScripts().size(); ++j)
-            {
-                scriptsData.push_back({
-                    {"uuid", getScripts().at(j).uuid},
-                    {"active", getScripts().at(j).isActive},
-                });
-            }
-        }
-
-        json data =
-            {
-                {"type", "mesh"},
-                {"uuid", getUuid()},
-                {"name", getName()},
-                {"active", getActive()},
-                {"visible", getVisible()},
-                {"static", getStatic()},
-                {"position",
-                 {{"x", getPosition().x},
-                  {"y", getPosition().y},
-                  {"z", getPosition().z}}},
-                {"rotation",
-                 {{"x", getRotationEuler().x},
-                  {"y", getRotationEuler().y},
-                  {"z", getRotationEuler().z}}},
-                {"scale",
-                 {{"x", getScale().x},
-                  {"y", getScale().y},
-                  {"z", getScale().z}}},
-                {"children", childrenData},
-                {"script", scriptsData},
-                {"file_name",       getFileName()},
-                {"reference",       getRefName()},
-                {"cast_shadow",     getCastShadow()},
-                {"receive_shadow",  getReceiveShadow()},
-            };
-
-        if (!getPrefabRef().empty())    data["prefab_ref"]    = getPrefabRef();
-        if (!getTemplateUuid().empty()) data["template_uuid"] = getTemplateUuid();
-
+        // Delegate to the base so transform, children, scripts (full format),
+        // physics, character controller and navigation components are all
+        // emitted consistently, then add mesh-specific fields on top.
+        json data = kObject::serialize();
+        data["type"]           = "mesh";
+        data["visible"]        = getVisible();
+        data["static"]         = getStatic();
+        data["file_name"]      = getFileName();
+        data["reference"]      = getRefName();
+        data["cast_shadow"]    = getCastShadow();
+        data["receive_shadow"] = getReceiveShadow();
         return data;
     }
 

@@ -727,7 +727,6 @@ uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform mat4 normalMatrix;
-uniform mat4 lightSpaceMatrix;
 uniform mat4 finalBonesMatrices[MAX_BONES];
 
 layout(location = 0) in vec3  vertexPosition;
@@ -742,7 +741,6 @@ layout(location = 7) in vec4  weights;
 out vec3 v_worldPos;
 out vec3 v_color;
 out vec2 v_texCoord;
-out vec4 v_lightSpacePos;
 out vec3 v_T;
 out vec3 v_B;
 out vec3 v_N;
@@ -794,7 +792,6 @@ void main()
     v_worldPos      = worldPos;
     v_color         = vertexColor;
     v_texCoord      = vertexTexCoord;
-    v_lightSpacePos = lightSpaceMatrix * vec4(worldPos, 1.0);
     v_T             = nm3 * useT;
     v_B             = nm3 * useB;
     v_N             = nm3 * useN;
@@ -866,6 +863,15 @@ kString kShaderCompiler::fragmentPreamble(const kShaderGraph& g, const kShaderNo
              "uniform samplerCube skyboxMap;\n"
              "uniform bool        skyboxAmbientEnabled;\n"
              "uniform float       skyboxAmbientStrength;\n\n";
+
+        // Cascaded shadow maps (matches the renderer's CSM uniforms).
+        s += "uniform mat4           viewMatrix;\n"
+             "uniform sampler2DArray shadowMapArray;\n"
+             "uniform mat4           lightSpaceMatrices[4];\n"
+             "uniform vec4           cascadeSplits;\n"
+             "uniform int            cascadeCount;\n"
+             "uniform bool           enableShadow;\n"
+             "uniform bool           receiveShadow;\n\n";
     }
 
     s += "uniform Material  material;\n"
@@ -883,7 +889,6 @@ kString kShaderCompiler::fragmentPreamble(const kShaderGraph& g, const kShaderNo
     s += "in vec3 v_worldPos;\n"
          "in vec3 v_color;\n"
          "in vec2 v_texCoord;\n"
-         "in vec4 v_lightSpacePos;\n"
          "in vec3 v_T;\n"
          "in vec3 v_B;\n"
          "in vec3 v_N;\n\n"
@@ -902,6 +907,34 @@ kString kShaderCompiler::lightingCode(kShaderNodeType outType)
     if (outType == kShaderNodeType::OutputPhong)
     {
         return R"(
+float csmSplit(int i){ if(i==0)return cascadeSplits.x; if(i==1)return cascadeSplits.y; if(i==2)return cascadeSplits.z; return cascadeSplits.w; }
+
+float csmSample(int layer, vec3 wp, float bias)
+{
+    vec4 ls = lightSpaceMatrices[layer] * vec4(wp, 1.0);
+    vec3 p  = ls.xyz / ls.w; p = p * 0.5 + 0.5;
+    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return 0.0;
+    vec2 ts = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
+    float s = 0.0;
+    for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++)
+        s += (p.z - bias > texture(shadowMapArray, vec3(p.xy + vec2(x, y) * ts, float(layer))).r) ? 1.0 : 0.0;
+    return s / 9.0;
+}
+
+float csmShadow(vec3 wp, vec3 n)
+{
+    if (!enableShadow || !receiveShadow) return 0.0;
+    float fd = abs((viewMatrix * vec4(wp, 1.0)).z);
+    int layer = cascadeCount - 1;
+    for (int i = 0; i < cascadeCount; i++) if (fd < csmSplit(i)) { layer = i; break; }
+    float bias = max(0.0025 * (1.0 - dot(normalize(n), vec3(0.0, 1.0, 0.0))), 0.0004);
+    float sh = csmSample(layer, wp, bias);
+    float sf = csmSplit(layer); float band = sf * 0.1;
+    if (layer + 1 < cascadeCount && fd > sf - band)
+        sh = mix(sh, csmSample(layer + 1, wp, bias), clamp((fd - (sf - band)) / band, 0.0, 1.0));
+    return sh;
+}
+
 vec3 calcSunLight(SunLight light, vec3 norm, vec3 vdir, vec3 albedo, vec3 specCol)
 {
     vec3  ldir  = normalize(-light.direction);
@@ -940,6 +973,34 @@ vec3 calcSpotLight(SpotLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 alb
 
     // PBR
     return R"(
+float csmSplit(int i){ if(i==0)return cascadeSplits.x; if(i==1)return cascadeSplits.y; if(i==2)return cascadeSplits.z; return cascadeSplits.w; }
+
+float csmSample(int layer, vec3 wp, float bias)
+{
+    vec4 ls = lightSpaceMatrices[layer] * vec4(wp, 1.0);
+    vec3 p  = ls.xyz / ls.w; p = p * 0.5 + 0.5;
+    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return 0.0;
+    vec2 ts = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
+    float s = 0.0;
+    for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++)
+        s += (p.z - bias > texture(shadowMapArray, vec3(p.xy + vec2(x, y) * ts, float(layer))).r) ? 1.0 : 0.0;
+    return s / 9.0;
+}
+
+float csmShadow(vec3 wp, vec3 n)
+{
+    if (!enableShadow || !receiveShadow) return 0.0;
+    float fd = abs((viewMatrix * vec4(wp, 1.0)).z);
+    int layer = cascadeCount - 1;
+    for (int i = 0; i < cascadeCount; i++) if (fd < csmSplit(i)) { layer = i; break; }
+    float bias = max(0.0025 * (1.0 - dot(normalize(n), vec3(0.0, 1.0, 0.0))), 0.0004);
+    float sh = csmSample(layer, wp, bias);
+    float sf = csmSplit(layer); float band = sf * 0.1;
+    if (layer + 1 < cascadeCount && fd > sf - band)
+        sh = mix(sh, csmSample(layer + 1, wp, bias), clamp((fd - (sf - band)) / band, 0.0, 1.0));
+    return sh;
+}
+
 const float PI = 3.14159265359;
 
 float distGGX(float NdotH, float roughness)
@@ -1069,7 +1130,8 @@ kShaderCompileResult kShaderCompiler::compile(const kShaderGraph& graph)
         frag += "    vec3 _albedo   = " + albedo   + ";\n";
         frag += "    vec3 _specular = " + specular + ";\n";
         frag += R"(
-    for (int i = 0; i < sunLightNum;   i++) result += calcSunLight  (sunLights[i],   norm, vdir, _albedo, _specular);
+    float _shadow = csmShadow(v_worldPos, norm);
+    for (int i = 0; i < sunLightNum;   i++) result += calcSunLight  (sunLights[i],   norm, vdir, _albedo, _specular) * (1.0 - _shadow);
     for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, v_worldPos, vdir, _albedo, _specular);
     for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, v_worldPos, vdir, _albedo, _specular);
 )";
@@ -1110,11 +1172,12 @@ kShaderCompileResult kShaderCompiler::compile(const kShaderGraph& graph)
     vec3 v   = normalize(viewPos - v_worldPos);
     vec3 F0  = mix(vec3(0.04), _albedo, _metallic);
     vec3 result = vec3(0.0);
+    float _shadow = csmShadow(v_worldPos, norm);
     for (int i = 0; i < sunLightNum; i++)
     {
         vec3 l        = normalize(-sunLights[i].direction);
         vec3 radiance = sunLights[i].diffuse * sunLights[i].power;
-        result += calcPBR(_albedo, _metallic, _roughness, F0, norm, v, l, radiance);
+        result += calcPBR(_albedo, _metallic, _roughness, F0, norm, v, l, radiance) * (1.0 - _shadow);
     }
     for (int i = 0; i < pointLightNum; i++)
     {

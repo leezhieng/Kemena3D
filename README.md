@@ -14,3 +14,13 @@ You can find the latest release, tutorials and additional information at: https:
 ![PBR Material with Shadow](Screenshots/pbr_shadow.jpg)
 ![Blur Screen Effect](Screenshots/blur.png)
 ![Edge Detection Screen Effect](Screenshots/edge.png)
+
+## Scripting
+
+Gameplay logic is scripted with [AngelScript](https://www.angelcode.com/angelscript/).
+Scripts attach to scene objects, run standard lifecycle functions
+(`Awake`, `Start`, `Update`, `FixedUpdate`, `LateUpdate`, `OnDestroy`), and are
+compiled to bytecode for fast loading. A host API exposes objects, transforms,
+timing and logging to scripts.
+
+See [Documentation/Scripting.md](Documentation/Scripting.md) for the full guide.

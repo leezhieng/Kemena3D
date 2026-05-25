@@ -616,6 +616,53 @@ bool kNavMesh::isPointOnMesh(const kVec3 &pos, const kVec3 &extents) const
     return ref != 0;
 }
 
+void kNavMesh::getDebugLines(std::vector<kVec3> &out) const
+{
+    out.clear();
+    if (!m_impl->baked || !m_impl->navMesh)
+        return;
+
+    const dtNavMesh *mesh = m_impl->navMesh;
+
+    // Walk every tile → poly → detail triangle, emitting the three edges of
+    // each triangle as line segments (standard Detour navmesh extraction).
+    for (int i = 0; i < mesh->getMaxTiles(); ++i)
+    {
+        const dtMeshTile *tile = mesh->getTile(i);
+        if (!tile || !tile->header)
+            continue;
+
+        for (int p = 0; p < tile->header->polyCount; ++p)
+        {
+            const dtPoly *poly = &tile->polys[p];
+            if (poly->getType() == DT_POLYTYPE_OFFMESH_CONNECTION)
+                continue;
+
+            const dtPolyDetail *pd = &tile->detailMeshes[p];
+
+            for (int t = 0; t < pd->triCount; ++t)
+            {
+                const unsigned char *tri = &tile->detailTris[(pd->triBase + t) * 4];
+
+                kVec3 v[3];
+                for (int k = 0; k < 3; ++k)
+                {
+                    const float *vp;
+                    if (tri[k] < poly->vertCount)
+                        vp = &tile->verts[poly->verts[tri[k]] * 3];
+                    else
+                        vp = &tile->detailVerts[(pd->vertBase + tri[k] - poly->vertCount) * 3];
+                    v[k] = kVec3(vp[0], vp[1], vp[2]);
+                }
+
+                out.push_back(v[0]); out.push_back(v[1]);
+                out.push_back(v[1]); out.push_back(v[2]);
+                out.push_back(v[2]); out.push_back(v[0]);
+            }
+        }
+    }
+}
+
 void *kNavMesh::getNavMesh()      const { return m_impl->navMesh; }
 void *kNavMesh::getNavMeshQuery() const { return m_impl->navQuery; }
 void *kNavMesh::getTileCache()    const { return m_impl->tileCache; }

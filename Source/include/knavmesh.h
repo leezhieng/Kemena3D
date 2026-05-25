@@ -87,6 +87,25 @@ namespace kemena
     };
 
     // -------------------------------------------------------------------------
+    // Editor-authored navigation surface descriptor
+    // -------------------------------------------------------------------------
+
+    /**
+     * @brief Serialisable settings for a navigation surface attached to an
+     *        object in the editor.
+     *
+     * Holds the bake parameters plus the geometry source: either every static
+     * mesh in the scene, or only static meshes within an axis-aligned area box
+     * centred on the owning object.
+     */
+    struct KEMENA3D_API kNavMeshDesc
+    {
+        kNavBuildConfig config;                       ///< Recast bake parameters.
+        bool            useArea  = false;             ///< true = restrict to areaSize box.
+        kVec3           areaSize = kVec3(20.0f, 10.0f, 20.0f); ///< Full extents of the area box.
+    };
+
+    // -------------------------------------------------------------------------
     // kNavMesh
     // -------------------------------------------------------------------------
 
@@ -159,6 +178,14 @@ namespace kemena
         /** @brief Returns true if @p pos is on (or very near) the navmesh. */
         bool isPointOnMesh(const kVec3 &pos,
                            const kVec3 &extents = kVec3(2.f, 4.f, 2.f)) const;
+
+        /**
+         * @brief Extracts the navmesh surface as world-space line segments for
+         *        debug visualisation (wireframe).
+         * @param outSegments Filled with pairs of points; each consecutive pair
+         *                    (0,1), (2,3), … is one line. Cleared first.
+         */
+        void getDebugLines(std::vector<kVec3> &outSegments) const;
 
         // --- Internal (used by kNavManager) ----------------------------------
 

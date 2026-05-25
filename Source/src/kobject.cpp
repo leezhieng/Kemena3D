@@ -41,6 +41,61 @@ namespace kemena
         parent = nullptr;
     }
 
+    void kObject::setParentKeepTransform(kObject *newParent)
+    {
+        // Same parent — nothing to do, and we'd otherwise double-append to its
+        // children list.
+        if (newParent == parent) return;
+
+        // Snapshot our current world TRS. calculateModelMatrix() refreshes our
+        // worldTransform from local TRS using the (about-to-be-old) parent's
+        // current worldTransform, which the renderer keeps up to date.
+        calculateModelMatrix();
+        kVec3 wPos = getGlobalPosition();
+        kQuat wRot = getGlobalRotation();
+        kVec3 wScl = getGlobalScale();
+
+        // Swap the parent edge in the scene graph.
+        detachFromParent();
+        parent = newParent;
+        if (newParent != nullptr)
+            newParent->children.push_back(this);
+
+        // Resolve the new parent's world TRS (identity when reparenting to
+        // root space).
+        kVec3 pPos(0.0f);
+        kQuat pRot(1.0f, 0.0f, 0.0f, 0.0f);
+        kVec3 pScl(1.0f);
+        if (newParent != nullptr)
+        {
+            newParent->calculateModelMatrix();
+            pPos = newParent->getGlobalPosition();
+            pRot = newParent->getGlobalRotation();
+            pScl = newParent->getGlobalScale();
+        }
+
+        // Solve for the local TRS that keeps world TRS constant under
+        // world = parent_world * T*R*S.  Safe-divide guards against a parent
+        // axis with zero scale (which would otherwise propagate NaNs).
+        auto safeDiv = [](const kVec3 &a, const kVec3 &b) {
+            return kVec3(
+                b.x != 0.0f ? a.x / b.x : a.x,
+                b.y != 0.0f ? a.y / b.y : a.y,
+                b.z != 0.0f ? a.z / b.z : a.z);
+        };
+
+        kQuat invPRot = glm::inverse(pRot);
+        kVec3 newLocalPos = invPRot * safeDiv(wPos - pPos, pScl);
+        kQuat newLocalRot = glm::normalize(invPRot * wRot);
+        kVec3 newLocalScl = safeDiv(wScl, pScl);
+
+        setPosition(newLocalPos);
+        setRotation(newLocalRot);
+        setScale(newLocalScl);
+
+        calculateModelMatrix();
+    }
+
     std::vector<kObject *> kObject::getChildren()
     {
         return children;
@@ -139,6 +194,36 @@ namespace kemena
     kPhysicsObjectDesc& kObject::getPhysicsDesc()
     {
         return physicsDesc;
+    }
+
+    bool kObject::getHasCharacterDesc() const
+    {
+        return hasCharacterDesc;
+    }
+
+    void kObject::setHasCharacterDesc(bool val)
+    {
+        hasCharacterDesc = val;
+    }
+
+    kCharacterControllerDesc& kObject::getCharacterDesc()
+    {
+        return characterDesc;
+    }
+
+    bool kObject::getHasNavMeshDesc() const
+    {
+        return hasNavMeshDesc;
+    }
+
+    void kObject::setHasNavMeshDesc(bool val)
+    {
+        hasNavMeshDesc = val;
+    }
+
+    kNavMeshDesc& kObject::getNavMeshDesc()
+    {
+        return navMeshDesc;
     }
 
     kNodeType kObject::getType()
@@ -457,9 +542,13 @@ namespace kemena
         {
             for (size_t j = 0; j < getScripts().size(); ++j)
             {
+                const kScript &sc = getScripts().at(j);
                 scriptsData.push_back({
-                    {"uuid", getScripts().at(j).uuid},
-                    {"active", getScripts().at(j).isActive},
+                    {"uuid",        sc.uuid},       // component (attachment) UUID
+                    {"script_uuid", sc.scriptUuid}, // referenced script asset UUID
+                    {"file_name",   sc.fileName},   // source path (fallback / editor)
+                    {"checksum",    sc.checksum},   // source checksum at last compile
+                    {"active",      sc.isActive},
                 });
             }
         }
@@ -489,6 +578,67 @@ namespace kemena
         // Prefab linkage — only emit when set so unrelated objects stay unchanged.
         if (!prefabRef.empty())    data["prefab_ref"]    = prefabRef;
         if (!templateUuid.empty()) data["template_uuid"] = templateUuid;
+
+        // Physics body descriptor — only emitted when the object opted in.
+        // The fields mirror kPhysicsObjectDesc; readers should populate the
+        // descriptor and call setHasPhysicsDesc(true).
+        if (hasPhysicsDesc)
+        {
+            json phys =
+            {
+                {"shape_type",      (int)physicsDesc.shape.type},
+                {"half_extents",
+                 {{"x", physicsDesc.shape.halfExtents.x},
+                  {"y", physicsDesc.shape.halfExtents.y},
+                  {"z", physicsDesc.shape.halfExtents.z}}},
+                {"radius",          physicsDesc.shape.radius},
+                {"height",          physicsDesc.shape.height},
+                {"body_type",       (int)physicsDesc.type},
+                {"mass",            physicsDesc.mass},
+                {"friction",        physicsDesc.friction},
+                {"restitution",     physicsDesc.restitution},
+                {"linear_damping",  physicsDesc.linearDamping},
+                {"angular_damping", physicsDesc.angularDamping},
+                {"gravity_factor",  physicsDesc.gravityFactor},
+            };
+            data["physics"] = phys;
+        }
+
+        // Character controller descriptor — only emitted when opted in.
+        if (hasCharacterDesc)
+        {
+            data["character"] =
+            {
+                {"radius",         characterDesc.radius},
+                {"height",         characterDesc.height},
+                {"mass",           characterDesc.mass},
+                {"friction",       characterDesc.friction},
+                {"gravity_factor", characterDesc.gravityFactor},
+                {"slope_limit",    characterDesc.slopeLimit},
+                {"step_height",    characterDesc.stepHeight},
+            };
+        }
+
+        // Navigation surface descriptor — bake settings only; the baked mesh is
+        // regenerated on demand and never serialised.
+        if (hasNavMeshDesc)
+        {
+            const kNavBuildConfig &c = navMeshDesc.config;
+            data["navmesh_surface"] =
+            {
+                {"use_area",   navMeshDesc.useArea},
+                {"area_size",  {{"x", navMeshDesc.areaSize.x},
+                                {"y", navMeshDesc.areaSize.y},
+                                {"z", navMeshDesc.areaSize.z}}},
+                {"cell_size",        c.cellSize},
+                {"cell_height",      c.cellHeight},
+                {"agent_height",     c.agentHeight},
+                {"agent_radius",     c.agentRadius},
+                {"agent_max_climb",  c.agentMaxClimb},
+                {"agent_max_slope",  c.agentMaxSlope},
+                {"tile_size",        c.tileSize},
+            };
+        }
 
         return data;
     }
@@ -520,5 +670,30 @@ namespace kemena
 
         position = physicsObject->getPosition();
         rotation = physicsObject->getRotation();
+    }
+
+    // --- Character controller -------------------------------------------------
+
+    void kObject::attachCharacter(kCharacterController *character)
+    {
+        characterController = character;
+    }
+
+    void kObject::detachCharacter()
+    {
+        characterController = nullptr;
+    }
+
+    kCharacterController *kObject::getCharacterController()
+    {
+        return characterController;
+    }
+
+    void kObject::syncFromCharacter()
+    {
+        if (!characterController) return;
+
+        position = characterController->getPosition();
+        rotation = characterController->getRotation();
     }
 }

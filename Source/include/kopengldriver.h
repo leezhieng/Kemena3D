@@ -132,8 +132,10 @@ namespace kemena
         // --- Texture sampling ------------------------------------------------
 
         void bindTexture2D(int unit, uint32_t id) override;
+        void bindTexture2DArray(int unit, uint32_t id) override;
         void bindTextureCube(int unit, uint32_t id) override;
         void unbindTexture2D(int unit) override;
+        void unbindTexture2DArray(int unit) override;
         void unbindTextureCube(int unit) override;
         void generateMipmaps2D(uint32_t id) override;
         void readTexture2DRGB(uint32_t id, int mipLevel, float *pixels) override;
@@ -165,10 +167,12 @@ namespace kemena
         uint32_t createFBOColorTexture(int width, int height) override;
         uint32_t createFBOColorTextureMSAA(int samples, int width, int height) override;
         uint32_t createFBODepthTexture(int width, int height) override;
+        uint32_t createFBODepthTextureArray(int width, int height, int layers) override;
         void deleteFBOTexture(uint32_t id) override;
         void attachFBOColorTexture(uint32_t fboId, uint32_t texId) override;
         void attachFBOColorTextureMSAA(uint32_t fboId, uint32_t texId) override;
         void attachFBODepthTexture(uint32_t fboId, uint32_t texId) override;
+        void attachFBODepthTextureLayer(uint32_t fboId, uint32_t texId, int layer) override;
         void resizeFBOColorTexture(uint32_t texId, int width, int height) override;
         void resizeFBOColorTextureMSAA(uint32_t texId, int samples, int width, int height) override;
 

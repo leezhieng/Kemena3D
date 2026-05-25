@@ -366,6 +366,9 @@ namespace kemena
          */
         virtual void bindTexture2D(int unit, uint32_t id) = 0;
 
+        /** @brief Binds a GL_TEXTURE_2D_ARRAY to a texture unit (e.g. CSM maps). */
+        virtual void bindTexture2DArray(int unit, uint32_t id) = 0;
+
         /**
          * @brief Binds a cube-map texture to the given texture unit.
          * @param unit Texture unit index.
@@ -375,6 +378,9 @@ namespace kemena
 
         /** @brief Unbinds any 2D texture from the given unit. */
         virtual void unbindTexture2D(int unit) = 0;
+
+        /** @brief Unbinds any GL_TEXTURE_2D_ARRAY from a texture unit. */
+        virtual void unbindTexture2DArray(int unit) = 0;
 
         /** @brief Unbinds any cube-map texture from the given unit. */
         virtual void unbindTextureCube(int unit) = 0;
@@ -517,6 +523,16 @@ namespace kemena
          */
         virtual uint32_t createFBODepthTexture(int width, int height) = 0;
 
+        /**
+         * @brief Creates a layered depth texture (GL_TEXTURE_2D_ARRAY) for
+         *        cascaded shadow maps — one layer per cascade.
+         * @param width  Per-layer width in pixels.
+         * @param height Per-layer height in pixels.
+         * @param layers Number of array layers (cascades).
+         * @return Handle to the new array texture.
+         */
+        virtual uint32_t createFBODepthTextureArray(int width, int height, int layers) = 0;
+
         /** @brief Destroys a texture created by createFBOColorTexture / createFBODepthTexture. */
         virtual void deleteFBOTexture(uint32_t id) = 0;
 
@@ -543,6 +559,15 @@ namespace kemena
          * @param texId Depth texture handle.
          */
         virtual void attachFBODepthTexture(uint32_t fboId, uint32_t texId) = 0;
+
+        /**
+         * @brief Attaches one layer of a depth texture array to an FBO's depth
+         *        attachment (for rendering a single shadow cascade).
+         * @param fboId FBO handle.
+         * @param texId Depth texture-array handle.
+         * @param layer Array layer (cascade index) to render into.
+         */
+        virtual void attachFBODepthTextureLayer(uint32_t fboId, uint32_t texId, int layer) = 0;
 
         /**
          * @brief Re-allocates a colour texture with a new size (for FBO resize).

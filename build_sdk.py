@@ -50,7 +50,14 @@ def banner():
  ------------------------------------------------------------------------
 """)
 
-def choose(prompt, options: dict):
+def choose(prompt, options: dict, env=None):
+    # Non-interactive override: if the given environment variable holds a valid
+    # option key, use it without prompting (used by CI).
+    if env:
+        val = os.environ.get(env, "").strip()
+        if val in options:
+            print(f"{prompt}\n  [{env}={val}] (non-interactive)")
+            return val
     print(prompt)
     for k, v in options.items():
         print(f"{k}: {v}")
@@ -92,7 +99,8 @@ def main():
             {
                 "1": "Build with Visual Studio 2022 (Community Edition)",
                 "2": "Build with MinGW (GCC 14 or above)"
-            }
+            },
+            env="KEMENA_COMPILER"
         )
     elif system == "Linux":
         print("\nLinux detected → using GCC (default).")
@@ -106,7 +114,8 @@ def main():
             {
                 "1": "Xcode (Clang/LLVM from Command Line Tools)",
                 "2": "GCC (via Homebrew or custom install)"
-            }
+            },
+            env="KEMENA_COMPILER"
         )
     else:
         print(f"Unsupported platform: {system}")
@@ -116,7 +125,8 @@ def main():
     linking = choose(
         "\nPlease choose static linking or dynamic linking:",
         {"1": "Static linking (library built into executable)",
-         "2": "Dynamic linking (DLL / shared library)"}
+         "2": "Dynamic linking (DLL / shared library)"},
+        env="KEMENA_LINKING"
     )
 
     # Build configuration selection
@@ -126,7 +136,8 @@ def main():
             "1": "Debug",
             "2": "Release",
             "3": "Both (Debug and Release)"
-        }
+        },
+        env="KEMENA_CONFIG"
     )
 
     # CMake generator setup

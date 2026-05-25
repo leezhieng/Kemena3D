@@ -135,6 +135,7 @@ namespace kemena
         std::unique_ptr<JPH::PhysicsSystem>        physicsSystem;
 
         std::vector<kPhysicsObject *>              objects;
+        std::vector<kCharacterController *>        characters;
         bool                                       initialized = false;
 
         static constexpr JPH::uint cMaxBodies             = 65536;
@@ -213,6 +214,14 @@ namespace kemena
         if (!m_impl->initialized)
             return;
 
+        // Destroy all tracked character controllers first (they hold bodies too)
+        for (kCharacterController *cc : m_impl->characters)
+        {
+            cc->uninit();
+            delete cc;
+        }
+        m_impl->characters.clear();
+
         // Destroy all tracked objects (removes bodies from the simulation)
         for (kPhysicsObject *obj : m_impl->objects)
         {
@@ -253,6 +262,10 @@ namespace kemena
             cCollisionSteps,
             m_impl->tempAllocator.get(),
             m_impl->jobSystem.get());
+
+        // Refresh each character's ground/contact state after the world step.
+        for (kCharacterController *cc : m_impl->characters)
+            cc->update(deltaTime);
     }
 
     // -----------------------------------------------------------------------
@@ -306,6 +319,37 @@ namespace kemena
 
         object->uninit();
         delete object;
+    }
+
+    kCharacterController *kPhysicsManager::createCharacter(const kCharacterControllerDesc &desc)
+    {
+        if (!m_impl->initialized)
+        {
+            std::cout << "[kPhysicsManager] createCharacter called before init()." << std::endl;
+            return nullptr;
+        }
+
+        kCharacterController *cc = new kCharacterController();
+        if (!cc->init(m_impl->physicsSystem.get(), desc))
+        {
+            delete cc;
+            return nullptr;
+        }
+
+        m_impl->characters.push_back(cc);
+        return cc;
+    }
+
+    void kPhysicsManager::destroyCharacter(kCharacterController *character)
+    {
+        if (!character) return;
+
+        auto it = std::find(m_impl->characters.begin(), m_impl->characters.end(), character);
+        if (it != m_impl->characters.end())
+            m_impl->characters.erase(it);
+
+        character->uninit();
+        delete character;
     }
 
     // -----------------------------------------------------------------------

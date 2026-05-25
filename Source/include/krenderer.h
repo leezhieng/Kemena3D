@@ -190,6 +190,32 @@ namespace kemena
         kShader *getShadowShader();
 
         /**
+         * @brief Sets the number of cascades (1..4). Cheap; the underlying
+         *        texture array always allocates the maximum, so no realloc.
+         */
+        void setShadowCascadeCount(int count);
+        /** @brief Returns the active cascade count. */
+        int  getShadowCascadeCount() const { return shadowCascadeCount; }
+
+        /**
+         * @brief Sets the per-cascade shadow-map resolution (e.g. 1024/2048/4096).
+         *        Rebuilds the shadow texture if shadows are enabled.
+         */
+        void setShadowResolution(int resolution);
+        /** @brief Returns the per-cascade shadow-map resolution. */
+        int  getShadowResolution() const { return shadowResolution; }
+
+        /** @brief Sets the cascade split blend: 0 = uniform, 1 = logarithmic. */
+        void  setShadowSplitLambda(float lambda) { shadowSplitLambda = lambda; }
+        /** @brief Returns the cascade split blend factor. */
+        float getShadowSplitLambda() const { return shadowSplitLambda; }
+
+        /** @brief Toggles a debug view that tints each cascade a distinct colour. */
+        void setShadowDebug(bool enable) { shadowDebug = enable; }
+        /** @brief Returns whether the cascade debug view is active. */
+        bool getShadowDebug() const { return shadowDebug; }
+
+        /**
          * @brief Enables or disables automatic exposure adjustment.
          *
          * When enabled, the average luminance of the resolved FBO colour texture
@@ -399,6 +425,16 @@ namespace kemena
          */
         void renderOctreeDebug(kWorld *world, kScene *scene);
 
+        /**
+         * @brief Draws world-space line segments in a single colour into the
+         *        view FBO. Used for editor debug overlays (e.g. nav-mesh
+         *        wireframe). Each consecutive pair of points is one line.
+         * @param world    Supplies the main camera (view/projection).
+         * @param segments Flat list of point pairs.
+         * @param color    Line colour (RGB).
+         */
+        void renderDebugLines(kWorld *world, const std::vector<kVec3> &segments, kVec3 color);
+
     protected:
     private:
         kString engineName;           ///< Optional application name for diagnostics.
@@ -465,15 +501,18 @@ namespace kemena
 
         int fboWidth = 0, fboHeight = 0;
 
-        // Shadow FBO (cascaded — 3 cascades)
-        static constexpr int kNumShadowCascades = 3;
-        bool enableShadow = false;
-        kShader *shadowShader = nullptr;
-        const unsigned int shadowWidth = 2048, shadowHeight = 2048;
-        uint32_t shadowFbo[kNumShadowCascades]    = {};
-        uint32_t shadowFboTex[kNumShadowCascades] = {};
-        kMat4  lightSpaceMatrices[kNumShadowCascades];
-        float  cascadeSplits[kNumShadowCascades]  = {};
+        // Cascaded shadow maps — one depth-texture-array layer per cascade.
+        static constexpr int kMaxShadowCascades = 4;
+        bool     enableShadow       = false;
+        kShader *shadowShader       = nullptr;
+        int      shadowResolution   = 2048;   ///< Per-cascade map size (configurable).
+        int      shadowCascadeCount = 3;      ///< Active cascades (1..kMaxShadowCascades).
+        float    shadowSplitLambda  = 0.85f;  ///< 0 = uniform splits, 1 = logarithmic.
+        bool     shadowDebug        = false;  ///< Tint fragments by cascade for debugging.
+        uint32_t shadowFbo          = 0;      ///< Single FBO; layer re-attached per cascade.
+        uint32_t shadowTexArray     = 0;      ///< GL_TEXTURE_2D_ARRAY depth texture.
+        kMat4    lightSpaceMatrices[kMaxShadowCascades];
+        float    cascadeSplits[kMaxShadowCascades] = {};
 
         // Picking FBO
         bool enablePicking = false;

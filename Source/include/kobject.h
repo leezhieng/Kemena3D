@@ -22,6 +22,8 @@
 #include "kmaterial.h"
 #include "kscriptmanager.h"
 #include "kphysicsobject.h"
+#include "kcharactercontroller.h"
+#include "knavmesh.h"
 #include "kparticle.h"
 #include "kaudiosource.h"
 
@@ -66,6 +68,20 @@ namespace kemena
          * Has no effect if the object has no parent.
          */
         void detachFromParent();
+
+        /**
+         * @brief Reparents this object while keeping its world transform.
+         *
+         * Computes new local position/rotation/scale such that the object's
+         * world-space pose is unchanged after switching parents — i.e. the
+         * object does not visually jump. Use this for editor reparent
+         * operations (drag in the hierarchy, etc.); use the plain
+         * setParent() when constructing scenes where the local transform is
+         * what you want preserved.
+         *
+         * @param newParent New parent node, or nullptr to detach to root space.
+         */
+        void setParentKeepTransform(kObject *newParent);
 
         /**
          * @brief Returns the list of direct children.
@@ -158,6 +174,31 @@ namespace kemena
          * Only meaningful when getHasPhysicsDesc() returns true.
          */
         kPhysicsObjectDesc& getPhysicsDesc();
+
+        // --- Character controller descriptor (editor-side config) ------------
+
+        /** @brief Returns true if this object has a character controller configured. */
+        bool getHasCharacterDesc() const;
+
+        /**
+         * @brief Sets whether this object has a character controller descriptor.
+         * @param val true = a character is created at game-start.
+         */
+        void setHasCharacterDesc(bool val);
+
+        /** @brief Returns a mutable reference to the character controller descriptor. */
+        kCharacterControllerDesc& getCharacterDesc();
+
+        // --- Navigation surface descriptor (editor-side config) -------------
+
+        /** @brief Returns true if this object carries a navigation surface. */
+        bool getHasNavMeshDesc() const;
+
+        /** @brief Sets whether this object carries a navigation surface. */
+        void setHasNavMeshDesc(bool val);
+
+        /** @brief Returns a mutable reference to the navigation surface descriptor. */
+        kNavMeshDesc& getNavMeshDesc();
 
         /**
          * @brief Returns the scene-graph node type tag.
@@ -436,6 +477,27 @@ namespace kemena
          */
         void syncFromPhysics();
 
+        // --- Character controller -------------------------------------------
+
+        /**
+         * @brief Attaches a runtime character controller to this object.
+         *
+         * Ownership stays with kPhysicsManager (destroy via destroyCharacter()).
+         */
+        void attachCharacter(kCharacterController *character);
+
+        /** @brief Detaches the character controller without destroying it. */
+        void detachCharacter();
+
+        /** @brief Returns the attached character controller, or nullptr. */
+        kCharacterController *getCharacterController();
+
+        /**
+         * @brief Copies the character controller's position into this object's
+         *        local transform. Call once per frame after the physics update.
+         */
+        void syncFromCharacter();
+
     protected:
     private:
         kObject *parent = nullptr;
@@ -480,6 +542,13 @@ namespace kemena
 
         bool               hasPhysicsDesc = false;
         kPhysicsObjectDesc physicsDesc;
+
+        bool                     hasCharacterDesc = false;
+        kCharacterControllerDesc characterDesc;
+        kCharacterController     *characterController = nullptr; ///< Runtime; not owned.
+
+        bool         hasNavMeshDesc = false;
+        kNavMeshDesc navMeshDesc;
     };
 }
 

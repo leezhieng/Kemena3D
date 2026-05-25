@@ -57,11 +57,8 @@ namespace kemena
 
         if (enableShadow)
         {
-            for (int i = 0; i < kNumShadowCascades; ++i)
-            {
-                if (shadowFbo[i])    { driver->deleteFramebuffer(shadowFbo[i]);   shadowFbo[i] = 0; }
-                if (shadowFboTex[i]) { driver->deleteFBOTexture(shadowFboTex[i]); shadowFboTex[i] = 0; }
-            }
+            if (shadowFbo)      { driver->deleteFramebuffer(shadowFbo);   shadowFbo = 0; }
+            if (shadowTexArray) { driver->deleteFBOTexture(shadowTexArray); shadowTexArray = 0; }
         }
 
         if (enablePicking)
@@ -326,11 +323,12 @@ void main()
             float camFar  = shadowCam->getFarClip();
             kMat4 camView = shadowCam->getViewMatrix();
 
-            // Practical split scheme (75% log + 25% uniform)
-            float lambda = 0.75f;
-            for (int i = 0; i < kNumShadowCascades; ++i)
+            // Practical split scheme: blend logarithmic and uniform by lambda.
+            const int   cascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
+            const float lambda    = shadowSplitLambda;
+            for (int i = 0; i < cascCount; ++i)
             {
-                float ratio = (float)(i + 1) / (float)kNumShadowCascades;
+                float ratio = (float)(i + 1) / (float)cascCount;
                 float cLog  = camNear * std::pow(camFar / camNear, ratio);
                 float cUni  = camNear + (camFar - camNear) * ratio;
                 cascadeSplits[i] = lambda * cLog + (1.0f - lambda) * cUni;
@@ -352,61 +350,67 @@ void main()
 
             if (hasSun)
             {
-                for (int cascade = 0; cascade < kNumShadowCascades; ++cascade)
+                kVec3 up = (std::abs(glm::dot(lightDir, kVec3(0, 1, 0))) > 0.99f)
+                               ? kVec3(1, 0, 0) : kVec3(0, 1, 0);
+
+                driver->bindFramebuffer(shadowFbo);
+                driver->setDepthTest(true);
+
+                for (int cascade = 0; cascade < cascCount; ++cascade)
                 {
                     float splitNear = (cascade == 0) ? camNear : cascadeSplits[cascade - 1];
                     float splitFar  = cascadeSplits[cascade];
 
-                    // Build sub-frustum projection for this cascade
+                    // World-space corners of this cascade's view sub-frustum.
                     kMat4 subProj = glm::perspective(
                         glm::radians(shadowCam->getFOV()),
                         shadowCam->getAspectRatio(),
                         splitNear, splitFar);
                     kMat4 invPV = glm::inverse(subProj * camView);
 
-                    // Extract 8 frustum corners in world space
-                    kVec3 center(0.0f);
-                    kVec4 corners[8];
+                    kVec3 corners[8];
                     int idx = 0;
                     for (int ix = 0; ix < 2; ++ix)
                     for (int iy = 0; iy < 2; ++iy)
                     for (int iz = 0; iz < 2; ++iz)
                     {
                         kVec4 pt = invPV * kVec4(ix * 2.0f - 1.0f, iy * 2.0f - 1.0f, iz * 2.0f - 1.0f, 1.0f);
-                        corners[idx] = pt / pt.w;
-                        center += kVec3(corners[idx]);
-                        ++idx;
+                        corners[idx++] = kVec3(pt / pt.w);
                     }
+
+                    // Bounding sphere of the slice — its radius is independent of
+                    // camera orientation, so the shadow box size stays constant
+                    // and the map doesn't shimmer as the camera rotates.
+                    kVec3 center(0.0f);
+                    for (int c = 0; c < 8; ++c) center += corners[c];
                     center /= 8.0f;
-
-                    // Light view from frustum center looking in light direction
-                    kVec3 up = (std::abs(glm::dot(lightDir, kVec3(0, 1, 0))) > 0.99f)
-                                   ? kVec3(1, 0, 0) : kVec3(0, 1, 0);
-                    kMat4 lightView = glm::lookAt(center - lightDir, center, up);
-
-                    // Compute AABB of sub-frustum in light space
-                    float minX =  1e9f, maxX = -1e9f;
-                    float minY =  1e9f, maxY = -1e9f;
-                    float minZ =  1e9f, maxZ = -1e9f;
+                    float radius = 0.0f;
                     for (int c = 0; c < 8; ++c)
-                    {
-                        kVec4 lc = lightView * corners[c];
-                        minX = std::min(minX, lc.x); maxX = std::max(maxX, lc.x);
-                        minY = std::min(minY, lc.y); maxY = std::max(maxY, lc.y);
-                        minZ = std::min(minZ, lc.z); maxZ = std::max(maxZ, lc.z);
-                    }
+                        radius = std::max(radius, glm::length(corners[c] - center));
+                    radius = std::ceil(radius * 16.0f) / 16.0f; // quantise to steady it further
 
-                    // Extend Z to catch shadow casters outside the camera frustum
-                    const float zMult = 5.0f;
-                    if (minZ < 0.0f) minZ *= zMult; else minZ /= zMult;
-                    if (maxZ < 0.0f) maxZ /= zMult; else maxZ *= zMult;
+                    // Texel-snap the sphere centre in light space to kill the
+                    // shimmer that otherwise appears as the camera translates.
+                    float texelsPerUnit = (float)shadowResolution / (2.0f * radius);
+                    kMat4 snapView    = glm::scale(kMat4(1.0f), kVec3(texelsPerUnit)) *
+                                        glm::lookAt(kVec3(0.0f), lightDir, up);
+                    kMat4 snapViewInv = glm::inverse(snapView);
+                    kVec4 cLS = snapView * kVec4(center, 1.0f);
+                    cLS.x = std::floor(cLS.x);
+                    cLS.y = std::floor(cLS.y);
+                    center = kVec3(snapViewInv * cLS);
 
-                    kMat4 lightProjection = glm::ortho(minX, maxX, minY, maxY, -maxZ, -minZ);
-                    lightSpaceMatrices[cascade] = lightProjection * lightView;
+                    // Pull the eye well back along the light so casters between the
+                    // light and the slice are still captured.
+                    const float zExtent = radius * 6.0f;
+                    kVec3 eye = center - lightDir * zExtent;
+                    kMat4 lightView = glm::lookAt(eye, center, up);
+                    kMat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * zExtent);
+                    lightSpaceMatrices[cascade] = lightProj * lightView;
 
-                    driver->bindFramebuffer(shadowFbo[cascade]);
-                    driver->setDepthTest(true);
-                    driver->setViewport(0, 0, shadowWidth, shadowHeight);
+                    // Render the scene depth into this cascade's array layer.
+                    driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, cascade);
+                    driver->setViewport(0, 0, shadowResolution, shadowResolution);
                     driver->clear(false, true, false);
                     shadowShader->use();
                     renderSceneGraphShadow(world, scene, scene->getRootNode(), lightSpaceMatrices[cascade], deltaTime);
@@ -754,11 +758,9 @@ void main()
                     shader->setValue("skyboxAmbientEnabled",  scene->getSkyboxAmbientEnabled());
                     shader->setValue("skyboxAmbientStrength", scene->getSkyboxAmbientStrength());
 
-                    // Texture unit layout: [0..N-1] material, [N] shadow0, [N+1] shadow1, [N+2] shadow2, [N+3] skybox
-                    unsigned int shadowUnit0 = (unsigned int)currentMesh->getMaterial()->getTextures().size();
-                    unsigned int shadowUnit1 = shadowUnit0 + 1;
-                    unsigned int shadowUnit2 = shadowUnit0 + 2;
-                    unsigned int skyboxUnit  = shadowUnit0 + 3;
+                    // Texture unit layout: [0..N-1] material, [N] shadow array, [N+1] skybox
+                    unsigned int shadowUnit = (unsigned int)currentMesh->getMaterial()->getTextures().size();
+                    unsigned int skyboxUnit = shadowUnit + 1;
 
                     // Bind skybox cubemap for IBL ambient
                     kMaterial *skyboxMaterial = scene->getSkyboxMaterial();
@@ -769,19 +771,20 @@ void main()
                         shader->setValue("skyboxMap", (int)skyboxUnit);
                     }
 
-                    // Cascaded shadow maps
-                    driver->bindTexture2D((int)shadowUnit0, shadowFboTex[0]);
-                    driver->bindTexture2D((int)shadowUnit1, shadowFboTex[1]);
-                    driver->bindTexture2D((int)shadowUnit2, shadowFboTex[2]);
-                    shader->setValue("shadowMap0", (int)shadowUnit0);
-                    shader->setValue("shadowMap1", (int)shadowUnit1);
-                    shader->setValue("shadowMap2", (int)shadowUnit2);
-                    shader->setValue("lightSpaceMatrices",
-                        std::vector<kMat4>{lightSpaceMatrices[0], lightSpaceMatrices[1], lightSpaceMatrices[2]});
+                    // Cascaded shadow maps (single depth-texture array).
+                    int cascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
+                    driver->bindTexture2DArray((int)shadowUnit, shadowTexArray);
+                    shader->setValue("shadowMapArray", (int)shadowUnit);
+                    std::vector<kMat4> lsm(lightSpaceMatrices, lightSpaceMatrices + cascCount);
+                    shader->setValue("lightSpaceMatrices", lsm);
+                    // Up to 4 split distances packed into a vec4; cascadeCount says how many are valid.
                     shader->setValue("cascadeSplits",
-                        kVec3(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2]));
-                    shader->setValue("enableShadow",  enableShadow);
-                    shader->setValue("receiveShadow", currentMesh->getReceiveShadow());
+                        kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
+                    shader->setValue("cascadeCount",    cascCount);
+                    shader->setValue("shadowResolution", (float)shadowResolution);
+                    shader->setValue("shadowDebug",     shadowDebug);
+                    shader->setValue("enableShadow",    enableShadow);
+                    shader->setValue("receiveShadow",   currentMesh->getReceiveShadow());
 
                     // Material textures
                     for (size_t k = 0; k < currentMesh->getMaterial()->getTextures().size(); k++)
@@ -800,13 +803,15 @@ void main()
 
                     currentMesh->draw();
 
-                    // Unbind all texture units (material + 3 shadow + 1 skybox)
-                    int totalUnits = (int)currentMesh->getMaterial()->getTextures().size() + 4;
+                    // Unbind all texture units (material + 1 shadow array + 1 skybox)
+                    int matUnits   = (int)currentMesh->getMaterial()->getTextures().size();
+                    int totalUnits = matUnits + 2;
                     for (int k = totalUnits - 1; k >= 0; k--)
                     {
                         driver->unbindTexture2D(k);
                         driver->unbindTextureCube(k);
                     }
+                    driver->unbindTexture2DArray(matUnits); // shadow array unit
 
                     shader->unuse();
                 }
@@ -1084,15 +1089,15 @@ void main()
 
         if (newEnable)
         {
-            for (int i = 0; i < kNumShadowCascades; ++i)
-            {
-                shadowFboTex[i] = driver->createFBODepthTexture(shadowWidth, shadowHeight);
-                shadowFbo[i]    = driver->createFramebuffer();
-                driver->attachFBODepthTexture(shadowFbo[i], shadowFboTex[i]);
+            // One depth-texture array (max cascades) + one FBO; the per-cascade
+            // layer is attached during the shadow pass.
+            shadowTexArray = driver->createFBODepthTextureArray(
+                shadowResolution, shadowResolution, kMaxShadowCascades);
+            shadowFbo = driver->createFramebuffer();
+            driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
 
-                if (!driver->isFramebufferComplete())
-                    std::cerr << "Shadow cascade " << i << " framebuffer is incomplete" << std::endl;
-            }
+            if (!driver->isFramebufferComplete())
+                std::cerr << "Shadow framebuffer is incomplete" << std::endl;
             driver->unbindFramebuffer();
 
             if (useDefaultShader)
@@ -1154,6 +1159,28 @@ void main() {}
     kShader *kRenderer::getShadowShader()
     {
         return shadowShader;
+    }
+
+    void kRenderer::setShadowCascadeCount(int count)
+    {
+        shadowCascadeCount = std::max(1, std::min(count, kMaxShadowCascades));
+    }
+
+    void kRenderer::setShadowResolution(int resolution)
+    {
+        if (resolution <= 0 || resolution == shadowResolution)
+            return;
+        shadowResolution = resolution;
+
+        // Rebuild the array texture at the new resolution if shadows are live.
+        if (enableShadow && shadowTexArray)
+        {
+            driver->deleteFBOTexture(shadowTexArray);
+            shadowTexArray = driver->createFBODepthTextureArray(
+                shadowResolution, shadowResolution, kMaxShadowCascades);
+            driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
+            driver->unbindFramebuffer();
+        }
     }
 
     void kRenderer::setEnableAutoExposure(bool newEnable)
@@ -2080,6 +2107,66 @@ void main() { outColor = vec4(lineColor, 1.0); }
         driver->setDepthWrite(true);
         debugLineShader->unuse();
 
+        driver->bindReadFramebuffer(fboMsaa);
+        driver->bindDrawFramebuffer(fbo);
+        driver->blitFramebufferColor(0, 0, fboWidth, fboHeight, 0, 0, fboWidth, fboHeight);
+        driver->unbindFramebuffer();
+    }
+
+    void kRenderer::renderDebugLines(kWorld *world, const std::vector<kVec3> &segments, kVec3 color)
+    {
+        if (!enableScreenBuffer || !world || segments.empty()) return;
+        if (!world->getMainCamera()) return;
+
+        // Lazy-compile the shared debug-line shader / buffers.
+        if (!debugLineShader)
+        {
+            debugLineShader = new kShader();
+            debugLineShader->loadShadersCode(kDebugLineVS, kDebugLineFS);
+        }
+        if (!debugLineVao)
+        {
+            debugLineVao = driver->createVertexArray();
+            debugLineVbo = driver->createBuffer();
+            glBindVertexArray(static_cast<GLuint>(debugLineVao));
+            glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(debugLineVbo));
+            glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
+            glEnableVertexAttribArray(0);
+            glBindVertexArray(0);
+        }
+
+        std::vector<float> verts;
+        verts.reserve(segments.size() * 3);
+        for (const kVec3 &p : segments)
+        {
+            verts.push_back(p.x);
+            verts.push_back(p.y);
+            verts.push_back(p.z);
+        }
+
+        driver->bindFramebuffer(fboMsaa);
+        driver->setViewport(0, 0, fboWidth, fboHeight);
+
+        debugLineShader->use();
+        debugLineShader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+        debugLineShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
+        debugLineShader->setValue("lineColor", color);
+
+        driver->setDepthTest(false);
+        driver->setDepthWrite(false);
+
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(debugLineVbo));
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
+                     verts.data(), GL_DYNAMIC_DRAW);
+        driver->drawArrays(debugLineVao, kPrimitiveType::LINES,
+                           static_cast<int>(verts.size() / 3));
+
+        driver->setDepthWrite(true);
+        debugLineShader->unuse();
+
+        // Resolve MSAA → display texture so the overlay shows in the panel.
         driver->bindReadFramebuffer(fboMsaa);
         driver->bindDrawFramebuffer(fbo);
         driver->blitFramebufferColor(0, 0, fboWidth, fboHeight, 0, 0, fboWidth, fboHeight);

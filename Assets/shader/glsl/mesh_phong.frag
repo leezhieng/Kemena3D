@@ -29,14 +29,17 @@ uniform bool has_normalMap;
 uniform bool has_specularMap;
 uniform bool has_emissiveMap;
 
-// Cascaded shadow maps
-uniform sampler2D shadowMap0;
-uniform sampler2D shadowMap1;
-uniform sampler2D shadowMap2;
-uniform mat4 lightSpaceMatrices[3];
-uniform vec3 cascadeSplits;
-uniform bool enableShadow;
-uniform bool receiveShadow;
+// Cascaded shadow maps (one array layer per cascade)
+uniform sampler2DArray shadowMapArray;
+uniform mat4  lightSpaceMatrices[4];
+uniform vec4  cascadeSplits;     // view-space far distance of each cascade
+uniform int   cascadeCount;
+uniform float shadowResolution;
+uniform bool  shadowDebug;
+uniform bool  enableShadow;
+uniform bool  receiveShadow;
+
+int gShadowCascade = 0;          // cascade used for the current fragment (debug)
 
 uniform float alphaCutoff = 0.2;
 
@@ -99,20 +102,31 @@ struct SpotLight
 uniform int spotLightNum;
 uniform SpotLight spotLights[32];
 
-float sampleShadowPCF(int layer, vec2 uv, float currentDepth, float bias)
+float csmSplit(int i)
 {
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap0, 0));
+    if (i == 0) return cascadeSplits.x;
+    if (i == 1) return cascadeSplits.y;
+    if (i == 2) return cascadeSplits.z;
+    return cascadeSplits.w;
+}
+
+float sampleCascade(int layer, vec3 worldPos, float bias)
+{
+    vec4 lsPos = lightSpaceMatrices[layer] * vec4(worldPos, 1.0);
+    vec3 p = lsPos.xyz / lsPos.w;
+    p = p * 0.5 + 0.5;
+
+    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0)
+        return 0.0;
+
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
     float shadow = 0.0;
     for (int x = -1; x <= 1; x++)
     {
         for (int y = -1; y <= 1; y++)
         {
-            vec2 off = vec2(x, y) * texelSize;
-            float d;
-            if      (layer == 0) d = texture(shadowMap0, uv + off).r;
-            else if (layer == 1) d = texture(shadowMap1, uv + off).r;
-            else                 d = texture(shadowMap2, uv + off).r;
-            shadow += currentDepth - bias > d ? 1.0 : 0.0;
+            float d = texture(shadowMapArray, vec3(p.xy + vec2(x, y) * texelSize, float(layer))).r;
+            shadow += (p.z - bias > d) ? 1.0 : 0.0;
         }
     }
     return shadow / 9.0;
@@ -124,20 +138,28 @@ float ShadowCalculation(vec3 worldPos, vec3 normal)
 
     float fragDepth = abs((viewMatrix * vec4(worldPos, 1.0)).z);
 
-    int cascadeIndex = 2;
-    if      (fragDepth < cascadeSplits.x) cascadeIndex = 0;
-    else if (fragDepth < cascadeSplits.y) cascadeIndex = 1;
+    // Pick the first cascade whose far split still contains the fragment.
+    int layer = cascadeCount - 1;
+    for (int i = 0; i < cascadeCount; i++)
+    {
+        if (fragDepth < csmSplit(i)) { layer = i; break; }
+    }
+    gShadowCascade = layer;
 
-    vec4 lsPos = lightSpaceMatrices[cascadeIndex] * vec4(worldPos, 1.0);
-    vec3 projCoords = lsPos.xyz / lsPos.w;
-    projCoords = projCoords * 0.5 + 0.5;
+    float bias = max(0.0025 * (1.0 - dot(normalize(normal), vec3(0.0, 1.0, 0.0))), 0.0004);
 
-    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 ||
-        projCoords.y < 0.0 || projCoords.y > 1.0)
-        return 0.0;
+    float shadow = sampleCascade(layer, worldPos, bias);
 
-    float bias = max(0.005 * (1.0 - dot(normalize(normal), normalize(vec3(0.0, 1.0, 0.0)))), 0.0005);
-    return sampleShadowPCF(cascadeIndex, projCoords.xy, projCoords.z, bias);
+    // Smoothly blend into the next cascade across the split boundary.
+    float splitFar = csmSplit(layer);
+    float band     = splitFar * 0.1;
+    if (layer + 1 < cascadeCount && fragDepth > splitFar - band)
+    {
+        float next = sampleCascade(layer + 1, worldPos, bias);
+        float t    = clamp((fragDepth - (splitFar - band)) / band, 0.0, 1.0);
+        shadow     = mix(shadow, next, t);
+    }
+    return shadow;
 }
 
 vec3 CalcSunLight(SunLight light, vec3 normal, vec3 fragPos, vec3 viewDir, vec3 specularTexture, float shadow)
@@ -267,7 +289,17 @@ void main()
 	// Show Combined
     //fragColor = vec4(result, 1.0) * diffuseTexture;
 	fragColor = vec4(clamp(result, 0.0, 1.0), 1.0) * diffuseTexture + emissiveTexture;
-	
+
+	// Cascade debug view: tint each cascade a distinct colour.
+	if (enableShadow && shadowDebug && receiveShadow)
+	{
+		vec3 tint = vec3(1.0, 0.4, 0.4);
+		if      (gShadowCascade == 1) tint = vec3(0.4, 1.0, 0.4);
+		else if (gShadowCascade == 2) tint = vec3(0.4, 0.4, 1.0);
+		else if (gShadowCascade >= 3) tint = vec3(1.0, 1.0, 0.4);
+		fragColor.rgb *= tint;
+	}
+
 	// Flat
 	//fragColor = diffuseTexture;
 	

@@ -14,6 +14,7 @@
 #include "kassetmanager.h"
 #include "kscene.h"
 #include "kcamera.h"
+#include "kscriptmanager.h"
 
 // Export macro
 #ifdef _WIN32
@@ -31,6 +32,7 @@
 namespace kemena
 {
     class kScene;
+    class kPhysicsManager;
 
     /**
      * @brief Root container for the entire simulation environment.
@@ -146,6 +148,67 @@ namespace kemena
          */
         std::vector<kCamera *> getCameras();
 
+        // --- Scripting -------------------------------------------------------
+
+        /**
+         * @brief Returns the world's AngelScript manager.
+         *
+         * Created automatically with the world; used to register script assets,
+         * compile bytecode, and dispatch lifecycle events.
+         */
+        kScriptManager *getScriptManager();
+
+        /**
+         * @brief Starts script execution across every active scene.
+         *
+         * Builds a private module instance for each active script component
+         * (preferring compiled bytecode), then dispatches Awake() to all
+         * instances followed by Start(). Call once when gameplay begins.
+         */
+        void startScripts();
+
+        /**
+         * @brief Stops script execution: dispatches OnDestroy() and releases
+         *        every script instance. Call when gameplay ends.
+         */
+        void stopScripts();
+
+        /**
+         * @brief Dispatches Update() then LateUpdate() to all running scripts.
+         * @param deltaTime Seconds since the last frame.
+         */
+        void updateScripts(float deltaTime);
+
+        /**
+         * @brief Dispatches FixedUpdate() to all running scripts.
+         * @param fixedDeltaTime Seconds of the fixed (physics) step.
+         */
+        void fixedUpdateScripts(float fixedDeltaTime);
+
+        /** @brief Returns true between startScripts() and stopScripts(). */
+        bool getScriptsRunning() const { return scriptsRunning; }
+
+        // --- Physics lifecycle (standalone runtime) -------------------------
+
+        /**
+         * @brief Spawns physics bodies and character controllers from every
+         *        object's editor-authored descriptor, seeded at its current
+         *        world transform. Call once when gameplay begins.
+         *
+         * The editor drives physics itself; this is for a built game running
+         * the world directly.
+         */
+        void startPhysics();
+
+        /** @brief Steps the simulation and syncs transforms back into nodes. */
+        void updatePhysics(float deltaTime);
+
+        /** @brief Destroys all bodies/characters and shuts the simulation down. */
+        void stopPhysics();
+
+        /** @brief Returns true between startPhysics() and stopPhysics(). */
+        bool getPhysicsRunning() const { return physicsRunning; }
+
         /**
          * @brief Serialises the world to JSON.
          * @param startScene Index of the first scene to include (default 0).
@@ -159,14 +222,44 @@ namespace kemena
          */
         virtual void deserialize(json data);
 
+        /**
+         * @brief Loads a world from a serialized @c scene.world file, standalone.
+         *
+         * Reconstructs every scene and object (meshes, lights, cameras, empties)
+         * with their transforms and components (physics, character, navigation,
+         * scripts), resolving mesh references and script bytecode relative to the
+         * file's folder. Designed for a built game running without the editor.
+         *
+         * Requires setAssetManager() to have been called first. Picks the first
+         * camera found as the main camera.
+         *
+         * @param path Path to @c scene.world; asset data is resolved relative to
+         *             its parent folder (Library/ImportedAssets, Library/Scripts).
+         * @return true on success.
+         */
+        bool loadFromFile(const kString &path);
+
     protected:
     private:
+        /// Collects every object across all active scenes into a flat list.
+        std::vector<kObject *> collectAllObjects();
+        /// Ensures the component's script asset is registered; returns its UUID.
+        kString resolveScriptAsset(kScript &component);
+
         kAssetManager *assetManager = nullptr; ///< Asset loader reference.
 
         std::vector<kScene *>  scenes;  ///< Registered scenes.
         std::vector<kCamera *> cameras; ///< Registered cameras.
 
         kCamera *mainCamera = nullptr; ///< Active render camera.
+
+        kScriptManager *scriptManager  = nullptr; ///< AngelScript manager (world-owned).
+        bool            scriptsRunning = false;   ///< True while scripts are executing.
+
+        kPhysicsManager       *physicsManager  = nullptr; ///< Physics world (runtime-owned).
+        bool                   physicsRunning  = false;   ///< True while physics is stepping.
+        std::vector<kObject *> physicsBodies;             ///< Nodes with a live rigid body.
+        std::vector<kObject *> characterBodies;           ///< Nodes with a live character.
 
         kString uuid; ///< World UUID.
     };

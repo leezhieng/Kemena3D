@@ -491,6 +491,18 @@ namespace kemena
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
+    void kOpenGLDriver::bindTexture2DArray(int unit, uint32_t id)
+    {
+        glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+        glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(id));
+    }
+
+    void kOpenGLDriver::unbindTexture2DArray(int unit)
+    {
+        glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    }
+
     void kOpenGLDriver::unbindTextureCube(int unit)
     {
         glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
@@ -657,6 +669,25 @@ namespace kemena
         return static_cast<uint32_t>(id);
     }
 
+    uint32_t kOpenGLDriver::createFBODepthTextureArray(int width, int height, int layers)
+    {
+        GLuint id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, id);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT32F,
+                     width, height, layers, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        float borderColor[] = {1.0f, 1.0f, 1.0f, 1.0f};
+        glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, borderColor);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        return static_cast<uint32_t>(id);
+    }
+
     void kOpenGLDriver::deleteFBOTexture(uint32_t id)
     {
         GLuint glId = static_cast<GLuint>(id);
@@ -683,6 +714,15 @@ namespace kemena
         glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fboId));
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                                GL_TEXTURE_2D, static_cast<GLuint>(texId), 0);
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+    }
+
+    void kOpenGLDriver::attachFBODepthTextureLayer(uint32_t fboId, uint32_t texId, int layer)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fboId));
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  static_cast<GLuint>(texId), 0, layer);
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
     }

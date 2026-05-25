@@ -2,8 +2,60 @@
 
 namespace kemena
 {
-    // Implement a simple message callback function
-    static void messageCallback(const asSMessageInfo *msg, void *param)
+    // -----------------------------------------------------------------------
+    // Lifecycle event declarations
+    // -----------------------------------------------------------------------
+
+    const char *kScriptEventDecl(kScriptEvent evt)
+    {
+        switch (evt)
+        {
+            case K_SCRIPT_AWAKE:        return "void Awake()";
+            case K_SCRIPT_START:        return "void Start()";
+            case K_SCRIPT_UPDATE:       return "void Update()";
+            case K_SCRIPT_FIXED_UPDATE: return "void FixedUpdate()";
+            case K_SCRIPT_LATE_UPDATE:  return "void LateUpdate()";
+            case K_SCRIPT_ON_ENABLE:    return "void OnEnable()";
+            case K_SCRIPT_ON_DISABLE:   return "void OnDisable()";
+            case K_SCRIPT_ON_DESTROY:   return "void OnDestroy()";
+            default:                    return "";
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // kFileByteStream
+    // -----------------------------------------------------------------------
+
+    kFileByteStream::kFileByteStream(const kString &path, bool writing)
+    {
+        file = std::fopen(path.c_str(), writing ? "wb" : "rb");
+    }
+
+    kFileByteStream::~kFileByteStream()
+    {
+        if (file)
+            std::fclose(file);
+    }
+
+    int kFileByteStream::Read(void *ptr, asUINT size)
+    {
+        if (!file || size == 0)
+            return size == 0 ? 0 : -1;
+        return std::fread(ptr, 1, size, file) == size ? 0 : -1;
+    }
+
+    int kFileByteStream::Write(const void *ptr, asUINT size)
+    {
+        if (!file || size == 0)
+            return size == 0 ? 0 : -1;
+        return std::fwrite(ptr, 1, size, file) == size ? 0 : -1;
+    }
+
+    // -----------------------------------------------------------------------
+    // Engine message callback
+    // -----------------------------------------------------------------------
+
+    static void messageCallback(const asSMessageInfo *msg, void * /*param*/)
     {
         const char *type = "ERR ";
         if (msg->type == asMSGTYPE_WARNING)
@@ -13,128 +65,318 @@ namespace kemena
         printf("%s (%d, %d) : %s : %s\n", msg->section, msg->row, msg->col, type, msg->message);
     }
 
+    // -----------------------------------------------------------------------
+    // kScriptManager — construction
+    // -----------------------------------------------------------------------
+
     kScriptManager::kScriptManager()
     {
         engine = asCreateScriptEngine();
 
         int result = engine->SetMessageCallback(asFUNCTION(messageCallback), 0, asCALL_CDECL);
         assert(result >= 0);
+        (void)result;
 
         RegisterStdString(engine);
+
+        context = engine->CreateContext();
     }
 
     kScriptManager::~kScriptManager()
     {
+        destroy();
     }
 
-    kScript kScriptManager::loadScript(kString fileName)
+    // -----------------------------------------------------------------------
+    // Script-asset registry
+    // -----------------------------------------------------------------------
+
+    void kScriptManager::registerScriptAsset(const kString &uuid, const kString &sourcePath,
+                                             kScriptSourceType type, const kString &bytecodePath)
     {
-        // Auto generate module name by removing ".as"
-        kString moduleName = fileName;
-        if (fileName.substr(moduleName.size() - 3, moduleName.size()) == ".as")
-            moduleName = moduleName.substr(0, moduleName.size() - 3);
+        kScriptAsset &asset = assets[uuid];
+        asset.uuid         = uuid;
+        asset.sourcePath   = sourcePath;
+        asset.bytecodePath = bytecodePath;
+        asset.sourceType   = type;
+    }
 
-        kScript newScript;
-        newScript.fileName = fileName;
-        newScript.moduleName = moduleName;
+    kScriptAsset *kScriptManager::getScriptAsset(const kString &uuid)
+    {
+        auto it = assets.find(uuid);
+        return it == assets.end() ? nullptr : &it->second;
+    }
 
-        newScript.uuid = generateUuid();
-        // WIP: set checksum
+    void kScriptManager::unregisterScriptAsset(const kString &uuid)
+    {
+        assets.erase(uuid);
+    }
+
+    void kScriptManager::setBytecodePath(const kString &uuid, const kString &bytecodePath)
+    {
+        auto it = assets.find(uuid);
+        if (it != assets.end())
+            it->second.bytecodePath = bytecodePath;
+    }
+
+    // -----------------------------------------------------------------------
+    // Compilation
+    // -----------------------------------------------------------------------
+
+    bool kScriptManager::compileFileToBytecode(const kString &sourcePath, const kString &outPath,
+                                               bool stripDebug)
+    {
+        const kString tmpName = "kcompile_" + std::to_string(moduleCounter++);
 
         CScriptBuilder builder;
-        int result = builder.StartNewModule(engine, moduleName.c_str());
-        if (result < 0)
+        if (builder.StartNewModule(engine, tmpName.c_str()) < 0)
         {
-            // If the code fails here it is usually because there
-            // is no more memory to allocate the module
-            printf("Unrecoverable error while starting a new module.\n");
-            return newScript;
+            printf("Script: out of memory while starting module for '%s'.\n", sourcePath.c_str());
+            return false;
         }
-        result = builder.AddSectionFromFile(fileName.c_str());
-        if (result < 0)
+        if (builder.AddSectionFromFile(sourcePath.c_str()) < 0)
         {
-            // The builder wasn't able to load the file. Maybe the file
-            // has been removed, or the wrong name was given, or some
-            // preprocessing commands are incorrectly written.
-            printf("Please correct the errors in the script and try again.\n");
-            return newScript;
+            printf("Script: failed to read source file '%s'.\n", sourcePath.c_str());
+            engine->DiscardModule(tmpName.c_str());
+            return false;
         }
-        result = builder.BuildModule();
-        if (result < 0)
+        if (builder.BuildModule() < 0)
         {
-            // An error occurred. Instruct the script writer to fix the
-            // compilation errors that were listed in the output stream.
-            printf("Please correct the errors in the script and try again.\n");
-            return newScript;
+            printf("Script: compilation failed for '%s'.\n", sourcePath.c_str());
+            engine->DiscardModule(tmpName.c_str());
+            return false;
         }
 
-        newScript.engine = engine;
-        newScript.module = engine->GetModule(moduleName.c_str());
-        newScript.context = engine->CreateContext();
-        newScript.loaded = true;
+        asIScriptModule *module = engine->GetModule(tmpName.c_str());
+        if (!module)
+        {
+            engine->DiscardModule(tmpName.c_str());
+            return false;
+        }
 
-        // Auto look for variables and functions
-        int varCount = (int)newScript.module->GetGlobalVarCount();
-        int funcCount = (int)newScript.module->GetFunctionCount();
-        int impFuncCount = (int)newScript.module->GetImportedFunctionCount();
-        int enumCount = (int)newScript.module->GetEnumCount();
-        int objTypeCount = (int)newScript.module->GetObjectTypeCount();
-        int typeDefCount = (int)newScript.module->GetTypedefCount();
+        kFileByteStream out(outPath, true);
+        if (!out.isOpen())
+        {
+            printf("Script: cannot open bytecode output '%s'.\n", outPath.c_str());
+            engine->DiscardModule(tmpName.c_str());
+            return false;
+        }
 
-        // std::cout << varCount << std::endl;
+        int saved = module->SaveByteCode(&out, stripDebug);
+        engine->DiscardModule(tmpName.c_str());
 
-        scripts.push_back(newScript);
-
-        return newScript;
+        if (saved < 0)
+        {
+            printf("Script: SaveByteCode failed for '%s'.\n", sourcePath.c_str());
+            return false;
+        }
+        return true;
     }
 
-    void kScriptManager::registerGlobalFunction(kString declaration, asSFuncPtr func)
+    bool kScriptManager::compileToBytecode(const kString &scriptUuid, const kString &outPath,
+                                           bool stripDebug)
     {
-        // Register the function that we want the scripts to call
-        int result = engine->RegisterGlobalFunction(declaration.c_str(), func, asCALL_CDECL);
-        assert(result >= 0);
+        kScriptAsset *asset = getScriptAsset(scriptUuid);
+        if (!asset)
+        {
+            printf("Script: cannot compile unregistered asset '%s'.\n", scriptUuid.c_str());
+            return false;
+        }
+
+        if (!compileFileToBytecode(asset->sourcePath, outPath, stripDebug))
+            return false;
+
+        asset->bytecodePath = outPath;
+        asset->checksum     = generateFileChecksum(asset->sourcePath);
+        return true;
     }
 
-    // Run all functions in all scripts
-    // For quick test only, not recommended to use
-    // Recommended to run each script manually
-    void kScriptManager::runAll()
+    // -----------------------------------------------------------------------
+    // Per-object instances
+    // -----------------------------------------------------------------------
+
+    bool kScriptManager::buildInstanceModule(kScriptInstance *inst, const kScriptAsset &asset)
     {
-        if (scripts.size() > 0)
+        const kString name = "kmod_" + inst->componentUuid;
+        engine->DiscardModule(name.c_str()); // harmless if it does not exist
+
+        // Prefer precompiled bytecode.
+        if (!asset.bytecodePath.empty())
         {
-            for (size_t i = 0; i < scripts.size(); ++i)
+            kFileByteStream in(asset.bytecodePath, false);
+            if (in.isOpen())
             {
-                if (scripts.at(i).module->GetFunctionCount() > 0)
+                asIScriptModule *module = engine->GetModule(name.c_str(), asGM_ALWAYS_CREATE);
+                if (module && module->LoadByteCode(&in) >= 0)
                 {
-                    for (int j = 0; j < (int)scripts.at(i).module->GetFunctionCount(); ++j)
-                    {
-                        scripts.at(i).context->Prepare(scripts.at(i).module->GetFunctionByIndex(j));
-
-                        int result = scripts.at(i).context->Execute();
-                        if (result != asEXECUTION_FINISHED)
-                        {
-                            // The execution didn't complete as expected. Determine what happened.
-                            if (result == asEXECUTION_EXCEPTION)
-                            {
-                                // An exception occurred, let the script writer know what happened so it can be corrected.
-                                printf("An exception '%s' occurred. Please correct the code and try again.\n", scripts.at(i).context->GetExceptionString());
-                            }
-                        }
-                    }
+                    inst->module     = module;
+                    inst->moduleName = name;
+                    return true;
                 }
+                printf("Script: bytecode load failed for '%s', falling back to source.\n",
+                       asset.bytecodePath.c_str());
+                engine->DiscardModule(name.c_str());
             }
         }
+
+        // Fall back to compiling the source text directly.
+        if (asset.sourcePath.empty())
+            return false;
+
+        CScriptBuilder builder;
+        if (builder.StartNewModule(engine, name.c_str()) < 0)
+            return false;
+        if (builder.AddSectionFromFile(asset.sourcePath.c_str()) < 0)
+        {
+            engine->DiscardModule(name.c_str());
+            return false;
+        }
+        if (builder.BuildModule() < 0)
+        {
+            engine->DiscardModule(name.c_str());
+            return false;
+        }
+
+        inst->module     = engine->GetModule(name.c_str());
+        inst->moduleName = name;
+        return inst->module != nullptr;
     }
+
+    void kScriptManager::cacheInstanceFunctions(kScriptInstance *inst)
+    {
+        if (!inst->module)
+            return;
+        for (int e = 0; e < K_SCRIPT_EVENT_COUNT; ++e)
+        {
+            inst->fn[e] = inst->module->GetFunctionByDecl(
+                kScriptEventDecl(static_cast<kScriptEvent>(e)));
+        }
+    }
+
+    kScriptInstance *kScriptManager::createInstance(const kString &componentUuid,
+                                                    const kString &scriptUuid)
+    {
+        // Replace any previous instance bound to the same component slot.
+        destroyInstance(componentUuid);
+
+        kScriptAsset *asset = getScriptAsset(scriptUuid);
+        if (!asset)
+        {
+            printf("Script: createInstance — unregistered asset '%s'.\n", scriptUuid.c_str());
+            return nullptr;
+        }
+
+        kScriptInstance *inst = new kScriptInstance();
+        inst->componentUuid = componentUuid;
+        inst->scriptUuid    = scriptUuid;
+
+        if (!buildInstanceModule(inst, *asset))
+        {
+            printf("Script: createInstance — build failed for component '%s'.\n",
+                   componentUuid.c_str());
+            delete inst;
+            return nullptr;
+        }
+
+        cacheInstanceFunctions(inst);
+        inst->valid = true;
+        instances[componentUuid] = inst;
+        return inst;
+    }
+
+    kScriptInstance *kScriptManager::getInstance(const kString &componentUuid)
+    {
+        auto it = instances.find(componentUuid);
+        return it == instances.end() ? nullptr : it->second;
+    }
+
+    void kScriptManager::destroyInstance(const kString &componentUuid)
+    {
+        auto it = instances.find(componentUuid);
+        if (it == instances.end())
+            return;
+
+        kScriptInstance *inst = it->second;
+        if (inst->module)
+            engine->DiscardModule(inst->moduleName.c_str());
+        delete inst;
+        instances.erase(it);
+    }
+
+    void kScriptManager::destroyAllInstances()
+    {
+        for (auto &pair : instances)
+        {
+            kScriptInstance *inst = pair.second;
+            if (inst->module)
+                engine->DiscardModule(inst->moduleName.c_str());
+            delete inst;
+        }
+        instances.clear();
+    }
+
+    // -----------------------------------------------------------------------
+    // Execution
+    // -----------------------------------------------------------------------
+
+    bool kScriptManager::callEvent(kScriptInstance *inst, kScriptEvent evt)
+    {
+        if (!inst || !inst->valid || evt < 0 || evt >= K_SCRIPT_EVENT_COUNT)
+            return false;
+
+        asIScriptFunction *fn = inst->fn[evt];
+        if (!fn || !context)
+            return false; // the script simply does not define this event
+
+        if (context->Prepare(fn) < 0)
+            return false;
+
+        int result = context->Execute();
+        if (result != asEXECUTION_FINISHED)
+        {
+            if (result == asEXECUTION_EXCEPTION)
+            {
+                printf("Script exception in %s (%s): %s\n",
+                       kScriptEventDecl(evt), inst->scriptUuid.c_str(),
+                       context->GetExceptionString());
+            }
+            context->Unprepare();
+            return false;
+        }
+
+        context->Unprepare();
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Host bindings
+    // -----------------------------------------------------------------------
+
+    void kScriptManager::registerGlobalFunction(const kString &declaration, asSFuncPtr func)
+    {
+        int result = engine->RegisterGlobalFunction(declaration.c_str(), func, asCALL_CDECL);
+        assert(result >= 0);
+        (void)result;
+    }
+
+    // -----------------------------------------------------------------------
+    // Shutdown
+    // -----------------------------------------------------------------------
 
     void kScriptManager::destroy()
     {
-        if (scripts.size() > 0)
+        if (!engine)
+            return;
+
+        destroyAllInstances();
+
+        if (context)
         {
-            for (size_t i = 0; i < scripts.size(); ++i)
-            {
-                scripts.at(i).destroy();
-            }
+            context->Release();
+            context = nullptr;
         }
+
         engine->ShutDownAndRelease();
+        engine = nullptr;
     }
 }
