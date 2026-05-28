@@ -4,7 +4,7 @@
  *        AngelScript code generation.
  *
  * A kScriptGraph is the editable form of a node-graph script. The editor saves
- * it as a @c .kgraph JSON file; kScriptGraphCompiler::compile() turns it into
+ * it as a @c .logic JSON file; kScriptGraphCompiler::compile() turns it into
  * AngelScript @c .as text that flows through the normal script pipeline
  * (kScriptManager compiles that text to bytecode).
  *

@@ -76,6 +76,15 @@ namespace kemena
          */
         kString getRefName();
 
+        /**
+         * @brief Marks this mesh as one of the built-in procedural primitives
+         *        ("cube", "sphere", "cylinder", "capsule", "plane"). Set by
+         *        kMeshGenerator so save/load and duplicate can rebuild the
+         *        geometry from the marker instead of needing a file on disk.
+         */
+        void    setPrimitiveType(kString type);
+        kString getPrimitiveType() const;
+
         /** @brief Propagates a local position change to this mesh and its children. */
         void setPosition(kVec3 newPosition);
         /** @brief Propagates a local rotation change to this mesh and its children. */
@@ -437,6 +446,7 @@ namespace kemena
 
         kString fileName;
         kString refName;
+        kString primitiveType; ///< Empty unless created by kMeshGenerator.
 
         std::vector<kVec3>     vertices;
         std::vector<uint32_t> indices;

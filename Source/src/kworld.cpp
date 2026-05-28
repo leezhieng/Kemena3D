@@ -390,6 +390,28 @@ namespace kemena
                 kPhysicsObjectDesc desc = node->getPhysicsDesc();
                 desc.position = node->getGlobalPosition();
                 desc.rotation = node->getGlobalRotation();
+
+                // Mesh / ConvexHull shapes pull their geometry from the
+                // owning kMesh. Not serialised — re-fetched on every Play.
+                if (desc.shape.type == kPhysicsShapeType::Mesh ||
+                    desc.shape.type == kPhysicsShapeType::ConvexHull)
+                {
+                    if (node->getType() == NODE_TYPE_MESH)
+                    {
+                        kMesh *m = static_cast<kMesh *>(node);
+                        desc.shape.meshVertices = m->getVertices();
+                        if (desc.shape.type == kPhysicsShapeType::Mesh)
+                            desc.shape.meshIndices = m->getIndices();
+                    }
+                    else
+                    {
+                        printf("kWorld::startPhysics: %s shape on non-mesh node '%s' — skipped.\n",
+                               desc.shape.type == kPhysicsShapeType::Mesh ? "Mesh" : "ConvexHull",
+                               node->getName().c_str());
+                        continue;
+                    }
+                }
+
                 if (kPhysicsObject *body = physicsManager->createObject(desc))
                 {
                     node->attachPhysics(body);

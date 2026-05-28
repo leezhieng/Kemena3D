@@ -4,8 +4,9 @@ Kemena3D scripts gameplay logic with [AngelScript](https://www.angelcode.com/ang
 A script can be authored two ways — both end up as the same thing:
 
 - **Text** — a hand-written `.as` source file.
-- **Visual** — a node graph (`.kgraph`) edited in the Script Editor, which
-  generates an equivalent `.as` file.
+- **Visual** — a node graph (`.logic`) edited in the Script Editor, which
+  generates an equivalent `.as` file (kept in `Library/GeneratedScripts/` as
+  a temp artifact, not shipped).
 
 Either way, the source is compiled to **AngelScript bytecode** and that bytecode
 is what runs during play and in an exported game. The editable source is kept
@@ -22,7 +23,7 @@ for editing only.
 | Bytecode | Compiled form of a script, stored at `Library/Scripts/<uuid>.kbc`. |
 | Instance | A per-object compiled module — each object has independent script globals. |
 
-The pipeline: `source (.as / .kgraph)` → **compile** → `Library/Scripts/<uuid>.kbc` → **load on Play**.
+The pipeline: `source (.as / .logic)` → **compile** → `Library/Scripts/<uuid>.kbc` → **load on Play**.
 
 Compilation happens when a source file is saved (a file watcher recompiles
 changed scripts) and via **Run → Build Scripts** in the editor. Play always
@@ -125,8 +126,9 @@ node graph instead of writing text.
 - **White wires** are execution flow; **coloured wires** carry data values.
 - Drag from one pin to another to connect them; right-click a pin to clear it.
 - The **Variables** sidebar declares float variables, emitted as script globals.
-- **Save** writes the editable `.kgraph` and regenerates a sibling `.as` file,
-  which then flows through the normal bytecode pipeline.
+- **Save** writes the editable `.logic` to `Assets/` and regenerates the
+  AngelScript source to `Library/GeneratedScripts/<logic-uuid>.as` (a temp
+  artifact, not shipped), which then flows through the normal bytecode pipeline.
 
 An event node (e.g. *On Update*) becomes a lifecycle function; the exec wire
 leaving it sequences the statements.

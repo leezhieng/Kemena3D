@@ -12,6 +12,9 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/PlaneShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #ifdef _MSC_VER
 #  pragma warning(pop)
@@ -76,13 +79,103 @@ namespace kemena
                 // Jolt CylinderShape(halfHeight, radius)
                 shape = new JPH::CylinderShape(sd.height * 0.5f, sd.radius);
                 break;
+
+            case kPhysicsShapeType::ConvexHull:
+            {
+                if (sd.meshVertices.empty())
+                {
+                    std::cout << "[kPhysicsObject] ConvexHull shape has no vertices." << std::endl;
+                    return false;
+                }
+                JPH::Array<JPH::Vec3> pts;
+                pts.reserve(sd.meshVertices.size());
+                for (const auto &v : sd.meshVertices)
+                    pts.emplace_back(v.x, v.y, v.z);
+                JPH::ConvexHullShapeSettings hs(pts);
+                auto res = hs.Create();
+                if (res.HasError())
+                {
+                    std::cout << "[kPhysicsObject] ConvexHull build failed: "
+                              << res.GetError().c_str() << std::endl;
+                    return false;
+                }
+                shape = res.Get();
+                break;
+            }
+
+            case kPhysicsShapeType::Mesh:
+            {
+                if (sd.meshVertices.empty() || sd.meshIndices.empty() ||
+                    (sd.meshIndices.size() % 3) != 0)
+                {
+                    std::cout << "[kPhysicsObject] Mesh shape needs vertices and a "
+                                 "triangle-indexed index buffer." << std::endl;
+                    return false;
+                }
+                JPH::VertexList verts;
+                verts.reserve(sd.meshVertices.size());
+                for (const auto &v : sd.meshVertices)
+                    verts.emplace_back(v.x, v.y, v.z);
+
+                JPH::IndexedTriangleList tris;
+                tris.reserve(sd.meshIndices.size() / 3);
+                for (size_t i = 0; i + 2 < sd.meshIndices.size(); i += 3)
+                    tris.emplace_back(sd.meshIndices[i], sd.meshIndices[i + 1],
+                                      sd.meshIndices[i + 2], 0);
+
+                JPH::MeshShapeSettings ms(verts, tris);
+                auto res = ms.Create();
+                if (res.HasError())
+                {
+                    std::cout << "[kPhysicsObject] Mesh build failed: "
+                              << res.GetError().c_str() << std::endl;
+                    return false;
+                }
+                shape = res.Get();
+                break;
+            }
+
+            case kPhysicsShapeType::Plane:
+            {
+                // Object's local +Y is the plane normal; the body's rotation
+                // orients it in world space (so rotate the kObject to angle
+                // the ground). Half-extent caps the plane's visual / broadphase
+                // bounds — large enough to act as world ground.
+                JPH::PlaneShapeSettings ps(JPH::Plane(JPH::Vec3(0, 1, 0), 0.0f),
+                                           nullptr, 1000.0f);
+                auto res = ps.Create();
+                if (res.HasError())
+                {
+                    std::cout << "[kPhysicsObject] Plane build failed: "
+                              << res.GetError().c_str() << std::endl;
+                    return false;
+                }
+                shape = res.Get();
+                break;
+            }
+        }
+
+        // Jolt's MeshShape and PlaneShape only allow Static / Kinematic motion.
+        // Coerce anything else so we don't trip Jolt's body-creation assert.
+        kPhysicsObjectType bodyType = desc.type;
+        const bool requiresStatic = (sd.type == kPhysicsShapeType::Mesh ||
+                                     sd.type == kPhysicsShapeType::Plane);
+        if (requiresStatic &&
+            bodyType != kPhysicsObjectType::Static &&
+            bodyType != kPhysicsObjectType::Kinematic)
+        {
+            std::cout << "[kPhysicsObject] "
+                      << (sd.type == kPhysicsShapeType::Plane ? "Plane" : "Mesh")
+                      << " shape forced to Static "
+                         "(Jolt does not allow Dynamic for this shape)." << std::endl;
+            bodyType = kPhysicsObjectType::Static;
         }
 
         // --- Motion type and layer ---------------------------------------
         JPH::EMotionType motionType;
         JPH::ObjectLayer layer;
 
-        switch (desc.type)
+        switch (bodyType)
         {
             case kPhysicsObjectType::Dynamic:
                 motionType = JPH::EMotionType::Dynamic;
@@ -118,7 +211,7 @@ namespace kemena
             motionType,
             layer);
 
-        settings.mIsSensor        = (desc.type == kPhysicsObjectType::Trigger);
+        settings.mIsSensor        = (bodyType == kPhysicsObjectType::Trigger);
         settings.mFriction        = desc.friction;
         settings.mRestitution     = desc.restitution;
         settings.mLinearDamping   = desc.linearDamping;
@@ -142,7 +235,7 @@ namespace kemena
         }
 
         m_impl->physicsSystem = ps;
-        m_impl->type          = desc.type;
+        m_impl->type          = bodyType;
         m_impl->shapeType     = desc.shape.type;
         m_impl->initialized   = true;
         return true;

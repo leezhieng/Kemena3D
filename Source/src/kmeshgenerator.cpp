@@ -11,6 +11,7 @@ namespace kemena
     kMesh *kMeshGenerator::generatePlane(float size)
     {
         kMesh *mesh = new kMesh();
+        mesh->setPrimitiveType("plane");
         float h = size * 0.5f;
 
         //  v2 ---- v3
@@ -45,6 +46,7 @@ namespace kemena
     kMesh *kMeshGenerator::generateCube(float size)
     {
         kMesh *mesh = new kMesh();
+        mesh->setPrimitiveType("cube");
         float h = size * 0.5f;
 
         struct Face { kVec3 n, r, u; };
@@ -88,6 +90,7 @@ namespace kemena
     kMesh *kMeshGenerator::generateSphere(float radius, int stacks, int slices)
     {
         kMesh *mesh = new kMesh();
+        mesh->setPrimitiveType("sphere");
 
         for (int s = 0; s <= stacks; s++)
         {
@@ -134,6 +137,7 @@ namespace kemena
     kMesh *kMeshGenerator::generateCylinder(float radius, float height, int slices)
     {
         kMesh *mesh = new kMesh();
+        mesh->setPrimitiveType("cylinder");
         float halfH = height * 0.5f;
 
         // Side: pairs (bottom, top) per slice column
@@ -212,6 +216,7 @@ namespace kemena
                                            int slices, int hemiStacks)
     {
         kMesh *mesh = new kMesh();
+        mesh->setPrimitiveType("capsule");
         float halfH = height * 0.5f;
 
         int totalRings = 2 * hemiStacks + 2; // two equator rings (top + bottom)

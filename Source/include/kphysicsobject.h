@@ -9,19 +9,25 @@
 #include "kexport.h"
 #include "kdatatype.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace kemena
 {
     // -------------------------------------------------------------------------
     // Shape descriptor
     // -------------------------------------------------------------------------
 
-    /** @brief Primitive collision shape type. */
+    /** @brief Collision shape type. */
     enum class kPhysicsShapeType
     {
-        Sphere,   ///< Uniform sphere defined by radius.
-        Box,      ///< Axis-aligned box defined by half-extents.
-        Capsule,  ///< Capsule (cylinder + hemispherical end-caps) defined by radius + total height.
-        Cylinder, ///< Cylinder defined by radius + total height.
+        Sphere,     ///< Uniform sphere defined by radius.
+        Box,        ///< Axis-aligned box defined by half-extents.
+        Capsule,    ///< Capsule (cylinder + hemispherical end-caps) defined by radius + total height.
+        Cylinder,   ///< Cylinder defined by radius + total height.
+        ConvexHull, ///< Convex hull of the object's mesh vertices; any motion type.
+        Mesh,       ///< Triangle mesh from the object's mesh; static-only (Jolt restriction).
+        Plane,      ///< Infinite plane (object's local +Y); static-only (Jolt restriction).
     };
 
     /**
@@ -29,19 +35,27 @@ namespace kemena
      *
      * Only the fields relevant to the chosen @c type need to be set.
      *
-     * | type     | relevant fields                  |
-     * |----------|----------------------------------|
-     * | Sphere   | radius                           |
-     * | Box      | halfExtents                      |
-     * | Capsule  | radius, height (total, tip-to-tip)|
-     * | Cylinder | radius, height (total)           |
+     * | type       | relevant fields                            |
+     * |------------|--------------------------------------------|
+     * | Sphere     | radius                                     |
+     * | Box        | halfExtents                                |
+     * | Capsule    | radius, height (total, tip-to-tip)         |
+     * | Cylinder   | radius, height (total)                     |
+     * | ConvexHull | meshVertices                               |
+     * | Mesh       | meshVertices + meshIndices (triangle list) |
+     *
+     * @c meshVertices / @c meshIndices are populated by the caller right before
+     * kPhysicsManager::createObject() (typically from the owning kMesh) — they
+     * aren't serialised because they're derived from the mesh asset.
      */
     struct kPhysicsShapeDesc
     {
-        kPhysicsShapeType type        = kPhysicsShapeType::Box;
-        kVec3             halfExtents = kVec3(0.5f, 0.5f, 0.5f); ///< Box: per-axis half-extents.
-        float             radius      = 0.5f;                      ///< Sphere / Capsule / Cylinder radius.
-        float             height      = 1.0f;                      ///< Capsule / Cylinder total height.
+        kPhysicsShapeType     type        = kPhysicsShapeType::Box;
+        kVec3                 halfExtents = kVec3(0.5f, 0.5f, 0.5f); ///< Box: per-axis half-extents.
+        float                 radius      = 0.5f;                   ///< Sphere / Capsule / Cylinder radius.
+        float                 height      = 1.0f;                   ///< Capsule / Cylinder total height.
+        std::vector<kVec3>    meshVertices;                         ///< Mesh / ConvexHull source vertices.
+        std::vector<uint32_t> meshIndices;                          ///< Mesh source indices (triplets per triangle).
     };
 
     // -------------------------------------------------------------------------

@@ -104,11 +104,17 @@ endif()
 # Use GLEW for imgui
 target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
 
-# Jolt was built with DEBUG_RENDERER_IN_DEBUG_AND_RELEASE=ON, which makes JPH_DEBUG_RENDERER a
-# PUBLIC define on the Jolt target for Debug and Release configs.  Since we link the prebuilt
-# Jolt.lib directly (no imported target), we must mirror that define here so our object files
-# use the same GetSubmergedVolume signature (7-param) that Jolt.lib exports.
-target_compile_definitions(kemena3d PUBLIC JPH_DEBUG_RENDERER)
+# Jolt was built with default options (DEBUG_RENDERER_IN_DEBUG_AND_RELEASE,
+# PROFILER_IN_DEBUG_AND_RELEASE, ENABLE_OBJECT_STREAM, FLOATING_POINT_EXCEPTIONS_ENABLED),
+# all PUBLIC on the Jolt target. Since we link the prebuilt Jolt.lib directly (no imported
+# target), we must mirror the same defines here. A mismatch makes JPH_VERSION_ID at the
+# kPhysicsManager::init call site disagree with Jolt.lib, and RegisterTypes() std::abort()s.
+target_compile_definitions(kemena3d PUBLIC
+    $<$<CONFIG:Debug,Release>:JPH_DEBUG_RENDERER>
+    $<$<CONFIG:Debug,Release>:JPH_PROFILE_ENABLED>
+    JPH_OBJECT_STREAM
+    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug,Release>>:JPH_FLOATING_POINT_EXCEPTIONS_ENABLED>
+)
 
 # All static dependencies (assimp, Jolt, angelscript, recast) are built with
 # /MD (MultiThreadedDLL).  Force /MD here so CRT records match at link time.

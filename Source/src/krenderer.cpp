@@ -1,5 +1,6 @@
 #include "krenderer.h"
 #include "kopengldriver.h"
+#include "kphysicsobject.h"
 #include <functional>
 
 namespace kemena
@@ -864,6 +865,65 @@ void main()
                     }
 
                     currentLight->draw();
+
+                    driver->unbindTexture2D(0);
+                    shader->unuse();
+                }
+            }
+        }
+        else if (currentNode->getType() == kNodeType::NODE_TYPE_CAMERA)
+        {
+            kCamera *currentCamera = (kCamera *)currentNode;
+
+            // A camera shouldn't render its own gizmo when we're viewing the
+            // scene through it (the icon would smear across the whole view).
+            // Other cameras in the scene still get their icon.
+            if (currentCamera == world->getMainCamera())
+                goto renderChildren;
+
+            if (world->getMainCamera() != nullptr && currentCamera->getMaterial() != nullptr)
+            {
+                kMat4 view = lookAt(world->getMainCamera()->getPosition(),
+                                   world->getMainCamera()->getLookAt(),
+                                   world->getMainCamera()->calculateUp());
+                kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
+                                                   world->getMainCamera()->getAspectRatio(),
+                                                   world->getMainCamera()->getNearClip(),
+                                                   world->getMainCamera()->getFarClip());
+
+                if (currentCamera->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
+                {
+                    driver->setBlend(true);
+                    driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+                }
+                else
+                {
+                    driver->setBlend(false);
+                }
+
+                if (currentCamera->getMaterial()->getShader() != nullptr)
+                {
+                    kShader *shader = currentCamera->getMaterial()->getShader();
+                    shader->use();
+
+                    shader->setValue("viewProjection",           projection * view);
+                    shader->setValue("cameraRightWorldSpace",    kVec3(view[0][0], view[1][0], view[2][0]));
+                    shader->setValue("cameraUpWorldSpace",       kVec3(view[0][1], view[1][1], view[2][1]));
+                    shader->setValue("billboardPosition",        currentCamera->getPosition());
+                    shader->setValue("billboardSize",            kVec2(0.8f, 0.8f));
+                    shader->setValue("color",                    kVec3(1.0f, 1.0f, 1.0f));
+
+                    for (size_t l = 0; l < currentCamera->getMaterial()->getTextures().size(); l++)
+                    {
+                        kTexture *tex = currentCamera->getMaterial()->getTexture(l);
+                        if (tex != nullptr && tex->getType() == kTextureType::TEX_TYPE_2D)
+                        {
+                            driver->bindTexture2D((int)l, tex->getTextureID());
+                            driver->setUniformInt(shader->getShaderProgram(), "albedoMap", (int)l);
+                        }
+                    }
+
+                    currentCamera->draw();
 
                     driver->unbindTexture2D(0);
                     shader->unuse();
@@ -1970,6 +2030,145 @@ void main() { outColor = vec4(lineColor, 1.0); }
 
             drawLines(verts, kVec3(0.5f, 0.8f, 1.0f)); // light blue
         }
+
+        // --- Physics shapes (green wireframe for any selected object) -----
+        // Walks the full scene graph so nested objects show their collider too.
+        const kVec3 physColor(0.2f, 1.0f, 0.2f);
+        std::function<void(kObject *)> walkPhys = [&](kObject *node)
+        {
+            if (!node) return;
+            if (node->getActive() && node->getHasPhysicsDesc() &&
+                selectedSet.find(node->getUuid()) != selectedSet.end())
+            {
+                node->calculateModelMatrix();
+                const kPhysicsObjectDesc &pd = node->getPhysicsDesc();
+                kVec3 pos = node->getGlobalPosition();
+                kQuat rot = node->getGlobalRotation();
+                std::vector<float> verts;
+
+                // Local-axis vectors rotated into world space — colliders are
+                // defined in the body's local frame and rotated with it.
+                kVec3 rx = rot * kVec3(1, 0, 0);
+                kVec3 ry = rot * kVec3(0, 1, 0);
+                kVec3 rz = rot * kVec3(0, 0, 1);
+
+                auto boxEdges = [&](kVec3 he)
+                {
+                    kVec3 c[8];
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        float sx = (i & 1) ? he.x : -he.x;
+                        float sy = (i & 2) ? he.y : -he.y;
+                        float sz = (i & 4) ? he.z : -he.z;
+                        c[i] = pos + rx * sx + ry * sy + rz * sz;
+                    }
+                    const int e[12][2] = {
+                        {0,1},{2,3},{4,5},{6,7},
+                        {0,2},{1,3},{4,6},{5,7},
+                        {0,4},{1,5},{2,6},{3,7}
+                    };
+                    for (auto &edge : e) appendLine(verts, c[edge[0]], c[edge[1]]);
+                };
+
+                switch (pd.shape.type)
+                {
+                    case kPhysicsShapeType::Sphere:
+                    {
+                        float r = pd.shape.radius;
+                        // World-axis rings (sphere is rotation-invariant)
+                        appendCircle(verts, pos, kVec3(1,0,0), kVec3(0,1,0), r);
+                        appendCircle(verts, pos, kVec3(1,0,0), kVec3(0,0,1), r);
+                        appendCircle(verts, pos, kVec3(0,1,0), kVec3(0,0,1), r);
+                        break;
+                    }
+                    case kPhysicsShapeType::Box:
+                        boxEdges(pd.shape.halfExtents);
+                        break;
+                    case kPhysicsShapeType::Capsule:
+                    case kPhysicsShapeType::Cylinder:
+                    {
+                        float radius = pd.shape.radius;
+                        float total  = pd.shape.height;
+                        bool  caps   = (pd.shape.type == kPhysicsShapeType::Capsule);
+                        // Jolt capsule height is total tip-to-tip; the
+                        // cylindrical core is (height - 2*radius).
+                        float cylHalf = caps ? std::max(0.0f, total * 0.5f - radius)
+                                             : total * 0.5f;
+
+                        kVec3 topC = pos + ry * cylHalf;
+                        kVec3 botC = pos - ry * cylHalf;
+
+                        appendCircle(verts, topC, rx, rz, radius);
+                        appendCircle(verts, botC, rx, rz, radius);
+                        appendLine(verts, topC + rx * radius, botC + rx * radius);
+                        appendLine(verts, topC - rx * radius, botC - rx * radius);
+                        appendLine(verts, topC + rz * radius, botC + rz * radius);
+                        appendLine(verts, topC - rz * radius, botC - rz * radius);
+
+                        if (caps)
+                        {
+                            // Side-view great circles approximate the rounded caps.
+                            appendCircle(verts, topC, rx, ry, radius);
+                            appendCircle(verts, topC, rz, ry, radius);
+                            appendCircle(verts, botC, rx, ry, radius);
+                            appendCircle(verts, botC, rz, ry, radius);
+                        }
+                        break;
+                    }
+                    case kPhysicsShapeType::Plane:
+                    {
+                        // Square outline in the local XZ plane (+Y normal) plus
+                        // a short stub showing the normal direction.
+                        float size = 5.0f;
+                        kVec3 c0 = pos + rx * size + rz * size;
+                        kVec3 c1 = pos - rx * size + rz * size;
+                        kVec3 c2 = pos - rx * size - rz * size;
+                        kVec3 c3 = pos + rx * size - rz * size;
+                        appendLine(verts, c0, c1);
+                        appendLine(verts, c1, c2);
+                        appendLine(verts, c2, c3);
+                        appendLine(verts, c3, c0);
+                        appendLine(verts, pos, pos + ry * 0.75f);
+                        break;
+                    }
+                    case kPhysicsShapeType::ConvexHull:
+                    case kPhysicsShapeType::Mesh:
+                    {
+                        // Drawing the actual hull / triangle mesh as lines is
+                        // a separate render pass — for now, show the world AABB
+                        // of the owning mesh so the user has a visual hint.
+                        if (node->getType() == kNodeType::NODE_TYPE_MESH)
+                        {
+                            kAABB box = ((kMesh *)node)->getWorldAABB();
+                            kVec3 c[8] = {
+                                {box.min.x, box.min.y, box.min.z},
+                                {box.max.x, box.min.y, box.min.z},
+                                {box.min.x, box.max.y, box.min.z},
+                                {box.max.x, box.max.y, box.min.z},
+                                {box.min.x, box.min.y, box.max.z},
+                                {box.max.x, box.min.y, box.max.z},
+                                {box.min.x, box.max.y, box.max.z},
+                                {box.max.x, box.max.y, box.max.z}
+                            };
+                            const int e[12][2] = {
+                                {0,1},{2,3},{4,5},{6,7},
+                                {0,2},{1,3},{4,6},{5,7},
+                                {0,4},{1,5},{2,6},{3,7}
+                            };
+                            for (auto &edge : e) appendLine(verts, c[edge[0]], c[edge[1]]);
+                        }
+                        break;
+                    }
+                }
+
+                drawLines(verts, physColor);
+            }
+
+            for (kObject *child : node->getChildren())
+                walkPhys(child);
+        };
+        if (scene->getRootNode())
+            walkPhys(scene->getRootNode());
 
         // Restore state
         driver->setDepthWrite(true);

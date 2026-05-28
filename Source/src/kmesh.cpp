@@ -58,6 +58,16 @@ namespace kemena
         return refName;
     }
 
+    void kMesh::setPrimitiveType(kString type)
+    {
+        primitiveType = type;
+    }
+
+    kString kMesh::getPrimitiveType() const
+    {
+        return primitiveType;
+    }
+
     void kMesh::setPosition(kVec3 newPosition)
     {
         kObject::setPosition(newPosition);
@@ -493,6 +503,8 @@ namespace kemena
         data["reference"]      = getRefName();
         data["cast_shadow"]    = getCastShadow();
         data["receive_shadow"] = getReceiveShadow();
+        if (!primitiveType.empty())
+            data["primitive"]  = primitiveType;
         return data;
     }
 
