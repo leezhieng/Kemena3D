@@ -52,6 +52,10 @@ STB_GIT = "https://github.com/nothings/stb.git"
 STB_REV = "f58f558c120e9b32c217290b80bad1a0729fbb2c"
 NLOHMANN_GIT = "https://github.com/nlohmann/json.git"
 NLOHMANN_TAG = "v3.12.0"
+# tinygltf v3 — header-only glTF / GLB loader. Drives the slim runtime build
+# that ships without Assimp (see KEMENA_USE_ASSIMP in the SDK CMakeLists).
+TINYGLTF_GIT = "https://github.com/syoyo/tinygltf.git"
+TINYGLTF_TAG = "v3.0.0"
 PFD_GIT = "https://github.com/samhocevar/portable-file-dialogs.git"
 PFD_TAG = "main"
 IMGUIZMO_GIT = "https://github.com/CedricGuillemet/ImGuizmo.git"
@@ -232,6 +236,102 @@ target_include_directories(imguizmo PUBLIC ${{CMAKE_CURRENT_SOURCE_DIR}} {imgui_
 """
     (imguizmo_dir / "CMakeLists.txt").write_text(cmake_txt, encoding="utf-8")
     print(f"[OK] Generated ImGuizmo CMakeLists.txt at '{imguizmo_dir / 'CMakeLists.txt'}'")
+
+# ------------------------------------------------------------------------
+# ImGuizmo post-clone source patch
+# ------------------------------------------------------------------------
+# Applied right after ImGuizmo is fetched and before it is compiled, so the
+# built library already renders scale handles as squares instead of circles.
+# Idempotent — a sentinel marker line short-circuits re-runs.
+
+# Sentinel comment written into the patched file so re-runs detect prior work
+# without re-scanning every OLD/NEW snippet.
+IMGUIZMO_PATCH_MARKER = "// KEMENA3D_PATCH: scale handles rendered as rectangles"
+
+# Each tuple is (old_snippet, new_snippet). The script does a literal find,
+# so the OLD text must match upstream byte-for-byte (whitespace included).
+IMGUIZMO_PATCHES = [
+    (
+"""               if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID))
+               {
+                  ImU32 scaleLineColor = GetColorU32(SCALE_LINE);
+                  drawList->AddLine(baseSSpace, worldDirSSpaceNoScale, scaleLineColor, gContext.mStyle.ScaleLineThickness);
+                  drawList->AddCircleFilled(worldDirSSpaceNoScale, gContext.mStyle.ScaleLineCircleSize, scaleLineColor);
+               }
+
+               if (!hasTranslateOnAxis || gContext.mbUsing)
+               {
+                  drawList->AddLine(baseSSpace, worldDirSSpace, colors[i + 1], gContext.mStyle.ScaleLineThickness);
+               }
+               drawList->AddCircleFilled(worldDirSSpace, gContext.mStyle.ScaleLineCircleSize, colors[i + 1]);""",
+"""               if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID))
+               {
+                  ImU32 scaleLineColor = GetColorU32(SCALE_LINE);
+                  drawList->AddLine(baseSSpace, worldDirSSpaceNoScale, scaleLineColor, gContext.mStyle.ScaleLineThickness);
+                  float hs = gContext.mStyle.ScaleLineCircleSize;
+                  drawList->AddRectFilled(ImVec2(worldDirSSpaceNoScale.x - hs, worldDirSSpaceNoScale.y - hs),
+                                          ImVec2(worldDirSSpaceNoScale.x + hs, worldDirSSpaceNoScale.y + hs),
+                                          scaleLineColor);
+               }
+
+               if (!hasTranslateOnAxis || gContext.mbUsing)
+               {
+                  drawList->AddLine(baseSSpace, worldDirSSpace, colors[i + 1], gContext.mStyle.ScaleLineThickness);
+               }
+               {
+                  float hs = gContext.mStyle.ScaleLineCircleSize;
+                  drawList->AddRectFilled(ImVec2(worldDirSSpace.x - hs, worldDirSSpace.y - hs),
+                                          ImVec2(worldDirSSpace.x + hs, worldDirSSpace.y + hs),
+                                          colors[i + 1]);
+               }""",
+    ),
+    (
+"""               drawList->AddCircleFilled(worldDirSSpace, 12.f, colors[i + 1]);
+            }
+         }
+      }
+
+      // draw screen cirle
+      drawList->AddCircle(gContext.mScreenSquareCenter, 20.f, colors[0], 32, gContext.mStyle.CenterCircleSize);""",
+"""               {
+                  const float hs = 12.f;
+                  drawList->AddRectFilled(ImVec2(worldDirSSpace.x - hs, worldDirSSpace.y - hs),
+                                          ImVec2(worldDirSSpace.x + hs, worldDirSSpace.y + hs),
+                                          colors[i + 1]);
+               }
+            }
+         }
+      }
+
+      // draw screen cirle
+      drawList->AddCircle(gContext.mScreenSquareCenter, 20.f, colors[0], 32, gContext.mStyle.CenterCircleSize);""",
+    ),
+]
+
+def patch_imguizmo(imguizmo_dir: Path):
+    """Patch ImGuizmo.cpp to draw scale handles as squares. Idempotent."""
+    cpp = imguizmo_dir / "ImGuizmo.cpp"
+    if not cpp.exists():
+        die(f"ImGuizmo: source not found at '{cpp}' — cannot apply patch.")
+
+    text = cpp.read_text(encoding="utf-8")
+    if IMGUIZMO_PATCH_MARKER in text:
+        print(f"[PATCH] ImGuizmo: already patched — skipping ({cpp.name})")
+        return
+
+    new_text = text
+    for idx, (old, new) in enumerate(IMGUIZMO_PATCHES, start=1):
+        if old not in new_text:
+            die(
+                f"ImGuizmo: patch #{idx} snippet not found in source. "
+                "Upstream may have changed — update IMGUIZMO_PATCHES in download_dep.py."
+            )
+        new_text = new_text.replace(old, new, 1)
+
+    # Inject a marker line near the top of the file so future runs short-circuit.
+    new_text = f"{IMGUIZMO_PATCH_MARKER}\n" + new_text
+    cpp.write_text(new_text, encoding="utf-8")
+    print(f"[PATCH] ImGuizmo: scale handles patched to rectangles in {cpp.name}")
 
 def choose(prompt: str, options: dict[str, str], env: str | None = None) -> str:
     # Non-interactive override for CI: if the env var holds a valid key, use it.
@@ -499,7 +599,16 @@ def main():
     # nlohmann/json (header-only library with CMake package)
     # --------------------------------------------------------------------
     clone_git("nlohmann JSON", "v3.12.0", NLOHMANN_GIT, ROOT / "nlohmann", revision=NLOHMANN_TAG)
-    
+
+    # --------------------------------------------------------------------
+    # tinygltf (header-only) — slim-runtime mesh importer.
+    # Only `tiny_gltf.h` is consumed by the SDK; the repo also carries
+    # examples / build files we don't touch. Reuses nlohmann + stb that we
+    # already vendor, so no extra deps are pulled in.
+    # --------------------------------------------------------------------
+    clone_git("tinygltf", TINYGLTF_TAG, TINYGLTF_GIT, ROOT / "tinygltf",
+              revision=TINYGLTF_TAG)
+
     # --------------------------------------------------------------------
     # Portable File Dialogs (header-only)
     # --------------------------------------------------------------------
@@ -509,6 +618,9 @@ def main():
     # ImGuizmo (header-only)
     # --------------------------------------------------------------------
     clone_git("imGuizmo", "master", IMGUIZMO_GIT, ROOT / "imguizmo", revision=IMGUIZMO_TAG)
+    # Apply Kemena3D's source patch (square scale handles) right after fetching
+    # and before compiling, so the built library already reflects the change.
+    patch_imguizmo(ROOT / "imguizmo")
     write_imguizmo_cmakelists(ROOT / "imguizmo", ROOT / "imgui", linking)
     _md_gizmo = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
     if compiler == "1":

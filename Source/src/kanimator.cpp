@@ -2,7 +2,7 @@
 
 namespace kemena
 {
-    kAnimator::kAnimator(kAnimation *newAnimation)
+    kAnimator::kAnimator(kSkeletalAnimation *newAnimation)
     {
         currentTime = 0.0f;
 
@@ -13,36 +13,35 @@ namespace kemena
         }
 
         finalBoneMatrices.reserve(MAX_BONES);
-
         for (int i = 0; i < MAX_BONES; i++)
             finalBoneMatrices.push_back(kMat4(1.0f));
     }
 
-    void kAnimator::addAnimation(kAnimation *newAnimation)
+    void kAnimator::addAnimation(kSkeletalAnimation *newAnimation)
     {
         animations.push_back(newAnimation);
     }
 
     void kAnimator::updateAnimation(float newDeltaTime, int frameId)
     {
-        // std::cout << "updateAnimation: " << newDeltaTime << std::endl;
-
-        // std::cout << "Current Time: " << currentTime << ", Duration: " << currentAnimation->getDuration() << std::endl;
-
         deltaTime = newDeltaTime;
         if (currentAnimation != nullptr && currentFrameId != frameId)
         {
             currentTime += currentAnimation->getTicksPerSecond() * newDeltaTime;
             currentTime = fmod(currentTime, currentAnimation->getDuration());
 
-            const kAssimpNodeData &rootNode = currentAnimation->getRootNode();
+            const kNodeData &rootNode = currentAnimation->getRootNode();
             calculateBoneTransform(&rootNode, kMat4(1.0f));
         }
-        // Make sure it's only updated once per frame
+        // Only update once per frame.
         currentFrameId = frameId;
+
+        // Future: sample objectAnimation tracks here and write per-target
+        // transforms back to kObject — left as a hook for the cinematic
+        // editor pass.
     }
 
-    void kAnimator::playAnimation(kAnimation *animation)
+    void kAnimator::playAnimation(kSkeletalAnimation *animation)
     {
         if (animation != nullptr)
         {
@@ -51,108 +50,50 @@ namespace kemena
         }
     }
 
-    kAnimation *kAnimator::getCurrentAnimation()
+    kSkeletalAnimation *kAnimator::getCurrentAnimation()
     {
         return currentAnimation;
     }
 
-    void kAnimator::calculateBoneTransform(const kAssimpNodeData *node, kMat4 parentTransform)
+    void kAnimator::calculateBoneTransform(const kNodeData *node, kMat4 parentTransform)
     {
-        if (node != nullptr)
+        if (node == nullptr) return;
+
+        kString nodeName      = node->name;
+        kMat4   nodeTransform = node->transformation;
+
+        kBone *bone = currentAnimation->findBone(nodeName);
+        if (bone != nullptr)
         {
-            kString nodeName = node->name;
-            kMat4 nodeTransform = node->transformation;
+            bone->update(currentTime);
+            nodeTransform = bone->getLocalTransform();
+        }
 
-            // std::cout << "Found node: " << nodeName << ", transform: " << glm::to_string(nodeTransform) << std::endl;
+        kMat4 globalTransformation = parentTransform * nodeTransform;
 
-            kBone *bone = currentAnimation->findBone(nodeName);
+        const auto &meshes = currentAnimation->getMeshes();
+        for (size_t i = 0; i < meshes.size(); ++i)
+        {
+            if (!meshes[i] || meshes[i]->getType() != kNodeType::NODE_TYPE_MESH)
+                continue;
 
-            if (bone != nullptr)
+            kMesh *childMesh = (kMesh *)meshes[i];
+            std::map<kString, kBoneInfo> &boneInfoMap = childMesh->getBoneInfoMap();
+            auto it = boneInfoMap.find(nodeName);
+            if (it != boneInfoMap.end())
             {
-                // std::cout << "Before update, nodeTransform: " << glm::to_string(nodeTransform) << std::endl;
-
-                // std::cout << "Found bone: " << nodeName << std::endl;
-                // std::cout << "Updating bone: " << nodeName << " at time: " << currentTime << std::endl;
-
-                bone->update(currentTime);
-
-                //////////////////////////////////////
-                // Disable this then become firstframe
-                // nodeTransform = bone->getLocalTransform() * nodeTransform;
-                nodeTransform = bone->getLocalTransform();
-
-                // std::cout << "After update, nodeTransform: " << glm::to_string(nodeTransform) << std::endl;
-            }
-
-            // Fixed using inverse()
-
-            /*kMat4 invNodeTransform = glm::inverse(node->transformation);
-            if (glm::any(glm::isnan(invNodeTransform[0])) || glm::any(glm::isnan(invNodeTransform[1])) ||
-                glm::any(glm::isnan(invNodeTransform[2])) || glm::any(glm::isnan(invNodeTransform[3])))
-            {
-                std::cout << "Invalid inverse detected for node: " << nodeName << std::endl;
-                invNodeTransform = kMat4(1.0f); // Use identity matrix to prevent NaN propagation
-            }
-
-            kMat4 globalTransformation = parentTransform * nodeTransform;  // Fallback
-            if (glm::determinant(node->transformation) > 0.00001f)  // Prevent singular matrix inversion
-            {
-                globalTransformation = parentTransform * invNodeTransform * nodeTransform;
-            }*/
-
-            // kMat4 globalTransformation = parentTransform * glm::inverse(node->transformation) * nodeTransform;
-            kMat4 globalTransformation = parentTransform * nodeTransform;
-
-            if (currentAnimation->getMeshes().size() > 0)
-            {
-                for (size_t i = 0; i < currentAnimation->getMeshes().size(); ++i)
-                {
-                    if (currentAnimation->getMeshes().at(i)->getType() == kNodeType::NODE_TYPE_MESH)
-                    {
-                        kMesh *childMesh = (kMesh *)currentAnimation->getMeshes().at(i);
-
-                        std::map<kString, kBoneInfo> &boneInfoMap = childMesh->getBoneInfoMap();
-
-                        // std::cout << boneInfoMap.size() << std::endl;
-
-                        if (boneInfoMap.find(nodeName) != boneInfoMap.end())
-                        {
-                            int index = boneInfoMap[nodeName].id;
-                            kMat4 offset = boneInfoMap[nodeName].offset;
-
-                            finalBoneMatrices[index] = globalTransformation * offset;
-
-                            // std::cout << "Bone: " << nodeName << ", Offset: " << glm::to_string(offset) << std::endl;
-
-                            // std::cout << "offset: " << glm::to_string(offset) << std::endl;
-                            // std::cout << "parentTransform: " << glm::to_string(parentTransform) << ", nodeTransform: " << glm::to_string(nodeTransform) << std::endl;
-                            // std::cout << "name: " << nodeName << ", index: " << index << ", global trans: " << glm::to_string(globalTransformation) << ", offset: " << glm::to_string(offset) << ", matrix: " << glm::to_string(finalBoneMatrices[index]) << std::endl;
-                        }
-                    }
-                }
-            }
-
-            for (int i = 0; i < node->childrenCount; i++)
-            {
-                calculateBoneTransform(&node->children[i], globalTransformation);
-
-                // std::cout << "i: " << i << ", globalTrans: " << glm::to_string(globalTransformation) << std::endl;
+                int   index   = it->second.id;
+                kMat4 offset  = it->second.offset;
+                finalBoneMatrices[index] = globalTransformation * offset;
             }
         }
+
+        for (int i = 0; i < node->childrenCount; ++i)
+            calculateBoneTransform(&node->children[i], globalTransformation);
     }
 
     const std::vector<kMat4> kAnimator::getFinalBoneMatrices() const
     {
-        // std::cout << glm::to_string(finalBoneMatrices[0]) << std::endl;
-
-        /*for (size_t i = 0; i < finalBoneMatrices.size(); i++)
-        {
-            if (finalBoneMatrices[i] == kMat4(0.0f))
-            {
-                //std::cout << "WARNING: Final Bone Matrix " << i << " is ZERO!" << std::endl;
-            }
-        }*/
-
         return finalBoneMatrices;
     }
 
@@ -171,4 +112,19 @@ namespace kemena
         return speed;
     }
 
+    // -----------------------------------------------------------------------
+    // Object-transform animation — placeholder for future cinematic editor.
+    // The setters wire the clip in but updateAnimation() doesn't sample
+    // tracks yet.
+    // -----------------------------------------------------------------------
+
+    void kAnimator::setObjectAnimation(kAnimation *clip)
+    {
+        objectAnimation = clip;
+    }
+
+    kAnimation *kAnimator::getObjectAnimation() const
+    {
+        return objectAnimation;
+    }
 }

@@ -230,6 +230,64 @@ namespace kemena
         void addLight(kLight *light);
 
         /**
+         * @brief Returns whether the scene wants shadow rendering.
+         *
+         * The renderer reads this each frame; turning it off skips the shadow
+         * map pass entirely and tells lit shaders to drop the shadow term.
+         * Default: true.
+         */
+        bool getShadowsEnabled() const;
+
+        /**
+         * @brief Toggles shadow rendering for this scene.
+         */
+        void setShadowsEnabled(bool enabled);
+
+        /**
+         * @brief Returns the constant shadow bias used by lit shaders.
+         */
+        float getShadowBias() const;
+
+        /**
+         * @brief Sets the constant shadow bias used by lit shaders.
+         *        Larger values reduce acne but can detach the shadow from its caster (peter-panning).
+         */
+        void setShadowBias(float bias);
+
+        /**
+         * @brief Returns the slope-scaled component of the shadow bias.
+         */
+        float getShadowNormalBias() const;
+
+        /**
+         * @brief Sets the slope-scaled component of the shadow bias.
+         *        Multiplied by (1 - N·L); only affects grazing-angle surfaces.
+         */
+        void setShadowNormalBias(float bias);
+
+        /**
+         * @brief Returns the per-cascade shadow map resolution in pixels.
+         */
+        int  getShadowMapResolution() const;
+
+        /**
+         * @brief Sets the per-cascade shadow map resolution (e.g. 512, 1024, 2048, 4096).
+         *        Reallocates the shadow texture on the renderer.
+         */
+        void setShadowMapResolution(int resolution);
+
+        /**
+         * @brief Returns the PCF tap spacing (in shadow-map texels).
+         */
+        float getShadowSoftness() const;
+
+        /**
+         * @brief Sets the PCF tap spacing in shadow-map texels.
+         *        Larger = softer edges but more bleeding of small occluders.
+         */
+        void setShadowSoftness(float softness);
+
+        /**
          * @brief Returns whether skybox image-based ambient is enabled.
          */
         bool getSkyboxAmbientEnabled();
@@ -299,8 +357,13 @@ namespace kemena
 
         kVec3 ambientLightColor = kVec3(0.1f, 0.1f, 0.1f); ///< Scene ambient colour.
 
-        bool  skyboxAmbientEnabled  = false; ///< Enable skybox IBL ambient.
-        float skyboxAmbientStrength = 1.0f;  ///< Skybox ambient multiplier.
+        bool  shadowsEnabled        = true;   ///< Render shadows for this scene.
+        float shadowBias            = 0.0008f;///< Constant shadow depth bias.
+        float shadowNormalBias      = 0.003f; ///< Slope-scaled component of shadow bias.
+        int   shadowMapResolution   = 2048;   ///< Per-cascade shadow map size in pixels.
+        float shadowSoftness        = 1.5f;   ///< PCF tap spacing in shadow-map texels.
+        bool  skyboxAmbientEnabled  = false;  ///< Enable skybox IBL ambient.
+        float skyboxAmbientStrength = 1.0f;   ///< Skybox ambient multiplier.
 
         kMaterial *skyMaterial = nullptr; ///< Skybox material.
         kMesh     *skyMesh     = nullptr; ///< Skybox geometry.

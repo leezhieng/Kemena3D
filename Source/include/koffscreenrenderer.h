@@ -147,9 +147,27 @@ namespace kemena
 
         kShader *builtinShader = nullptr; ///< Lazy-compiled fallback for meshes with no material.
 
+        // Cascaded-shadow-map resources for the offscreen pass. Lazily allocated
+        // on the first render() call so headless thumbnail use cases that never
+        // render a scene don't pay the VRAM cost.
+        static constexpr int kMaxShadowCascades = 4;
+        kShader *shadowShader        = nullptr;
+        uint32_t shadowFbo           = 0;
+        uint32_t shadowTexArray      = 0;
+        int      shadowResolution    = 1024; // smaller than main renderer to save VRAM
+        int      shadowCascadeCount  = 3;
+        float    shadowSplitLambda   = 0.85f;
+        kMat4    lightSpaceMatrices[kMaxShadowCascades];
+        float    cascadeSplits[kMaxShadowCascades] = {};
+
         void createFBO();
         void destroyFBO();
         void ensureBuiltinShader();
+
+        void ensureShadowResources();
+        void applyShadowResolution(int resolution);
+        void renderShadowPass(kWorld *world, kScene *scene, kCamera *camera);
+        void renderShadowNode(kObject *node, const kMat4 &lightSpace, kShader *shader);
 
         void renderNodeFull(kObject *node, kScene *scene, kCamera *camera);
         void drawMeshWithMaterial(kMesh *mesh, kScene *scene, kCamera *camera,

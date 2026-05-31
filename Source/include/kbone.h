@@ -10,9 +10,16 @@
 #include <stdexcept>
 #include <iostream>
 
-#include "assimp/scene.h"
-
 #include "kdatatype.h"
+
+// Forward-declared so this header stays Assimp-free; the bone constructor
+// takes an aiNodeAnim* only as an importer detail and the type is fully
+// defined inside kbone.cpp where Assimp is included. Slim runtime builds
+// (KEMENA_NO_ASSIMP) drop this entry point — animations in that build are
+// populated by the tinygltf importer.
+#ifndef KEMENA_NO_ASSIMP
+struct aiNodeAnim;
+#endif
 
 namespace kemena
 {
@@ -27,6 +34,7 @@ namespace kemena
     class kBone
     {
     public:
+#ifndef KEMENA_NO_ASSIMP
         /**
          * @brief Constructs a bone from an Assimp animation channel.
          * @param boneName Human-readable bone name.
@@ -34,6 +42,18 @@ namespace kemena
          * @param channel  Assimp node animation containing keyframe data.
          */
         kBone(const kString &boneName, int boneID, aiNodeAnim *channel);
+#endif
+
+        /**
+         * @brief Constructs a bone from already-decoded keyframe arrays.
+         *
+         * Library-agnostic — populate the channel vectors from whatever
+         * importer (Assimp / tinygltf / custom) sourced them.
+         */
+        kBone(const kString &boneName, int boneID,
+              std::vector<kKeyPosition> positions,
+              std::vector<kKeyRotation> rotations,
+              std::vector<kKeyScale>    scales);
 
         /**
          * @brief Interpolates all channels and updates the local transform.

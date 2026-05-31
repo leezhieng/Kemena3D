@@ -16,9 +16,6 @@
 #include <fstream>
 #include <iomanip>
 
-#include <assimp/quaternion.h>
-#include <assimp/vector3.h>
-#include <assimp/matrix4x4.h>
 #include <glm/glm.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
@@ -657,14 +654,20 @@ namespace kemena
     };
 
     /**
-     * @brief Mirrors an Assimp node hierarchy used when loading skeletal animations.
+     * @brief Node in a skeletal-animation hierarchy (one per scene-graph joint).
+     *
+     * The skeletal animation loader walks the source asset's node tree and
+     * builds an equivalent kNodeData tree; kAnimator then traverses this tree
+     * each frame to accumulate world-space bone matrices. The fields mirror
+     * what a typical skinned-mesh asset format provides without referencing
+     * any specific import library.
      */
-    struct kAssimpNodeData
+    struct kNodeData
     {
-        kMat4 transformation;                  ///< Local-space transform for this node.
-        kString name;                      ///< Node name (used to look up bones by name).
-        int childrenCount;                     ///< Number of child nodes.
-        std::vector<kAssimpNodeData> children; ///< Child nodes.
+        kMat4   transformation;          ///< Local-space transform for this node.
+        kString name;                    ///< Node name (used to look up bones by name).
+        int     childrenCount;           ///< Number of child nodes.
+        std::vector<kNodeData> children; ///< Child nodes.
     };
 
     /**
@@ -771,71 +774,6 @@ namespace kemena
 
         return ss.str();
     }
-
-    /**
-     * @brief Static helpers for converting Assimp types to GLM equivalents.
-     */
-    class kAssimpGLMHelpers
-    {
-    public:
-        /**
-         * @brief Converts an Assimp 4x4 matrix to a GLM kMat4.
-         * @param from Source Assimp matrix.
-         * @return Equivalent GLM kMat4 (column-major).
-         */
-        static inline kMat4 convertMatrixToGLMFormat(const aiMatrix4x4 &from)
-        {
-            kMat4 to;
-            // the a,b,c,d in assimp is the row ; the 1,2,3,4 is the column
-            to[0][0] = from.a1;
-            to[1][0] = from.a2;
-            to[2][0] = from.a3;
-            to[3][0] = from.a4;
-            to[0][1] = from.b1;
-            to[1][1] = from.b2;
-            to[2][1] = from.b3;
-            to[3][1] = from.b4;
-            to[0][2] = from.c1;
-            to[1][2] = from.c2;
-            to[2][2] = from.c3;
-            to[3][2] = from.c4;
-            to[0][3] = from.d1;
-            to[1][3] = from.d2;
-            to[2][3] = from.d3;
-            to[3][3] = from.d4;
-            return to;
-        }
-
-        /**
-         * @brief Converts an Assimp 3D vector to a GLM kVec2 (drops the Z component).
-         * @param vec Source vector.
-         * @return XY components as kVec2.
-         */
-        static inline kVec2 getGLMVec2(const aiVector3D &vec)
-        {
-            return kVec2(vec.x, vec.y);
-        }
-
-        /**
-         * @brief Converts an Assimp 3D vector to a GLM kVec3.
-         * @param vec Source vector.
-         * @return Equivalent kVec3.
-         */
-        static inline kVec3 getGLMVec3(const aiVector3D &vec)
-        {
-            return kVec3(vec.x, vec.y, vec.z);
-        }
-
-        /**
-         * @brief Converts an Assimp quaternion to a GLM kQuat.
-         * @param pOrientation Source quaternion.
-         * @return Equivalent GLM quaternion.
-         */
-        static inline kQuat getGLMQuat(const aiQuaternion &pOrientation)
-        {
-            return kQuat(pOrientation.w, pOrientation.x, pOrientation.y, pOrientation.z);
-        }
-    };
 
 }; // namespace kemena
 

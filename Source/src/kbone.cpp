@@ -1,49 +1,61 @@
 #include "kbone.h"
 
+#ifndef KEMENA_NO_ASSIMP
+#include "kassimp_internal.h"
+#include <assimp/anim.h>
+#endif
+
 namespace kemena
 {
+    kBone::kBone(const kString &boneName, int boneID,
+                 std::vector<kKeyPosition> setPositions,
+                 std::vector<kKeyRotation> setRotations,
+                 std::vector<kKeyScale>    setScales)
+    {
+        name      = boneName;
+        id        = boneID;
+        positions = std::move(setPositions);
+        rotations = std::move(setRotations);
+        scales    = std::move(setScales);
+        positionCount = (int)positions.size();
+        rotationCount = (int)rotations.size();
+        scaleCount    = (int)scales.size();
+    }
 
+#ifndef KEMENA_NO_ASSIMP
     kBone::kBone(const kString &boneName, int boneID, aiNodeAnim *channel)
     {
         name = boneName;
         id = boneID;
 
         positionCount = channel->mNumPositionKeys;
-
-        for (int positionIndex = 0; positionIndex < positionCount; positionIndex++)
+        for (int i = 0; i < positionCount; ++i)
         {
-            aiVector3D aiPosition = channel->mPositionKeys[positionIndex].mValue;
-            float timeStamp = channel->mPositionKeys[positionIndex].mTime;
             kKeyPosition data;
-            data.position = kAssimpGLMHelpers::getGLMVec3(aiPosition);
-            data.timeStamp = timeStamp;
+            data.position  = kAssimpInternal::toVec3(channel->mPositionKeys[i].mValue);
+            data.timeStamp = (float)channel->mPositionKeys[i].mTime;
             positions.push_back(data);
         }
 
         rotationCount = channel->mNumRotationKeys;
-        for (int rotationIndex = 0; rotationIndex < rotationCount; rotationIndex++)
+        for (int i = 0; i < rotationCount; ++i)
         {
-            aiQuaternion aiOrientation = channel->mRotationKeys[rotationIndex].mValue;
-            float timeStamp = channel->mRotationKeys[rotationIndex].mTime;
             kKeyRotation data;
-            data.orientation = kAssimpGLMHelpers::getGLMQuat(aiOrientation);
-            data.timeStamp = timeStamp;
+            data.orientation = kAssimpInternal::toQuat(channel->mRotationKeys[i].mValue);
+            data.timeStamp   = (float)channel->mRotationKeys[i].mTime;
             rotations.push_back(data);
         }
 
         scaleCount = channel->mNumScalingKeys;
-        for (int keyIndex = 0; keyIndex < scaleCount; keyIndex++)
+        for (int i = 0; i < scaleCount; ++i)
         {
-            aiVector3D scale = channel->mScalingKeys[keyIndex].mValue;
-            float timeStamp = channel->mScalingKeys[keyIndex].mTime;
             kKeyScale data;
-            data.scale = kAssimpGLMHelpers::getGLMVec3(scale);
-            data.timeStamp = timeStamp;
+            data.scale     = kAssimpInternal::toVec3(channel->mScalingKeys[i].mValue);
+            data.timeStamp = (float)channel->mScalingKeys[i].mTime;
             scales.push_back(data);
         }
-
-        // std::cout << "name: " << name << ", positionCount: " << positionCount << ", rotationCount: " << rotationCount << ", scaleCount: " << scaleCount << std::endl;
     }
+#endif // KEMENA_NO_ASSIMP
 
     void kBone::update(float animationTime)
     {

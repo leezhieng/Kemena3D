@@ -13,6 +13,7 @@
 #include "stb_image_write.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <functional>
 
@@ -63,6 +64,49 @@ namespace kemena
     )";
 
     // -----------------------------------------------------------------------
+    // Built-in shadow depth shader — same as kRenderer's default. Kept inline
+    // so the offscreen renderer is self-contained and doesn't need a pointer
+    // to the main renderer to do its own CSM pass.
+    // -----------------------------------------------------------------------
+
+    static const char *kShadowVS = R"(#version 330 core
+layout (location = 0) in vec3 vertexPosition;
+layout (location = 6) in ivec4 boneIDs;
+layout (location = 7) in vec4 weights;
+
+uniform mat4 lightSpaceMatrix;
+uniform mat4 modelMatrix;
+
+const int MAX_BONES          = 128;
+const int MAX_BONE_INFLUENCE = 4;
+uniform mat4 finalBonesMatrices[MAX_BONES];
+
+void main()
+{
+    vec4 totalPosition = vec4(vertexPosition, 1.0);
+    float totalWeight = 0.0;
+
+    for(int i = 0; i < MAX_BONE_INFLUENCE; i++)
+    {
+        int boneID = boneIDs[i];
+        float weight = weights[i];
+        if(boneID == -1 || weight <= 0.0) continue;
+        if(boneID >= MAX_BONES) { totalPosition = vec4(vertexPosition, 1.0); break; }
+        totalPosition += (finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0)) * weight;
+        totalWeight += weight;
+    }
+
+    if (totalWeight == 0.0)
+        totalPosition = vec4(vertexPosition, 1.0);
+
+    gl_Position = lightSpaceMatrix * (modelMatrix * totalPosition);
+})";
+
+    static const char *kShadowFS = R"(#version 330 core
+void main() {}
+)";
+
+    // -----------------------------------------------------------------------
     // Construction / destruction
     // -----------------------------------------------------------------------
 
@@ -76,7 +120,10 @@ namespace kemena
     kOffscreenRenderer::~kOffscreenRenderer()
     {
         destroyFBO();
-        if (builtinShader) { delete builtinShader; builtinShader = nullptr; }
+        if (shadowTexArray) { driver->deleteFBOTexture(shadowTexArray); shadowTexArray = 0; }
+        if (shadowFbo)      { driver->deleteFramebuffer(shadowFbo);     shadowFbo      = 0; }
+        if (shadowShader)   { delete shadowShader;  shadowShader  = nullptr; }
+        if (builtinShader)  { delete builtinShader; builtinShader = nullptr; }
     }
 
     void kOffscreenRenderer::ensureBuiltinShader()
@@ -127,6 +174,159 @@ namespace kemena
     }
 
     // -----------------------------------------------------------------------
+    // Shadow pass — lazy alloc + per-frame depth pass into a texture array
+    // -----------------------------------------------------------------------
+
+    void kOffscreenRenderer::ensureShadowResources()
+    {
+        if (shadowTexArray != 0) return;
+        shadowTexArray = driver->createFBODepthTextureArray(
+            shadowResolution, shadowResolution, kMaxShadowCascades);
+        shadowFbo = driver->createFramebuffer();
+        driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
+        driver->unbindFramebuffer();
+
+        shadowShader = new kShader();
+        shadowShader->loadShadersCode(kShadowVS, kShadowFS);
+    }
+
+    void kOffscreenRenderer::applyShadowResolution(int resolution)
+    {
+        if (resolution <= 0 || resolution == shadowResolution)
+            return;
+        shadowResolution = resolution;
+
+        // Rebuild the cascade array at the new size if it was already allocated;
+        // otherwise ensureShadowResources() will create it on first use.
+        if (shadowTexArray != 0)
+        {
+            driver->deleteFBOTexture(shadowTexArray);
+            shadowTexArray = driver->createFBODepthTextureArray(
+                shadowResolution, shadowResolution, kMaxShadowCascades);
+            driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
+            driver->unbindFramebuffer();
+        }
+    }
+
+    void kOffscreenRenderer::renderShadowNode(kObject *node, const kMat4 &lightSpace, kShader *shader)
+    {
+        if (!node || !node->getActive()) return;
+        node->calculateModelMatrix();
+
+        if (node->getType() == kNodeType::NODE_TYPE_MESH)
+        {
+            kMesh *mesh = static_cast<kMesh *>(node);
+            if (mesh->getLoaded() && mesh->getVisible() && mesh->getCastShadow())
+            {
+                shader->setValue("lightSpaceMatrix", lightSpace);
+                shader->setValue("modelMatrix",      mesh->getModelMatrixWorld());
+                // Identity bones — offscreen preview doesn't animate.
+                std::vector<kMat4> bones(128, kMat4(1.0f));
+                shader->setValue("finalBonesMatrices", bones);
+                mesh->draw();
+            }
+        }
+
+        for (kObject *child : node->getChildren())
+            renderShadowNode(child, lightSpace, shader);
+    }
+
+    void kOffscreenRenderer::renderShadowPass(kWorld *world, kScene *scene, kCamera *camera)
+    {
+        if (!scene || !camera) return;
+
+        // Find the first active sun light — same convention as kRenderer.
+        kVec3 lightDir(0.0f, -1.0f, 0.0f);
+        bool  hasSun = false;
+        for (kLight *lt : scene->getLights())
+        {
+            if (lt && lt->getActive() && lt->getLightType() == kLightType::LIGHT_TYPE_SUN)
+            {
+                lightDir = glm::normalize(lt->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
+                hasSun = true;
+                break;
+            }
+        }
+        if (!hasSun) return;
+
+        ensureShadowResources();
+
+        float camNear = camera->getNearClip();
+        float camFar  = camera->getFarClip();
+        kMat4 camView = camera->getViewMatrix();
+
+        const int   cascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
+        const float lambda    = shadowSplitLambda;
+        for (int i = 0; i < cascCount; ++i)
+        {
+            float ratio = (float)(i + 1) / (float)cascCount;
+            float cLog  = camNear * std::pow(camFar / camNear, ratio);
+            float cUni  = camNear + (camFar - camNear) * ratio;
+            cascadeSplits[i] = lambda * cLog + (1.0f - lambda) * cUni;
+        }
+
+        kVec3 up = (std::abs(glm::dot(lightDir, kVec3(0, 1, 0))) > 0.99f)
+                   ? kVec3(1, 0, 0) : kVec3(0, 1, 0);
+
+        driver->bindFramebuffer(shadowFbo);
+        driver->setDepthTest(true);
+        driver->setDepthWrite(true);
+
+        shadowShader->use();
+        for (int cascade = 0; cascade < cascCount; ++cascade)
+        {
+            float splitNear = (cascade == 0) ? camNear : cascadeSplits[cascade - 1];
+            float splitFar  = cascadeSplits[cascade];
+
+            kMat4 subProj = glm::perspective(
+                glm::radians(camera->getFOV()),
+                camera->getAspectRatio(),
+                splitNear, splitFar);
+            kMat4 invPV = glm::inverse(subProj * camView);
+
+            kVec3 corners[8];
+            int idx = 0;
+            for (int ix = 0; ix < 2; ++ix)
+            for (int iy = 0; iy < 2; ++iy)
+            for (int iz = 0; iz < 2; ++iz)
+            {
+                kVec4 pt = invPV * kVec4(ix * 2.0f - 1.0f, iy * 2.0f - 1.0f, iz * 2.0f - 1.0f, 1.0f);
+                corners[idx++] = kVec3(pt / pt.w);
+            }
+
+            kVec3 center(0.0f);
+            for (int c = 0; c < 8; ++c) center += corners[c];
+            center /= 8.0f;
+            float radius = 0.0f;
+            for (int c = 0; c < 8; ++c)
+                radius = std::max(radius, glm::length(corners[c] - center));
+            radius = std::ceil(radius * 16.0f) / 16.0f;
+
+            float texelsPerUnit = (float)shadowResolution / (2.0f * radius);
+            kMat4 snapView    = glm::scale(kMat4(1.0f), kVec3(texelsPerUnit)) *
+                                glm::lookAt(kVec3(0.0f), lightDir, up);
+            kMat4 snapViewInv = glm::inverse(snapView);
+            kVec4 cLS = snapView * kVec4(center, 1.0f);
+            cLS.x = std::floor(cLS.x);
+            cLS.y = std::floor(cLS.y);
+            center = kVec3(snapViewInv * cLS);
+
+            const float zExtent = radius * 6.0f;
+            kVec3 eye = center - lightDir * zExtent;
+            kMat4 lightView = glm::lookAt(eye, center, up);
+            kMat4 lightProj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * zExtent);
+            lightSpaceMatrices[cascade] = lightProj * lightView;
+
+            driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, cascade);
+            driver->setViewport(0, 0, shadowResolution, shadowResolution);
+            driver->clear(false, true, false);
+            renderShadowNode(scene->getRootNode(), lightSpaceMatrices[cascade], shadowShader);
+        }
+        shadowShader->unuse();
+        driver->unbindFramebuffer();
+    }
+
+    // -----------------------------------------------------------------------
     // render — full scene
     // -----------------------------------------------------------------------
 
@@ -136,6 +336,17 @@ namespace kemena
 
         GLint savedVP[4];
         glGetIntegerv(GL_VIEWPORT, savedVP);
+
+        // Shadow depth pass — must run before binding the colour FBO since it
+        // changes the bound framebuffer and viewport.
+        if (scene->getShadowsEnabled())
+        {
+            // Honor the scene's shadow-map resolution so the game view matches
+            // the editor view (and reflects inspector edits on the fly). The
+            // cascade array is reallocated only when the value actually changes.
+            applyShadowResolution(scene->getShadowMapResolution());
+            renderShadowPass(world, scene, camera);
+        }
 
         driver->bindFramebuffer(fbo);
         driver->setViewport(0, 0, width * ssaaScale, height * ssaaScale);
@@ -449,15 +660,70 @@ namespace kemena
         std::vector<kMat4> bones(128, kMat4(1.0f));
         shader->setValue("finalBonesMatrices", bones);
 
-        // Safe shadow defaults (no shadow pass)
-        shader->setValue("lightSpaceMatrix", kMat4(1.0f));
-        shader->setValue("shadowMap",        0);
+        // Reset texture-presence flags so a previous draw whose material had
+        // (e.g.) an albedoMap doesn't leave has_albedoMap=true on the shader
+        // program. With stale flags the lit shader would sample a sampler2D
+        // that defaults to unit 0 — where the shadow array's 2D_ARRAY texture
+        // is bound — producing garbage that propagates as NaN and dims the
+        // whole mesh to ambient-only.
+        shader->setValue("has_albedoMap",            false);
+        shader->setValue("has_normalMap",            false);
+        shader->setValue("has_specularMap",          false);
+        shader->setValue("has_emissiveMap",          false);
+        shader->setValue("has_metallicRoughnessMap", false);
+        shader->setValue("has_aoMap",                false);
+
+        // Texture units: material textures take 0..N-1, shadow array sits at
+        // a fixed high unit so sampler2D defaults (which all bind to unit 0)
+        // never collide with the sampler2DArray binding. Skybox follows.
+        const int shadowUnit = 8;
+        const int skyboxUnit = 9;
+
+        // Skybox cubemap for IBL ambient — only when called from the full-scene
+        // path. Thumbnail previews pass scene=nullptr.
+        kMaterial *skyboxMaterial = scene ? scene->getSkyboxMaterial() : nullptr;
+        const bool skyboxBound =
+            skyboxMaterial && !skyboxMaterial->getTextures().empty() &&
+            skyboxMaterial->getTexture(0)->getType() == kTextureType::TEX_TYPE_CUBE;
+        if (skyboxBound)
+        {
+            driver->bindTextureCube(skyboxUnit, skyboxMaterial->getTexture(0)->getTextureID());
+            shader->setValue("skyboxMap", skyboxUnit);
+        }
+
+        // Shadow-map uniforms — always set so the offscreen pass never inherits
+        // stale values left by an earlier main-renderer draw on the same shader
+        // (would otherwise read the editor camera's lightSpaceMatrices and
+        // render everything as fully shadowed). When scene is null (thumbnail
+        // path), shadows are simply disabled.
+        const bool shadowsOn = scene && scene->getShadowsEnabled() && shadowTexArray != 0;
+        shader->setValue("enableShadow",     shadowsOn);
+        shader->setValue("receiveShadow",    mesh->getReceiveShadow());
+        shader->setValue("cascadeCount",     scene ? shadowCascadeCount : 0);
+        shader->setValue("shadowResolution", (float)shadowResolution);
+        shader->setValue("shadowBias",       scene ? scene->getShadowBias()       : 0.0008f);
+        shader->setValue("shadowNormalBias", scene ? scene->getShadowNormalBias() : 0.003f);
+        shader->setValue("shadowSoftness",   scene ? scene->getShadowSoftness()   : 1.5f);
+        shader->setValue("cascadeSplits",
+            kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
+        std::vector<kMat4> lsm(lightSpaceMatrices, lightSpaceMatrices + shadowCascadeCount);
+        shader->setValue("lightSpaceMatrices", lsm);
+        if (shadowsOn)
+        {
+            driver->bindTexture2DArray(shadowUnit, shadowTexArray);
+            shader->setValue("shadowMapArray", shadowUnit);
+        }
 
         bindMaterialTextures(mesh, shader);
 
         mesh->draw();
 
         unbindMaterialTextures(mesh);
+
+        if (shadowsOn)
+            driver->unbindTexture2DArray(shadowUnit);
+        if (skyboxBound)
+            driver->unbindTextureCube(skyboxUnit);
     }
 
     void kOffscreenRenderer::setupLightsFromScene(kShader *shader, kScene *scene,

@@ -1,5 +1,14 @@
 #include "kassetmanager.h"
 
+#ifndef KEMENA_NO_ASSIMP
+// Public header is now Assimp-free; the importer paths below still need
+// Assimp directly, so include it locally along with the private helpers.
+#include "kassimp_internal.h"
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#endif
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STBI_MSC_SECURE_CRT
@@ -156,6 +165,7 @@ namespace kemena
         return texture;
     }
 
+#ifndef KEMENA_NO_ASSIMP
     kTexture2D *kAssetManager::loadTexture2DFromMemory(const aiTexture *rawData, const kString textureName, const kTextureFormat format, const bool flipVertical, const bool keepData)
     {
         unsigned char *data = nullptr;
@@ -221,7 +231,8 @@ namespace kemena
 
         return texture;
     }
-	
+#endif // KEMENA_NO_ASSIMP
+
 	kTexture2D *kAssetManager::loadTexture2DFromResource(const kString resourceName, const kString textureName, const kTextureFormat format, const bool flipVertical, const bool keepData)
     {
         int width;
@@ -404,8 +415,13 @@ namespace kemena
 	kMesh *kAssetManager::loadMeshFromResource(const kString resourceName, const kString extention)
     {
 		std::cout << "Load mesh from resource: " << resourceName << std::endl;
-		
+#ifndef KEMENA_NO_ASSIMP
 		return loadMeshResourceAssimp(resourceName, extention);
+#else
+		std::cout << "loadMeshFromResource: not available in slim runtime build "
+		             "(Assimp disabled). Only filesystem .gltf / .glb supported." << std::endl;
+		return nullptr;
+#endif
     }
 
     kMesh *kAssetManager::loadMesh(const kString fileName)
@@ -413,25 +429,49 @@ namespace kemena
         std::cout << "Load mesh: " << fileName << std::endl;
 
         kString ext = getFileExtension(fileName);
+        kMesh *mesh = nullptr;
 
-        kMesh *mesh;
-
-        if (ext == "obj" || ext == "fbx" || ext == "gltf" || ext == "glb")
+        if (ext == "gltf" || ext == "glb")
+        {
+            // glTF/GLB always go through tinygltf — available in both build
+            // flavours.
+            mesh = loadMeshGltf(fileName);
+        }
+#ifndef KEMENA_NO_ASSIMP
+        else if (ext == "obj" || ext == "fbx")
         {
             mesh = loadMeshFileAssimp(fileName);
-            mesh->setLoaded(true);
         }
+#endif
         else
         {
-            std::cout << "Failed to load mesh, invalid extension" << std::endl;
-            mesh = nullptr;
+            std::cout << "loadMesh: unsupported extension '" << ext << "'"
+#ifdef KEMENA_NO_ASSIMP
+                      << " (slim runtime build accepts only .gltf / .glb)"
+#endif
+                      << std::endl;
         }
 
-        mesh->setFileName(fileName);
-
+        if (mesh)
+        {
+            mesh->setLoaded(true);
+            mesh->setFileName(fileName);
+        }
         return mesh;
     }
 
+    kMesh *kAssetManager::loadMeshGltf(const kString fileName)
+    {
+        // TODO: actual tinygltf decode. This stub keeps the slim-build link
+        // succeeding; replace with the tinygltf importer in the next pass.
+        std::cout << "loadMeshGltf: tinygltf importer not yet wired — "
+                  << "returning empty mesh for '" << fileName << "'\n";
+        kMesh *m = new kMesh();
+        m->setFileName(fileName);
+        return m;
+    }
+
+#ifndef KEMENA_NO_ASSIMP
     kMesh *kAssetManager::loadMeshFileAssimp(const kString fileName)
     {
         // kMesh* rootMesh = new kMesh();
@@ -662,17 +702,17 @@ namespace kemena
             for (int i = 0; i < (int)mesh->mNumVertices; ++i)
             {
                 // Vertex
-                kVec3 position = kAssimpGLMHelpers::getGLMVec3(mesh->mVertices[i]);
+                kVec3 position = kAssimpInternal::toVec3(mesh->mVertices[i]);
                 newMesh->addVertex(position);
 
                 // Normal
-                kVec3 normal = kAssimpGLMHelpers::getGLMVec3(mesh->mNormals[i]);
+                kVec3 normal = kAssimpInternal::toVec3(mesh->mNormals[i]);
                 newMesh->addNormal(normal);
 
                 // UV
                 if (mesh->HasTextureCoords(0))
                 {
-                    kVec2 texCoord = kAssimpGLMHelpers::getGLMVec2(mesh->mTextureCoords[0][i]);
+                    kVec2 texCoord = kAssimpInternal::toVec2(mesh->mTextureCoords[0][i]);
                     newMesh->addUV(texCoord);
                 }
                 else
@@ -742,6 +782,7 @@ namespace kemena
 
         return newMesh;
     }
+#endif // KEMENA_NO_ASSIMP
 
     void kAssetManager::calculateNormal(float N[3], float v0[3], float v1[3], float v2[3])
     {
@@ -783,6 +824,7 @@ namespace kemena
         }
     }
 
+#ifndef KEMENA_NO_ASSIMP
     void kAssetManager::extractBoneWeightForVertices(kMesh *mesh, aiMesh *meshData, const aiScene *scene)
     {
         if (meshData->mNumBones > 0)
@@ -794,7 +836,7 @@ namespace kemena
 
                 // Debug: Print bone name and offset matrix
                 // std::cout << "Processing bone: " << boneName << std::endl;
-                kMat4 offset = kAssimpGLMHelpers::convertMatrixToGLMFormat(meshData->mBones[boneIndex]->mOffsetMatrix);
+                kMat4 offset = kAssimpInternal::toMat4(meshData->mBones[boneIndex]->mOffsetMatrix);
                 // std::cout << "Offset matrix: " << glm::to_string(offset) << std::endl;
 
                 std::map<kString, kBoneInfo> &boneInfoMap = mesh->getBoneInfoMap();
@@ -872,6 +914,7 @@ namespace kemena
             // std::cout << "No bones found in mesh: " << mesh->getName() << std::endl;
         }
     }
+#endif // KEMENA_NO_ASSIMP
 
     kShader *kAssetManager::loadShaderFromFile(kString vertexShaderPath, kString fragmentShaderPath)
     {
@@ -960,10 +1003,17 @@ namespace kemena
         return material;
     }
 
-    kAnimation *kAssetManager::loadAnimation(const kString fileName, kMesh *mesh)
+    kSkeletalAnimation *kAssetManager::loadAnimation(const kString fileName, kMesh *mesh)
     {
-        kAnimation *animation = new kAnimation(fileName, mesh);
-
-        return animation;
+#ifndef KEMENA_NO_ASSIMP
+        return new kSkeletalAnimation(fileName, mesh);
+#else
+        // tinygltf-based skeletal animation loading is a follow-up — for now
+        // the slim runtime build just refuses the call.
+        (void)fileName; (void)mesh;
+        std::cout << "loadAnimation: not yet supported in slim runtime build "
+                     "(tinygltf animation importer TODO)." << std::endl;
+        return nullptr;
+#endif
     }
 }

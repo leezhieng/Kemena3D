@@ -129,6 +129,16 @@ def main():
         env="KEMENA_LINKING"
     )
 
+    # Assimp toggle — when off, tinygltf is the only importer (glTF/GLB only,
+    # no save). Use the slim build for kemena3d-runtime; the editor needs ON.
+    assimp = choose(
+        "\nInclude Assimp for full-format mesh import?",
+        {"1": "Yes — full importer + .glb export (editor / general use)",
+         "2": "No  — slim build: tinygltf-only, glTF/GLB load (runtime use)"},
+        env="KEMENA_USE_ASSIMP"
+    )
+    use_assimp_flag = "ON" if assimp == "1" else "OFF"
+
     # Build configuration selection
     config = choose(
         "\nPlease choose a build configuration:",
@@ -176,6 +186,8 @@ def main():
             args = "-DBUILD_SHARED_LIBS=ON -DKEMENA_SHARED=ON"
     else:
         raise RuntimeError(f"No build args defined for {system}")
+
+    args += f" -DKEMENA_USE_ASSIMP={use_assimp_flag}"
 
     configs = []
     if config == "1":

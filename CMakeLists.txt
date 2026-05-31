@@ -13,6 +13,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Option to build shared or static library
 option(BUILD_SHARED_LIBS "Build as shared library" OFF)
 
+# When ON  (default): Assimp drives mesh / animation import — full format set,
+#                     editor-style build.
+# When OFF           : Assimp is not compiled / linked. tinygltf (header-only)
+#                     handles glTF and GLB imports; everything else fails to
+#                     load. Saving via Assimp::Exporter is also unavailable.
+#                     This is the slim "runtime" SDK build.
+option(KEMENA_USE_ASSIMP "Include Assimp for full-format mesh import" ON)
+if(NOT KEMENA_USE_ASSIMP)
+    message(STATUS "Kemena3D SDK: building WITHOUT Assimp (tinygltf-only mesh import)")
+endif()
+
 # Optional MinGW flag (set via -G)
 if(WIN32)
     option(USE_MINGW "Use MinGW on Windows" OFF)
@@ -76,6 +87,7 @@ target_include_directories(kemena3d
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/include
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/include
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/build_$<CONFIG>/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/tinygltf
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glm
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/stb
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio
@@ -103,6 +115,13 @@ endif()
 
 # Use GLEW for imgui
 target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+
+# Runtime/editor switch: KEMENA_NO_ASSIMP is the source-side gate every
+# import / export path keys off. Defined PUBLIC so consumers (studio, runtime)
+# see the same value as the SDK objects.
+if(NOT KEMENA_USE_ASSIMP)
+    target_compile_definitions(kemena3d PUBLIC KEMENA_NO_ASSIMP)
+endif()
 
 # Jolt was built with default options (DEBUG_RENDERER_IN_DEBUG_AND_RELEASE,
 # PROFILER_IN_DEBUG_AND_RELEASE, ENABLE_OBJECT_STREAM, FLOATING_POINT_EXCEPTIONS_ENABLED),
@@ -162,11 +181,18 @@ target_link_libraries(kemena3d
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/sdl/build_Debug/libSDL3.dll.a,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/sdl/build_Release/libSDL3.dll.a
         >
-        $<IF:$<CONFIG:Debug>,
-            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/build_Debug/libassimp.dll.a,
-            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/build_Release/libassimp.dll.a
-        >
 )
+
+# Assimp is linked only for editor-style builds.
+if(KEMENA_USE_ASSIMP)
+    target_link_libraries(kemena3d
+        PUBLIC
+            $<IF:$<CONFIG:Debug>,
+                ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/build_Debug/libassimp.dll.a,
+                ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/build_Release/libassimp.dll.a
+            >
+    )
+endif()
 
 # GLEW (built from source via build/cmake/)
 if(MSVC)

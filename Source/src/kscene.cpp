@@ -128,6 +128,56 @@ namespace kemena
         ambientLightColor = newColor;
     }
 
+    bool kScene::getShadowsEnabled() const
+    {
+        return shadowsEnabled;
+    }
+
+    void kScene::setShadowsEnabled(bool enabled)
+    {
+        shadowsEnabled = enabled;
+    }
+
+    float kScene::getShadowBias() const
+    {
+        return shadowBias;
+    }
+
+    void kScene::setShadowBias(float bias)
+    {
+        shadowBias = bias;
+    }
+
+    float kScene::getShadowNormalBias() const
+    {
+        return shadowNormalBias;
+    }
+
+    void kScene::setShadowNormalBias(float bias)
+    {
+        shadowNormalBias = bias;
+    }
+
+    int kScene::getShadowMapResolution() const
+    {
+        return shadowMapResolution;
+    }
+
+    void kScene::setShadowMapResolution(int resolution)
+    {
+        shadowMapResolution = resolution;
+    }
+
+    float kScene::getShadowSoftness() const
+    {
+        return shadowSoftness;
+    }
+
+    void kScene::setShadowSoftness(float softness)
+    {
+        shadowSoftness = softness;
+    }
+
     bool kScene::getSkyboxAmbientEnabled()
     {
         return skyboxAmbientEnabled;
@@ -260,6 +310,11 @@ namespace kemena
                 {"name", getName()},
                 {"active", getActive()},
                 {"ambient_light", {{"r", ambientLightColor.r}, {"g", ambientLightColor.g}, {"b", ambientLightColor.b}}},
+                {"shadows_enabled", shadowsEnabled},
+                {"shadow_bias", shadowBias},
+                {"shadow_normal_bias", shadowNormalBias},
+                {"shadow_map_resolution", shadowMapResolution},
+                {"shadow_softness", shadowSoftness},
                 {"skybox_ambient_enabled", skyboxAmbientEnabled},
                 {"skybox_ambient_strength", skyboxAmbientStrength},
                 {"objects", objectsData},

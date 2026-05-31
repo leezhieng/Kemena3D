@@ -1,108 +1,82 @@
 /**
  * @file kanimation.h
- * @brief Skeletal animation clip loaded from an asset file.
+ * @brief Non-skeletal (object-transform) animation clip.
+ *
+ * For skeletal / bone animation see kSkeletalAnimation in kskelanimation.h.
+ *
+ * This class is the stub for a future cinematic / scene-animation editor:
+ * it stores per-object transform tracks (position / rotation / scale
+ * keyframes keyed by target object UUID) and is played back by kAnimator.
+ * The API surface is intentionally minimal for now — fill it in when the
+ * editor lands.
  */
 
 #ifndef KANIMATION_H
 #define KANIMATION_H
 
 #include "kdatatype.h"
-#include "kmesh.h"
-#include "kbone.h"
 
-#include "assimp/Importer.hpp"
-#include "assimp/scene.h"
-#include "assimp/postprocess.h"
+#include <vector>
+#include <map>
 
 namespace kemena
 {
-    class kMesh;
+    /**
+     * @brief A single transform track for one target object inside a clip.
+     *
+     * The three channels (position / rotation / scale) are sparse —
+     * keyframes are stored individually and the animator interpolates
+     * between them.
+     */
+    struct kObjectAnimTrack
+    {
+        kString                   targetUuid; ///< kObject UUID the track drives.
+        std::vector<kKeyPosition> positions;  ///< Position channel keyframes.
+        std::vector<kKeyRotation> rotations;  ///< Rotation channel keyframes.
+        std::vector<kKeyScale>    scales;     ///< Scale channel keyframes.
+    };
 
     /**
-     * @brief Holds a single skeletal animation clip and its bone channel data.
+     * @brief Non-skeletal animation clip — collection of per-object tracks.
      *
-     * Loaded via kAssetManager::loadAnimation().  The clip stores a list of
-     * kBone objects (one per animated joint) and the root of the Assimp node
-     * hierarchy used by kAnimator to propagate bone transforms.
-     *
-     * Playback speed can be scaled with setSpeed(); the kAnimator queries
-     * getDuration() and getTicksPerSecond() to advance time correctly.
+     * Reserved for the future cinematic editor. Construct empty, add tracks
+     * via addTrack(), set the duration / tick rate, then hand to a kAnimator
+     * for playback. Loading from disk will come once a clip file format is
+     * defined.
      */
     class kAnimation
     {
     public:
-        /**
-         * @brief Loads an animation clip from a file and binds it to a mesh.
-         * @param animationPath Path to the animation asset file.
-         * @param setMesh       Mesh whose bone map is used to resolve bone indices.
-         */
-        kAnimation(const kString &animationPath, kMesh *setMesh);
+        kAnimation() = default;
 
-        /**
-         * @brief Finds the kBone with the given name in this clip.
-         * @param name Bone name as it appears in the asset.
-         * @return Pointer to the matching kBone, or nullptr if not found.
-         */
-        kBone *findBone(const kString &name);
+        /** @brief Append a transform track for one target object. */
+        void addTrack(const kObjectAnimTrack &track);
 
-        /**
-         * @brief Returns the tick rate of this animation.
-         * @return Ticks per second (as specified in the asset).
-         */
-        float getTicksPerSecond() const;
+        /** @brief All tracks in this clip. */
+        const std::vector<kObjectAnimTrack> &getTracks() const;
 
-        /**
-         * @brief Returns the total duration of this animation in ticks.
-         * @return Duration in animation ticks.
-         */
-        float getDuration() const;
+        /** @brief Find a track by its target UUID, or nullptr if absent. */
+        const kObjectAnimTrack *findTrack(const kString &uuid) const;
 
-        /**
-         * @brief Returns the root node of the bone hierarchy.
-         * @return Const reference to the root kAssimpNodeData.
-         */
-        const kAssimpNodeData &getRootNode() const;
+        /** @brief Clip-level setters/getters used by kAnimator. */
+        void  setName(const kString &n)          { name = n; }
+        kString getName() const                  { return name; }
 
-        /**
-         * @brief Reads bone channel data from an aiAnimation and binds it to a mesh.
-         * @param animation Assimp animation descriptor.
-         * @param newMesh   Mesh to bind bone indices from.
-         */
-        void setMesh(const aiAnimation *animation, kMesh *newMesh);
+        void  setDuration(float d)               { duration = d; }
+        float getDuration() const                { return duration; }
 
-        /**
-         * @brief Returns the list of meshes associated with this animation.
-         * @return Copy of the internal mesh pointer vector.
-         */
-        std::vector<kMesh *> getMeshes();
+        void  setTicksPerSecond(float t)         { ticksPerSecond = t; }
+        float getTicksPerSecond() const          { return ticksPerSecond; }
 
-        /**
-         * @brief Sets the playback speed multiplier.
-         * @param newSpeed Speed factor (1.0 = normal, 2.0 = double speed).
-         */
-        void setSpeed(float newSpeed);
+        void  setSpeed(float s)                  { speed = s; }
+        float getSpeed() const                   { return speed; }
 
-        /**
-         * @brief Returns the playback speed multiplier.
-         * @return Current speed factor.
-         */
-        float getSpeed();
-
-    protected:
     private:
-        float duration;           ///< Total animation length in ticks.
-        int ticksPerSecond;       ///< Tick rate from the asset.
-        std::vector<kBone> bones; ///< Per-bone channel data.
-        kAssimpNodeData rootNode; ///< Root of the node hierarchy.
-
-        std::vector<kMesh *> meshes; ///< Bound mesh references.
-
-        void readMissingBones(const aiAnimation *animation, kMesh *setMesh);
-        void readHierarchyData(kAssimpNodeData &dest, const aiNode *src);
-
-        std::map<kString, kBoneInfo> boneInfoMap; ///< Bone name → info lookup.
-
-        float speed = 1.0f; ///< Playback speed multiplier.
+        kString name;                              ///< Clip name.
+        float   duration       = 0.0f;             ///< Total length in ticks.
+        float   ticksPerSecond = 25.0f;            ///< Tick rate.
+        float   speed          = 1.0f;             ///< Playback speed multiplier.
+        std::vector<kObjectAnimTrack> tracks;      ///< Per-target transform tracks.
     };
 }
 

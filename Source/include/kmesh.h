@@ -15,7 +15,8 @@
 
 #include "kobject.h"
 #include "kbone.h"
-#include "kanimation.h"
+// (Skeletal animation is reached through the forward-declared kAnimator
+// pointer below — no animation header needed at the mesh-header level.)
 #include "kanimator.h"
 
 namespace kemena

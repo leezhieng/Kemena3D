@@ -1,13 +1,14 @@
 /**
  * @file kanimator.h
- * @brief Drives skeletal animation playback and computes final bone matrices.
+ * @brief Drives playback of skeletal (bone) animation, and reserves a hook
+ *        for future non-skeletal (object-transform) animation.
  */
 
 #ifndef KANIMATOR_H
 #define KANIMATOR_H
 
 #include "kdatatype.h"
-#include "kanimation.h"
+#include "kskelanimation.h"
 #include "kbone.h"
 #include "kmesh.h"
 
@@ -15,96 +16,94 @@
 
 namespace kemena
 {
+    class kSkeletalAnimation;
     class kAnimation;
     class kMesh;
 
     /**
-     * @brief Controls playback of skeletal animations and produces bone transform matrices.
+     * @brief Controls playback of animation clips.
      *
-     * Attach a kAnimator to a kMesh via kMesh::setAnimator().  Each frame,
-     * call updateAnimation() with the elapsed delta time and the current frame
-     * ID to advance playback.  The resulting bone matrices are fetched with
-     * getFinalBoneMatrices() and uploaded to the shader as a uniform array.
+     * Today the animator only plays skeletal clips (kSkeletalAnimation): it
+     * produces a flat array of final bone matrices that the renderer uploads
+     * to the shader each frame via @ref getFinalBoneMatrices().
      *
-     * Multiple animations can be registered with addAnimation() and switched
-     * at runtime with playAnimation().
+     * Non-skeletal (object-transform) clips of type kAnimation are accepted
+     * through @ref setObjectAnimation() / @ref playObjectAnimation() but are
+     * not yet executed — the hooks are in place for the future cinematic
+     * editor; per-object track sampling will land alongside it.
      */
     class kAnimator
     {
     public:
         /**
-         * @brief Constructs an animator and sets the initial animation.
-         * @param newAnimation Animation to start playing immediately.
+         * @brief Constructs an animator and sets the initial skeletal clip.
+         * @param newAnimation Skeletal animation to start playing.
          */
-        kAnimator(kAnimation *newAnimation);
+        kAnimator(kSkeletalAnimation *newAnimation);
+
+        /** @brief Registers an additional skeletal clip. */
+        void addAnimation(kSkeletalAnimation *newAnimation);
 
         /**
-         * @brief Registers an additional animation clip.
-         * @param newAnimation Clip to add to the internal animation list.
-         */
-        void addAnimation(kAnimation *newAnimation);
-
-        /**
-         * @brief Advances the current animation by one step.
+         * @brief Advances the active animation by one step.
          * @param newDeltaTime Elapsed time since the last update in seconds.
-         * @param frameId      Current frame identifier (used to skip duplicate updates).
+         * @param frameId      Frame identifier — skips duplicate updates.
          */
         void updateAnimation(float newDeltaTime, int frameId);
 
-        /**
-         * @brief Switches to a different animation clip immediately.
-         * @param animation Clip to start playing; resets the playback time.
-         */
-        void playAnimation(kAnimation *animation);
+        /** @brief Switches to a different skeletal clip and resets time. */
+        void playAnimation(kSkeletalAnimation *animation);
 
-        /**
-         * @brief Returns the currently active animation clip.
-         * @return Pointer to the current kAnimation.
-         */
-        kAnimation *getCurrentAnimation();
+        /** @brief Currently active skeletal clip. */
+        kSkeletalAnimation *getCurrentAnimation();
 
         /**
          * @brief Recursively computes bone transforms for the entire skeleton.
          * @param node            Current hierarchy node being processed.
          * @param parentTransform Accumulated world transform of the parent bone.
          */
-        void calculateBoneTransform(const kAssimpNodeData *node, kMat4 parentTransform);
+        void calculateBoneTransform(const kNodeData *node, kMat4 parentTransform);
 
-        /**
-         * @brief Returns the final bone transform matrices ready for shader upload.
-         * @return Const reference to the vector of per-bone world transforms.
-         */
+        /** @brief Per-bone world matrices ready for shader upload. */
         const std::vector<kMat4> getFinalBoneMatrices() const;
 
-        /**
-         * @brief Seeks to a specific time in the current animation.
-         * @param newTime Playback time in animation ticks.
-         */
+        /** @brief Seeks to a specific time in the active clip (ticks). */
         void setCurrentTime(float newTime);
 
-        /**
-         * @brief Sets the global playback speed multiplier.
-         * @param newSpeed Speed factor (1.0 = normal speed).
-         */
+        /** @brief Sets the global playback speed multiplier. */
         void setSpeed(float newSpeed);
 
-        /**
-         * @brief Returns the global playback speed multiplier.
-         * @return Current speed factor.
-         */
+        /** @brief Current global playback speed multiplier. */
         float getSpeed();
 
-    protected:
+        // -------------------------------------------------------------------
+        // Object-transform animation (kAnimation) — placeholder.
+        //
+        // Reserved for the future cinematic editor. The setters accept and
+        // remember a clip but updateAnimation() doesn't drive any object
+        // transforms yet; that pass will land when the editor is wired up.
+        // -------------------------------------------------------------------
+
+        /** @brief Registers the active non-skeletal clip (no-op playback for now). */
+        void setObjectAnimation(kAnimation *clip);
+
+        /** @brief Returns the registered non-skeletal clip, or nullptr. */
+        kAnimation *getObjectAnimation() const;
+
     private:
-        std::vector<kMat4> finalBoneMatrices;         ///< Per-bone final transform matrices.
-        kAnimation       *currentAnimation = nullptr; ///< Currently playing animation.
-        float             currentTime;               ///< Current playback time in ticks.
-        float             deltaTime;                 ///< Last delta time passed to updateAnimation.
-        float             speed = 1.0f;              ///< Global speed multiplier.
+        // Skeletal playback state.
+        std::vector<kMat4>               finalBoneMatrices;             ///< Per-bone matrices.
+        kSkeletalAnimation              *currentAnimation = nullptr;    ///< Active skeletal clip.
+        std::vector<kSkeletalAnimation *> animations;                   ///< Registered skeletal clips.
 
-        std::vector<kAnimation *> animations; ///< Registered animation clips.
+        // Non-skeletal placeholder.
+        kAnimation                      *objectAnimation = nullptr;
 
-        int currentFrameId = -1; ///< Tracks the last processed frame to avoid double-updates.
+        // Playback time / pacing.
+        float currentTime    = 0.0f;
+        float deltaTime      = 0.0f;
+        float speed          = 1.0f;
+        int   currentFrameId = -1;
     };
 }
 

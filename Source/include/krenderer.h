@@ -215,6 +215,21 @@ namespace kemena
         /** @brief Returns whether the cascade debug view is active. */
         bool getShadowDebug() const { return shadowDebug; }
 
+        /** @brief Sets the constant shadow bias passed to lit shaders. */
+        void  setShadowBias(float bias) { shadowBias = bias; }
+        /** @brief Returns the constant shadow bias. */
+        float getShadowBias() const { return shadowBias; }
+
+        /** @brief Sets the slope-scaled (normal) shadow bias passed to lit shaders. */
+        void  setShadowNormalBias(float bias) { shadowNormalBias = bias; }
+        /** @brief Returns the slope-scaled shadow bias. */
+        float getShadowNormalBias() const { return shadowNormalBias; }
+
+        /** @brief Sets the PCF tap spacing (in shadow-map texels) passed to lit shaders. */
+        void  setShadowSoftness(float softness) { shadowSoftness = softness; }
+        /** @brief Returns the PCF tap spacing. */
+        float getShadowSoftness() const { return shadowSoftness; }
+
         /**
          * @brief Enables or disables automatic exposure adjustment.
          *
@@ -509,6 +524,9 @@ namespace kemena
         int      shadowCascadeCount = 3;      ///< Active cascades (1..kMaxShadowCascades).
         float    shadowSplitLambda  = 0.85f;  ///< 0 = uniform splits, 1 = logarithmic.
         bool     shadowDebug        = false;  ///< Tint fragments by cascade for debugging.
+        float    shadowBias         = 0.0008f;///< Constant shadow bias (passed to lit shaders).
+        float    shadowNormalBias   = 0.003f; ///< Slope-scaled shadow bias (passed to lit shaders).
+        float    shadowSoftness     = 1.5f;   ///< PCF tap spacing in shadow-map texels.
         uint32_t shadowFbo          = 0;      ///< Single FBO; layer re-attached per cascade.
         uint32_t shadowTexArray     = 0;      ///< GL_TEXTURE_2D_ARRAY depth texture.
         kMat4    lightSpaceMatrices[kMaxShadowCascades];

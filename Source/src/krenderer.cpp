@@ -288,10 +288,21 @@ bool isSelected(vec3 rgb)
 
 void main()
 {
-    vec2 texel     = 1.0 / viewportSize;
-    bool centerSel = isSelected(texture(pickTex, texCoord).rgb);
+    vec2 texel       = 1.0 / viewportSize;
+    vec3 centerRgb   = texture(pickTex, texCoord).rgb;
+    bool centerSel   = isSelected(centerRgb);
+    int  centerId    = int(centerRgb.r * 255.0 + 0.5)
+                     + int(centerRgb.g * 255.0 + 0.5) * 256
+                     + int(centerRgb.b * 255.0 + 0.5) * 65536;
 
+    // Interior of a selected object — no outline.
     if (centerSel) { fragColor = vec4(0.0); return; }
+
+    // Only background pixels (id==0) can become outline. Pixels belonging to
+    // other (non-selected) meshes are occluders, not edges of the selected
+    // object — outlining them would bleed the outline onto whatever happens
+    // to be in front of the selection.
+    if (centerId != 0) { fragColor = vec4(0.0); return; }
 
     bool nearSelected = false;
     for (int dx = -outlinePixels; dx <= outlinePixels && !nearSelected; dx++)
@@ -759,23 +770,42 @@ void main()
                     shader->setValue("skyboxAmbientEnabled",  scene->getSkyboxAmbientEnabled());
                     shader->setValue("skyboxAmbientStrength", scene->getSkyboxAmbientStrength());
 
-                    // Texture unit layout: [0..N-1] material, [N] shadow array, [N+1] skybox
-                    unsigned int shadowUnit = (unsigned int)currentMesh->getMaterial()->getTextures().size();
-                    unsigned int skyboxUnit = shadowUnit + 1;
+                    // Reset texture-presence flags so a previous draw's
+                    // material doesn't leak its has_X flags onto a mesh whose
+                    // material has fewer textures. With a stale has_albedoMap,
+                    // the lit shader samples a sampler2D that defaults to
+                    // texture unit 0 — where the sampler2DArray shadow texture
+                    // is bound — and the cross-type read returns garbage that
+                    // poisons the lighting math and dims the mesh.
+                    shader->setValue("has_albedoMap",            false);
+                    shader->setValue("has_normalMap",            false);
+                    shader->setValue("has_specularMap",          false);
+                    shader->setValue("has_emissiveMap",          false);
+                    shader->setValue("has_metallicRoughnessMap", false);
+                    shader->setValue("has_aoMap",                false);
+
+                    // Texture units: material textures take 0..N-1, shadow
+                    // array sits at a fixed high unit so sampler2D defaults
+                    // (which all bind to unit 0) never collide with the
+                    // sampler2DArray binding.
+                    const int shadowUnit = 8;
+                    const int skyboxUnit = 9;
 
                     // Bind skybox cubemap for IBL ambient
                     kMaterial *skyboxMaterial = scene->getSkyboxMaterial();
+                    bool skyboxBound = false;
                     if (skyboxMaterial != nullptr && skyboxMaterial->getTextures().size() > 0 &&
                         skyboxMaterial->getTexture(0)->getType() == kTextureType::TEX_TYPE_CUBE)
                     {
-                        driver->bindTextureCube((int)skyboxUnit, skyboxMaterial->getTexture(0)->getTextureID());
-                        shader->setValue("skyboxMap", (int)skyboxUnit);
+                        driver->bindTextureCube(skyboxUnit, skyboxMaterial->getTexture(0)->getTextureID());
+                        shader->setValue("skyboxMap", skyboxUnit);
+                        skyboxBound = true;
                     }
 
                     // Cascaded shadow maps (single depth-texture array).
                     int cascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
-                    driver->bindTexture2DArray((int)shadowUnit, shadowTexArray);
-                    shader->setValue("shadowMapArray", (int)shadowUnit);
+                    driver->bindTexture2DArray(shadowUnit, shadowTexArray);
+                    shader->setValue("shadowMapArray", shadowUnit);
                     std::vector<kMat4> lsm(lightSpaceMatrices, lightSpaceMatrices + cascCount);
                     shader->setValue("lightSpaceMatrices", lsm);
                     // Up to 4 split distances packed into a vec4; cascadeCount says how many are valid.
@@ -783,9 +813,12 @@ void main()
                         kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
                     shader->setValue("cascadeCount",    cascCount);
                     shader->setValue("shadowResolution", (float)shadowResolution);
-                    shader->setValue("shadowDebug",     shadowDebug);
-                    shader->setValue("enableShadow",    enableShadow);
-                    shader->setValue("receiveShadow",   currentMesh->getReceiveShadow());
+                    shader->setValue("shadowDebug",      shadowDebug);
+                    shader->setValue("enableShadow",     enableShadow);
+                    shader->setValue("receiveShadow",    currentMesh->getReceiveShadow());
+                    shader->setValue("shadowBias",       shadowBias);
+                    shader->setValue("shadowNormalBias", shadowNormalBias);
+                    shader->setValue("shadowSoftness",   shadowSoftness);
 
                     // Material textures
                     for (size_t k = 0; k < currentMesh->getMaterial()->getTextures().size(); k++)
@@ -804,15 +837,16 @@ void main()
 
                     currentMesh->draw();
 
-                    // Unbind all texture units (material + 1 shadow array + 1 skybox)
-                    int matUnits   = (int)currentMesh->getMaterial()->getTextures().size();
-                    int totalUnits = matUnits + 2;
-                    for (int k = totalUnits - 1; k >= 0; k--)
+                    // Unbind material units, shadow array, and skybox.
+                    int matUnits = (int)currentMesh->getMaterial()->getTextures().size();
+                    for (int k = matUnits - 1; k >= 0; k--)
                     {
                         driver->unbindTexture2D(k);
                         driver->unbindTextureCube(k);
                     }
-                    driver->unbindTexture2DArray(matUnits); // shadow array unit
+                    driver->unbindTexture2DArray(shadowUnit);
+                    if (skyboxBound)
+                        driver->unbindTextureCube(skyboxUnit);
 
                     shader->unuse();
                 }
@@ -1147,7 +1181,11 @@ void main()
     {
         enableShadow = newEnable;
 
-        if (newEnable)
+        // Allocate shadow resources lazily so this setter is cheap to call
+        // every frame (the studio toggles it from kScene::getShadowsEnabled).
+        // Once allocated we keep the FBO around — toggling shadows off just
+        // skips the pass, it doesn't tear the resources down.
+        if (newEnable && shadowTexArray == 0)
         {
             // One depth-texture array (max cascades) + one FBO; the per-cascade
             // layer is attached during the shadow pass.
@@ -1885,7 +1923,10 @@ void main() { outColor = vec4(lineColor, 1.0); }
         debugLineShader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
         debugLineShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
 
-        driver->setDepthTest(true);
+        // Always-on-top: physics debug wireframes are an editor overlay, so
+        // skip depth-test entirely. Collider geometry typically lives inside
+        // the mesh and would otherwise be occluded.
+        driver->setDepthTest(false);
         driver->setDepthWrite(false);
         driver->setCullFace(false);
         driver->setBlend(false);
@@ -2117,13 +2158,15 @@ void main() { outColor = vec4(lineColor, 1.0); }
                     }
                     case kPhysicsShapeType::Plane:
                     {
-                        // Square outline in the local XZ plane (+Y normal) plus
-                        // a short stub showing the normal direction.
-                        float size = 5.0f;
-                        kVec3 c0 = pos + rx * size + rz * size;
-                        kVec3 c1 = pos - rx * size + rz * size;
-                        kVec3 c2 = pos - rx * size - rz * size;
-                        kVec3 c3 = pos + rx * size - rz * size;
+                        // Rectangle outline in the local XZ plane (+Y normal)
+                        // sized by halfExtents.x / halfExtents.z, plus a short
+                        // stub showing the normal direction.
+                        float hx = std::max(0.1f, pd.shape.halfExtents.x);
+                        float hz = std::max(0.1f, pd.shape.halfExtents.z);
+                        kVec3 c0 = pos + rx * hx + rz * hz;
+                        kVec3 c1 = pos - rx * hx + rz * hz;
+                        kVec3 c2 = pos - rx * hx - rz * hz;
+                        kVec3 c3 = pos + rx * hx - rz * hz;
                         appendLine(verts, c0, c1);
                         appendLine(verts, c1, c2);
                         appendLine(verts, c2, c3);
@@ -2134,29 +2177,47 @@ void main() { outColor = vec4(lineColor, 1.0); }
                     case kPhysicsShapeType::ConvexHull:
                     case kPhysicsShapeType::Mesh:
                     {
-                        // Drawing the actual hull / triangle mesh as lines is
-                        // a separate render pass — for now, show the world AABB
-                        // of the owning mesh so the user has a visual hint.
+                        // Show the mesh's world AABB scaled by customScale so
+                        // the wireframe reflects what Jolt's ScaledShape will
+                        // actually simulate. When the AABB is degenerate
+                        // (e.g. the mesh hasn't streamed in yet) we fall back
+                        // to a unit cube around the body's position.
+                        kVec3 bmin, bmax;
+                        bool  haveBox = false;
                         if (node->getType() == kNodeType::NODE_TYPE_MESH)
                         {
                             kAABB box = ((kMesh *)node)->getWorldAABB();
-                            kVec3 c[8] = {
-                                {box.min.x, box.min.y, box.min.z},
-                                {box.max.x, box.min.y, box.min.z},
-                                {box.min.x, box.max.y, box.min.z},
-                                {box.max.x, box.max.y, box.min.z},
-                                {box.min.x, box.min.y, box.max.z},
-                                {box.max.x, box.min.y, box.max.z},
-                                {box.min.x, box.max.y, box.max.z},
-                                {box.max.x, box.max.y, box.max.z}
-                            };
-                            const int e[12][2] = {
-                                {0,1},{2,3},{4,5},{6,7},
-                                {0,2},{1,3},{4,6},{5,7},
-                                {0,4},{1,5},{2,6},{3,7}
-                            };
-                            for (auto &edge : e) appendLine(verts, c[edge[0]], c[edge[1]]);
+                            kVec3 ext = box.max - box.min;
+                            if (ext.x > 1e-4f || ext.y > 1e-4f || ext.z > 1e-4f)
+                            {
+                                kVec3 c = (box.min + box.max) * 0.5f;
+                                kVec3 e = ext * 0.5f;
+                                e.x *= pd.shape.customScale.x;
+                                e.y *= pd.shape.customScale.y;
+                                e.z *= pd.shape.customScale.z;
+                                bmin = c - e;
+                                bmax = c + e;
+                                haveBox = true;
+                            }
                         }
+                        if (!haveBox)
+                        {
+                            kVec3 e = pd.shape.customScale * 0.5f;
+                            bmin = pos - e;
+                            bmax = pos + e;
+                        }
+                        kVec3 c[8] = {
+                            {bmin.x, bmin.y, bmin.z}, {bmax.x, bmin.y, bmin.z},
+                            {bmin.x, bmax.y, bmin.z}, {bmax.x, bmax.y, bmin.z},
+                            {bmin.x, bmin.y, bmax.z}, {bmax.x, bmin.y, bmax.z},
+                            {bmin.x, bmax.y, bmax.z}, {bmax.x, bmax.y, bmax.z}
+                        };
+                        const int edges[12][2] = {
+                            {0,1},{2,3},{4,5},{6,7},
+                            {0,2},{1,3},{4,6},{5,7},
+                            {0,4},{1,5},{2,6},{3,7}
+                        };
+                        for (auto &edge : edges) appendLine(verts, c[edge[0]], c[edge[1]]);
                         break;
                     }
                 }

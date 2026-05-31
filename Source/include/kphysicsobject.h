@@ -35,25 +35,31 @@ namespace kemena
      *
      * Only the fields relevant to the chosen @c type need to be set.
      *
-     * | type       | relevant fields                            |
-     * |------------|--------------------------------------------|
-     * | Sphere     | radius                                     |
-     * | Box        | halfExtents                                |
-     * | Capsule    | radius, height (total, tip-to-tip)         |
-     * | Cylinder   | radius, height (total)                     |
-     * | ConvexHull | meshVertices                               |
-     * | Mesh       | meshVertices + meshIndices (triangle list) |
+     * | type       | relevant fields                                |
+     * |------------|------------------------------------------------|
+     * | Sphere     | radius                                         |
+     * | Box        | halfExtents                                    |
+     * | Capsule    | radius, height (total, tip-to-tip)             |
+     * | Cylinder   | radius, height (total)                         |
+     * | ConvexHull | meshVertices + customScale (per-axis stretch)  |
+     * | Mesh       | meshVertices + meshIndices + customScale       |
+     * | Plane      | halfExtents.x / halfExtents.z (broadphase rect)|
      *
      * @c meshVertices / @c meshIndices are populated by the caller right before
      * kPhysicsManager::createObject() (typically from the owning kMesh) — they
      * aren't serialised because they're derived from the mesh asset.
+     *
+     * @c customScale is applied to ConvexHull / Mesh shapes via Jolt's
+     * @c ScaledShape wrapper so the user can stretch a mesh-derived collider
+     * on each axis. Defaults to (1,1,1).
      */
     struct kPhysicsShapeDesc
     {
         kPhysicsShapeType     type        = kPhysicsShapeType::Box;
-        kVec3                 halfExtents = kVec3(0.5f, 0.5f, 0.5f); ///< Box: per-axis half-extents.
+        kVec3                 halfExtents = kVec3(0.5f, 0.5f, 0.5f); ///< Box / Plane: per-axis half-extents (Plane uses x,z).
         float                 radius      = 0.5f;                   ///< Sphere / Capsule / Cylinder radius.
         float                 height      = 1.0f;                   ///< Capsule / Cylinder total height.
+        kVec3                 customScale = kVec3(1.0f, 1.0f, 1.0f);///< ConvexHull / Mesh per-axis scale.
         std::vector<kVec3>    meshVertices;                         ///< Mesh / ConvexHull source vertices.
         std::vector<uint32_t> meshIndices;                          ///< Mesh source indices (triplets per triangle).
     };

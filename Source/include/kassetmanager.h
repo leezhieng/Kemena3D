@@ -15,10 +15,6 @@
 #include <unordered_map>
 #include <algorithm>
 
-#include "assimp/Importer.hpp"
-#include "assimp/scene.h"
-#include "assimp/postprocess.h"
-
 #include "kdatatype.h"
 #include "kobject.h"
 #include "kmesh.h"
@@ -27,8 +23,19 @@
 #include "ktexture2d.h"
 #include "ktexturecube.h"
 #include "kbone.h"
-#include "kanimation.h"
+#include "kskelanimation.h"
 #include "kanimator.h"
+
+// Assimp types appear only in private signatures below; forward-declare them
+// so this public header doesn't pull in <assimp/...>. Whole block is gated
+// on the editor-style build — slim runtime builds (KEMENA_NO_ASSIMP) drop
+// the Assimp-bound methods entirely.
+#ifndef KEMENA_NO_ASSIMP
+struct aiNode;
+struct aiMesh;
+struct aiScene;
+struct aiTexture;
+#endif
 
 // Windows only
 #include <windows.h>
@@ -120,7 +127,9 @@ namespace kemena
          * @param keepData     Retain CPU-side pixel data.
          * @return Heap-allocated kTexture2D; caller takes ownership.
          */
+#ifndef KEMENA_NO_ASSIMP
         kTexture2D *loadTexture2DFromMemory(const aiTexture *rawData, const kString textureName, const kTextureFormat format = kTextureFormat::TEX_FORMAT_SRGBA, const bool flipVertical = false, const bool keepData = false);
+#endif
 
         /**
          * @brief Loads a 2D texture from a Windows embedded resource.
@@ -182,6 +191,7 @@ namespace kemena
          */
         kMesh *loadMeshFromResource(const kString resourceName, const kString extention);
 
+#ifndef KEMENA_NO_ASSIMP
         /**
          * @brief Loads a mesh file using the Assimp importer.
          * @param fileName Path to the asset file.
@@ -213,6 +223,19 @@ namespace kemena
          * @return Heap-allocated kMesh; caller takes ownership.
          */
         kMesh *processMesh(aiMesh *mesh, const aiScene *scene);
+#endif // KEMENA_NO_ASSIMP
+
+        /**
+         * @brief Loads a glTF or GLB file with tinygltf into a kMesh hierarchy.
+         *
+         * Always available — this is the only importer in slim runtime builds
+         * (KEMENA_NO_ASSIMP). When Assimp is included, this method is still
+         * defined so callers can opt into the lighter loader explicitly.
+         *
+         * @param fileName Path to a .gltf or .glb asset.
+         * @return Root kMesh, or nullptr on failure.
+         */
+        kMesh *loadMeshGltf(const kString fileName);
 
         /**
          * @brief Computes the face normal for a triangle.
@@ -235,7 +258,9 @@ namespace kemena
          * @param meshData Source Assimp mesh.
          * @param scene    Parent Assimp scene.
          */
+#ifndef KEMENA_NO_ASSIMP
         void extractBoneWeightForVertices(kMesh *mesh, aiMesh *meshData, const aiScene *scene);
+#endif
 
         /**
          * @brief Assigns one bone influence slot to a vertex (helper used during loading).
@@ -292,7 +317,7 @@ namespace kemena
          * @param mesh     Mesh whose bone map is used to bind the animation.
          * @return Heap-allocated kAnimation; caller takes ownership.
          */
-        kAnimation *loadAnimation(const kString fileName, kMesh *mesh);
+        kSkeletalAnimation *loadAnimation(const kString fileName, kMesh *mesh);
 
     protected:
     private:

@@ -15,6 +15,7 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
+#include <Jolt/Physics/Collision/Shape/ScaledShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #ifdef _MSC_VER
 #  pragma warning(pop)
@@ -139,10 +140,14 @@ namespace kemena
             {
                 // Object's local +Y is the plane normal; the body's rotation
                 // orients it in world space (so rotate the kObject to angle
-                // the ground). Half-extent caps the plane's visual / broadphase
-                // bounds — large enough to act as world ground.
+                // the ground). halfExtents.x / halfExtents.z drive the
+                // broadphase rectangle so a user-sized ground works; we use
+                // the larger of the two as Jolt's symmetric half-extent.
+                float halfX = std::max(0.1f, sd.halfExtents.x);
+                float halfZ = std::max(0.1f, sd.halfExtents.z);
+                float planeHalf = std::max(halfX, halfZ);
                 JPH::PlaneShapeSettings ps(JPH::Plane(JPH::Vec3(0, 1, 0), 0.0f),
-                                           nullptr, 1000.0f);
+                                           nullptr, planeHalf);
                 auto res = ps.Create();
                 if (res.HasError())
                 {
@@ -153,6 +158,19 @@ namespace kemena
                 shape = res.Get();
                 break;
             }
+        }
+
+        // Wrap mesh-derived shapes in a ScaledShape so users can stretch them
+        // on each axis through the Inspector. Primitives ignore customScale
+        // (their own params already control their size).
+        if ((sd.type == kPhysicsShapeType::ConvexHull ||
+             sd.type == kPhysicsShapeType::Mesh) &&
+            (sd.customScale.x != 1.0f || sd.customScale.y != 1.0f || sd.customScale.z != 1.0f))
+        {
+            shape = new JPH::ScaledShape(shape,
+                                         JPH::Vec3(sd.customScale.x,
+                                                   sd.customScale.y,
+                                                   sd.customScale.z));
         }
 
         // Jolt's MeshShape and PlaneShape only allow Static / Kinematic motion.
