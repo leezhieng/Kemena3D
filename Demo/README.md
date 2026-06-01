@@ -1,32 +1,64 @@
-# Demo List
+# Demos
 
-| Demo           | Screenshot                      |
-|----------------|----------------------------------|
-| 1. Hello World | <img src="1. Hello World/screenshot.png" alt="Hello World" width="300"/> |
+Standalone example programs that link against the built Kemena3D SDK.
 
-## Building the Demo
+| Demo | Description | Screenshot |
+|------|-------------|------------|
+| [1. Hello World](1.%20Hello%20World/) | Create a window and camera, load a 3D model with a textured flat material, and render it in a loop. | <img src="1. Hello World/screenshot.png" alt="Hello World" width="300"/> |
 
-Ensure you have CMake and a compatible compiler installed. Navigate to the folder of the demo you wish to build, then run the following commands on terminal:
+## Prerequisites
 
-<details>
-<summary><strong>MinGW (Windows)</strong></summary>
-cmake . -G "MinGW Makefiles"
+Build the SDK first, so the demos can link against the headers and libraries
+under `kemena3d/Output/<Config>/`:
 
-cmake --build . --config Release
-</details>
+```sh
+cd kemena3d
+python download_dep.py   # fetch + build third-party dependencies (once per machine)
+python build_sdk.py      # build + install the SDK into Output/Debug and Output/Release
+```
 
-<details>
-<summary><strong>Visual Studio (Windows)</strong></summary>
-cmake . -G "Visual Studio 17 2022"
+## Building a demo
 
-cmake --build . --config Release
-</details>
+Each demo is a standalone CMake project. Open the demo's folder and configure an
+out-of-source build, then build it. The executable links statically against
+`Output/<Config>/{include,lib}`, so build it in the same configuration you want
+to run.
 
-<details>
-<summary><strong>macOS/Linux (Makefiles)</strong></summary>
-cmake .
+### Windows (Visual Studio 2022)
 
-cmake --build . --config Release
-</details>
+```bat
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+```
+Output: `build\bin\Release\`. Release builds are windowed (no console); Debug
+keeps a console for diagnostics.
 
-After building, the executable will be located in the bin/ folder.
+### Linux
+
+Requires the SDK built for Linux plus OpenGL/X11 dev packages
+(e.g. `libgl1-mesa-dev`, `libx11-dev` on Debian/Ubuntu).
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+Output: `build/bin/`.
+
+### FreeBSD
+
+Install the OpenGL/X11 dev packages (e.g. `pkg install mesa-libs libX11`), then
+build the same way as Linux.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+Output: `build/bin/`.
+
+> **Notes**
+> - Run each demo from its build-output folder so the relative asset paths
+>   (model, texture, shader) resolve. See the demo's own README for details.
+> - Windows is the fully verified path. Linux/FreeBSD are best-effort while the
+>   dependency build for those platforms is finalized — if linking fails, check
+>   the static-library names in `Output/<Config>/lib` against the demo's
+>   `CMakeLists.txt`. macOS is not configured yet.

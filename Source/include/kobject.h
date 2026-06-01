@@ -430,6 +430,25 @@ namespace kemena
         kString getMaterialUuid() const              { return materialUuid; }
 
         /**
+         * @brief Marks this node as an import-derived sub-mesh.
+         *
+         * Sub-meshes produced when loading a model file are reconstructed from
+         * that file on every load, so they must not be serialized as children
+         * of their parent (doing so would duplicate them). The editor still
+         * assigns them a UUID for selection/hierarchy purposes; this flag lets
+         * serialize() skip them while keeping authored children intact.
+         *
+         * @param v true if this node was created by the model importer.
+         */
+        void setImportChild(bool v) { importChild = v; }
+
+        /**
+         * @brief Whether this node is an import-derived sub-mesh (see setImportChild).
+         * @return true if created by the model importer and excluded from serialization.
+         */
+        bool getImportChild() const { return importChild; }
+
+        /**
          * @brief Recomputes the local and world-space model matrices.
          *
          * Combines position, rotation, and scale into localTransform, then
@@ -549,6 +568,7 @@ namespace kemena
 
         kMaterial       *material      = nullptr;
         kString          materialUuid;  ///< Source .mat asset UUID (for save/load).
+        bool             importChild   = false; ///< true → import-derived sub-mesh, excluded from serialization.
         kPhysicsObject  *physicsObject = nullptr;
 
         uint32_t iconVAO = 0;          ///< VAO for the billboard icon quad (lazy-init).

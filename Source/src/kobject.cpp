@@ -531,9 +531,12 @@ namespace kemena
         {
             for (size_t i = 0; i < getChildren().size(); ++i)
             {
-                // Make sure UUID is not empty (means it's added by engine and children from import)
-                if (!getChildren().at(i)->getUuid().empty())
-                    childrenData.push_back(getChildren().at(i)->serialize());
+                kObject *child = getChildren().at(i);
+                // Skip engine/import-added children: those with no UUID, and
+                // import-derived sub-meshes (which are rebuilt from the model
+                // file on load and must not be duplicated in the scene JSON).
+                if (!child->getUuid().empty() && !child->getImportChild())
+                    childrenData.push_back(child->serialize());
             }
         }
 

@@ -7,17 +7,23 @@ int main()
     // Create window and renderer
     kWindow* window = createWindow(1024, 768, "Kemena3D Demo - Hello World");
     kRenderer* renderer = createRenderer(window);
-    renderer->setClearColor(vec4(0.4f, 0.6f, 0.8f, 1.0f));
+    renderer->setClearColor(kVec4(0.4f, 0.6f, 0.8f, 1.0f));
 
     // Create the asset manager, world and scene
     kAssetManager* assetManager = createAssetManager();
     kWorld* world = createWorld(assetManager);
     kScene* scene = world->createScene("My Scene");
 
-    // Create a camera and a sun light
-    kCamera* camera = scene->addCamera(glm::vec3(2.5f, 2.5f, 2.5f), glm::vec3(0.0f, 0.5f, 0.0f), kCameraType::CAMERA_TYPE_LOCKED);
+    // Create a camera. Cameras now live on the world (not the scene); make it
+    // the active view camera the renderer draws through.
+    kCamera* camera = world->addCamera(kVec3(2.5f, 2.5f, 2.5f), kVec3(0.0f, 0.5f, 0.0f),
+                                       kCameraType::CAMERA_TYPE_LOCKED);
+    world->setMainCamera(camera);
 
-    kShader* shader = assetManager->createShaderByFile("../../../Assets/shader/glsl/flat.vert", "../../../Assets/shader/glsl/flat.frag");
+    // Load the flat (unlit) shader from source files and build a textured material
+    kShader* shader = new kShader();
+    shader->loadShadersFile("../../../Assets/shader/glsl/flat.vert",
+                            "../../../Assets/shader/glsl/flat.frag");
 
     kMaterial* mat = assetManager->createMaterial(shader);
     kTexture2D* diff = assetManager->loadTexture2D("../diffuse.png", "albedoMap");
@@ -25,7 +31,7 @@ int main()
 
     // Load a 3D model and apply the material to it
     kMesh* mesh = scene->addMesh("../reptile_mage.obj");
-	mesh->setRotation(vec3(0.0f, -0.4f, 0.0f));
+    mesh->setRotation(kQuat(kVec3(0.0f, -0.4f, 0.0f))); // euler radians -> quaternion
     mesh->setMaterial(mat);
 
     // Game loop
@@ -40,7 +46,11 @@ int main()
             }
         }
 
-        renderer->render(scene, 0, 0, window->getWindowWidth(), window->getWindowHeight(), window->getTimer()->getDeltaTime());
+        // render() now takes the world as well as the scene, and resolves the
+        // viewpoint from world->getMainCamera().
+        renderer->render(world, scene, 0, 0,
+                         window->getWindowWidth(), window->getWindowHeight(),
+                         window->getTimer()->getDeltaTime());
     }
 
     // Clean up
