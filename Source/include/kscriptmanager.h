@@ -126,16 +126,32 @@ namespace kemena
     {
     public:
         /**
+         * @brief Opens @p path for bytecode reading or writing.
          * @param path    File path to open.
          * @param writing true to open for writing, false for reading.
          */
         kFileByteStream(const kString &path, bool writing);
+
+        /** @brief Closes the underlying file if it is open. */
         ~kFileByteStream() override;
 
         /** @brief Returns true if the underlying file opened successfully. */
         bool isOpen() const { return file != nullptr; }
 
+        /**
+         * @brief Reads @p size bytes from the file into @p ptr.
+         * @param ptr  Destination buffer.
+         * @param size Number of bytes to read.
+         * @return 0 on success, negative on error (asIBinaryStream convention).
+         */
         int Read(void *ptr, asUINT size) override;
+
+        /**
+         * @brief Writes @p size bytes from @p ptr to the file.
+         * @param ptr  Source buffer.
+         * @param size Number of bytes to write.
+         * @return 0 on success, negative on error (asIBinaryStream convention).
+         */
         int Write(const void *ptr, asUINT size) override;
 
     private:
@@ -159,7 +175,10 @@ namespace kemena
     class KEMENA3D_API kScriptManager
     {
     public:
+        /** @brief Creates and initialises the AngelScript engine and shared context. */
         kScriptManager();
+
+        /** @brief Destroys all instances and shuts down the engine (see destroy()). */
         virtual ~kScriptManager();
 
         /** @brief Returns the underlying AngelScript engine (for binding setup). */

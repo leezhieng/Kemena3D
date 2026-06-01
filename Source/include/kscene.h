@@ -35,7 +35,10 @@ namespace kemena
     class KEMENA3D_API kScene
     {
     public:
+        /** @brief Constructs an empty scene with a default root node. */
         kScene();
+
+        /** @brief Destroys the scene. Does not free objects/meshes/lights held by pointer. */
         virtual ~kScene();
 
         /**

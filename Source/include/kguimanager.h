@@ -44,7 +44,10 @@ namespace kemena
     class KEMENA3D_API kGuiManager
     {
     public:
+        /** @brief Constructs an uninitialised GUI manager; call init() before use. */
         kGuiManager();
+
+        /** @brief Destroys the GUI manager, releasing any held ImGui resources. */
         virtual ~kGuiManager();
 
         /**

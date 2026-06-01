@@ -36,7 +36,14 @@ namespace kemena
     class KEMENA3D_API kTexture
     {
     public:
+        /**
+         * @brief Constructs an empty texture with no GPU handle assigned.
+         */
         kTexture();
+
+        /**
+         * @brief Virtual destructor; allows safe polymorphic deletion of derived textures.
+         */
         virtual ~kTexture();
 
         /**

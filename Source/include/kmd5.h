@@ -12,30 +12,117 @@
 namespace kemena
 {
 
+/**
+ * @brief Streaming MD5 message-digest implementation.
+ *
+ * Computes the 128-bit MD5 hash of arbitrary byte data following RFC 1321.
+ * Data may be fed incrementally through update() and the final hexadecimal
+ * digest retrieved with final(). For one-shot hashing of a string, use the
+ * static hash() convenience method.
+ *
+ * @note MD5 is cryptographically broken and should not be used for security
+ *       purposes; it is provided for checksums and non-security identifiers.
+ */
 class kMD5 {
 public:
+    /** @brief Constructs the context and initialises it to the MD5 starting state. */
     kMD5() { init(); }
+
+    /**
+     * @brief Feeds a block of raw bytes into the running digest.
+     * @param input  Pointer to the input bytes.
+     * @param length Number of bytes to process.
+     */
     void update(const uint8_t* input, size_t length);
+
+    /**
+     * @brief Feeds the contents of a string into the running digest.
+     * @param input String whose bytes are appended to the message.
+     */
     void update(const std::string& input);
+
+    /**
+     * @brief Finalises the digest and returns it as a lowercase hex string.
+     * @return The 32-character hexadecimal MD5 digest.
+     */
     std::string final();
+
+    /**
+     * @brief One-shot helper that hashes an entire string.
+     * @param input The string to hash.
+     * @return The 32-character hexadecimal MD5 digest of @p input.
+     */
     static std::string hash(const std::string& input);
 
 private:
+    /** @brief Resets the bit count and seeds the four MD5 state words. */
     void init();
+
+    /**
+     * @brief Processes a single 64-byte block, updating the internal state.
+     * @param block The 64-byte input block to mix into the state.
+     */
     void transform(const uint8_t block[64]);
 
-    uint32_t state[4];
-    uint64_t count;
-    uint8_t buffer[64];
+    uint32_t state[4];   ///< Running MD5 state words (A, B, C, D).
+    uint64_t count;      ///< Total number of message bits processed so far.
+    uint8_t buffer[64];  ///< Partial-block buffer holding bytes not yet transformed.
 };
 
+/**
+ * @brief MD5 auxiliary function F used in round 1: (x & y) | (~x & z).
+ * @param x First state word.
+ * @param y Second state word.
+ * @param z Third state word.
+ * @return The bitwise result of the F mixing function.
+ */
 inline uint32_t F(uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (~x & z); }
+
+/**
+ * @brief MD5 auxiliary function G used in round 2: (x & z) | (y & ~z).
+ * @param x First state word.
+ * @param y Second state word.
+ * @param z Third state word.
+ * @return The bitwise result of the G mixing function.
+ */
 inline uint32_t G(uint32_t x, uint32_t y, uint32_t z) { return (x & z) | (y & ~z); }
+
+/**
+ * @brief MD5 auxiliary function H used in round 3: x ^ y ^ z.
+ * @param x First state word.
+ * @param y Second state word.
+ * @param z Third state word.
+ * @return The bitwise XOR of the three state words.
+ */
 inline uint32_t H(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
+
+/**
+ * @brief MD5 auxiliary function I used in round 4: y ^ (x | ~z).
+ * @param x First state word.
+ * @param y Second state word.
+ * @param z Third state word.
+ * @return The bitwise result of the I mixing function.
+ */
 inline uint32_t I(uint32_t x, uint32_t y, uint32_t z) { return y ^ (x | ~z); }
 
+/**
+ * @brief Performs a circular left rotation of a 32-bit value.
+ * @param x Value to rotate.
+ * @param n Number of bit positions to rotate left.
+ * @return @p x rotated left by @p n bits.
+ */
 inline uint32_t rotate_left(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 
+/**
+ * @brief Round-1 transformation step using the F mixing function.
+ * @param a  State word updated in place.
+ * @param b  Second state word.
+ * @param c  Third state word.
+ * @param d  Fourth state word.
+ * @param x  Message sub-block word for this step.
+ * @param s  Left-rotation amount.
+ * @param ac Per-step additive constant.
+ */
 inline void FF(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
                uint32_t x, uint32_t s, uint32_t ac)
 {
@@ -44,6 +131,16 @@ inline void FF(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
     a += b;
 }
 
+/**
+ * @brief Round-2 transformation step using the G mixing function.
+ * @param a  State word updated in place.
+ * @param b  Second state word.
+ * @param c  Third state word.
+ * @param d  Fourth state word.
+ * @param x  Message sub-block word for this step.
+ * @param s  Left-rotation amount.
+ * @param ac Per-step additive constant.
+ */
 inline void GG(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
                uint32_t x, uint32_t s, uint32_t ac)
 {
@@ -52,6 +149,16 @@ inline void GG(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
     a += b;
 }
 
+/**
+ * @brief Round-3 transformation step using the H mixing function.
+ * @param a  State word updated in place.
+ * @param b  Second state word.
+ * @param c  Third state word.
+ * @param d  Fourth state word.
+ * @param x  Message sub-block word for this step.
+ * @param s  Left-rotation amount.
+ * @param ac Per-step additive constant.
+ */
 inline void HH(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
                uint32_t x, uint32_t s, uint32_t ac)
 {
@@ -60,6 +167,16 @@ inline void HH(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
     a += b;
 }
 
+/**
+ * @brief Round-4 transformation step using the I mixing function.
+ * @param a  State word updated in place.
+ * @param b  Second state word.
+ * @param c  Third state word.
+ * @param d  Fourth state word.
+ * @param x  Message sub-block word for this step.
+ * @param s  Left-rotation amount.
+ * @param ac Per-step additive constant.
+ */
 inline void II(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
                uint32_t x, uint32_t s, uint32_t ac)
 {
@@ -68,6 +185,12 @@ inline void II(uint32_t &a, uint32_t b, uint32_t c, uint32_t d,
     a += b;
 }
 
+/**
+ * @brief Serialises 32-bit words into bytes in little-endian order.
+ * @param output Destination byte buffer (must hold @p length bytes).
+ * @param input  Source array of 32-bit words.
+ * @param length Number of output bytes to produce (multiple of 4).
+ */
 inline void encode(uint8_t* output, const uint32_t* input, size_t length) {
     for (size_t i = 0, j = 0; j < length; ++i, j += 4) {
         output[j] = input[i] & 0xff;
@@ -77,6 +200,12 @@ inline void encode(uint8_t* output, const uint32_t* input, size_t length) {
     }
 }
 
+/**
+ * @brief Reassembles bytes into 32-bit words assuming little-endian order.
+ * @param output Destination array of 32-bit words (holds @p length / 4 words).
+ * @param input  Source byte buffer.
+ * @param length Number of input bytes to consume (multiple of 4).
+ */
 inline void decode(uint32_t* output, const uint8_t* input, size_t length) {
     for (size_t i = 0, j = 0; j < length; ++i, j += 4) {
         output[i] = ((uint32_t)input[j]) |

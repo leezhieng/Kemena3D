@@ -47,6 +47,13 @@ namespace kemena
          * @param parentNode Parent to attach to, or nullptr for a root node.
          */
         kObject(kObject *parentNode = nullptr);
+
+        /**
+         * @brief Destroys the object.
+         *
+         * Virtual to allow correct destruction through a kObject* pointer to a
+         * derived node. Does not delete attached children or the physics body.
+         */
         virtual ~kObject();
 
         /**
@@ -405,6 +412,24 @@ namespace kemena
         kMaterial *getMaterial();
 
         /**
+         * @brief Sets the source asset UUID of the assigned material.
+         *
+         * The runtime kMaterial carries no link back to the .mat asset it was
+         * built from, so the editor records the material asset's UUID here.
+         * It is serialized with the object so the assignment survives save/load;
+         * an empty string means "no material asset assigned".
+         *
+         * @param uuid Material asset UUID, or empty string for none.
+         */
+        void    setMaterialUuid(const kString &uuid) { materialUuid = uuid; }
+
+        /**
+         * @brief Returns the source asset UUID of the assigned material.
+         * @return Material asset UUID, or empty string if none is assigned.
+         */
+        kString getMaterialUuid() const              { return materialUuid; }
+
+        /**
          * @brief Recomputes the local and world-space model matrices.
          *
          * Combines position, rotation, and scale into localTransform, then
@@ -523,6 +548,7 @@ namespace kemena
         kMat4 worldTransform = kMat4(1.0f); ///< Model matrix (world space).
 
         kMaterial       *material      = nullptr;
+        kString          materialUuid;  ///< Source .mat asset UUID (for save/load).
         kPhysicsObject  *physicsObject = nullptr;
 
         uint32_t iconVAO = 0;          ///< VAO for the billboard icon quad (lazy-init).

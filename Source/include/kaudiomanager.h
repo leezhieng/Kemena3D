@@ -36,7 +36,10 @@ namespace kemena
     class KEMENA3D_API kAudioManager
     {
     public:
+        /** @brief Constructs the manager; call init() before use. */
         kAudioManager();
+
+        /** @brief Destroys the manager, calling shutdown() if still active. */
         ~kAudioManager();
 
         // --- Lifecycle -------------------------------------------------------

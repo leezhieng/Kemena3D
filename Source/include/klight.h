@@ -153,6 +153,14 @@ namespace kemena
          */
         void setLightType(kLightType newType);
 
+        /**
+         * @brief Serialises this light node to JSON.
+         *
+         * Overrides kObject::serialize() to include the light-specific
+         * properties (type, colours, power, attenuation, direction and
+         * spotlight cut-off angles) in addition to the base node data.
+         * @return JSON object describing the light.
+         */
         json serialize() override;
 
     protected:

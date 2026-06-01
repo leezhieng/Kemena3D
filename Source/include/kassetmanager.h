@@ -54,6 +54,9 @@ namespace kemena
     class kAssetManager
     {
     public:
+        /**
+         * @brief Constructs an empty asset manager with no loaded assets.
+         */
         kAssetManager();
 
         /**

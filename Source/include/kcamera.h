@@ -182,6 +182,7 @@ namespace kemena
 
         /** @brief UUID of the scene this camera renders (empty = auto/default). */
         kString getSceneUuid() const { return sceneUuid; }
+        /** @brief Sets the UUID of the scene this camera renders (empty = auto/default). */
         void setSceneUuid(const kString &uuid) { sceneUuid = uuid; }
 
     protected:

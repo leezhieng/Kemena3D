@@ -579,6 +579,10 @@ namespace kemena
         if (!prefabRef.empty())    data["prefab_ref"]    = prefabRef;
         if (!templateUuid.empty()) data["template_uuid"] = templateUuid;
 
+        // Assigned material asset — only emit when set. The editor re-applies
+        // the material from this UUID on load (see Manager::loadObjectFromJson).
+        if (!materialUuid.empty()) data["material_uuid"] = materialUuid;
+
         // Physics body descriptor — only emitted when the object opted in.
         // The fields mirror kPhysicsObjectDesc; readers should populate the
         // descriptor and call setHasPhysicsDesc(true).

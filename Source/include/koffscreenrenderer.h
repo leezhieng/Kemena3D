@@ -45,26 +45,42 @@ namespace kemena
     {
     public:
         /**
+         * @brief Construct the renderer and allocate its offscreen FBO.
+         *
          * @param width  Output texture width in pixels.
          * @param height Output texture height in pixels.
          */
         kOffscreenRenderer(int width = 256, int height = 256);
+
+        /**
+         * @brief Destroy the renderer and release all GPU resources (FBO, textures, shaders).
+         */
         ~kOffscreenRenderer();
 
         /**
          * @brief Resize the offscreen buffer.
          *
          * Destroys and recreates the FBO.  Any previous render result is lost.
+         *
+         * @param newWidth  New output texture width in pixels.
+         * @param newHeight New output texture height in pixels.
          */
         void resize(int newWidth, int newHeight);
 
         /**
-         * @brief Background clear color and alpha (default: opaque dark grey).
+         * @brief Set the background clear color and alpha (default: opaque dark grey).
          *
          * Set alpha to 0 for a fully transparent background — useful when
          * compositing the thumbnail over other UI elements.
+         *
+         * @param color RGBA clear color in linear/normalized [0,1] components.
          */
         void setBackgroundColor(kVec4 color) { bgColor = color; }
+
+        /**
+         * @brief Get the current background clear color and alpha.
+         * @return The RGBA background color.
+         */
         kVec4 getBackgroundColor() const     { return bgColor; }
 
         /**
@@ -117,7 +133,16 @@ namespace kemena
          */
         uint32_t getTexture() const { return colorTex; }
 
+        /**
+         * @brief Get the output texture width in pixels.
+         * @return Buffer width.
+         */
         int getWidth()  const { return width;  }
+
+        /**
+         * @brief Get the output texture height in pixels.
+         * @return Buffer height.
+         */
         int getHeight() const { return height; }
 
         /**

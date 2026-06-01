@@ -456,20 +456,20 @@ namespace kemena
         uint32_t engineVersion = 0;  ///< Optional application version for diagnostics.
 
         // Octree frustum culling
-        std::unique_ptr<kOctree> sceneOctree = std::make_unique<kOctree>();
-        bool octreeCullingEnabled = true;
+        std::unique_ptr<kOctree> sceneOctree = std::make_unique<kOctree>(); ///< Spatial index of scene meshes for frustum culling.
+        bool octreeCullingEnabled = true; ///< Master toggle for octree-based frustum culling.
         bool octreeDirty = true;         ///< Rebuild static-mesh octree on next frame when true.
         bool octreeDebugEnabled = false; ///< Draw octree node AABBs as wireframes.
         kCamera *cullingCamera = nullptr; ///< Override camera for frustum; nullptr = main camera.
         std::unordered_set<kMesh*> visibleMeshSet; ///< Populated per frame from octree query.
         kFrustum currentFrustum; ///< Frustum for the current frame, used for dynamic mesh culling.
         bool currentFrustumValid = false; ///< True when currentFrustum has been extracted this frame.
-        kWindow *appWindow = nullptr;
+        kWindow *appWindow = nullptr; ///< Target window the renderer was initialised with (may be nullptr).
 
-        kRendererType renderType;
-        kDriver *driver = nullptr;
+        kRendererType renderType; ///< Selected graphics backend type.
+        kDriver *driver = nullptr; ///< Owned graphics driver abstraction.
 
-        kVec4 clearColor = kVec4(0.0f, 0.0f, 0.0f, 1.0f);
+        kVec4 clearColor = kVec4(0.0f, 0.0f, 0.0f, 1.0f); ///< Framebuffer clear colour (stored in linear space).
 
         /// Used to detect same-frame animation updates.
         int frameId = 0;
@@ -508,13 +508,13 @@ namespace kemena
         void renderSceneGraphPicking(kWorld *world, kScene *scene, kObject *rootNode);
 
         // Screen FBO
-        bool enableScreenBuffer = false;
-        kShader *screenShader = nullptr;
-        uint32_t quadVao = 0, quadVbo = 0, quadEbo = 0;
-        uint32_t fbo = 0, fboTexColor = 0, rboDepth = 0;
-        uint32_t fboMsaa = 0, fboTexColorMsaa = 0, rboDepthMsaa = 0;
+        bool enableScreenBuffer = false; ///< True when off-screen post-process FBO is active.
+        kShader *screenShader = nullptr; ///< Full-screen post-process shader.
+        uint32_t quadVao = 0, quadVbo = 0, quadEbo = 0; ///< GPU buffers for the full-screen quad.
+        uint32_t fbo = 0, fboTexColor = 0, rboDepth = 0; ///< Resolved single-sample FBO and its color/depth attachments.
+        uint32_t fboMsaa = 0, fboTexColorMsaa = 0, rboDepthMsaa = 0; ///< Multisample FBO resolved into the single-sample FBO.
 
-        int fboWidth = 0, fboHeight = 0;
+        int fboWidth = 0, fboHeight = 0; ///< Current screen-buffer FBO dimensions in pixels.
 
         // Cascaded shadow maps — one depth-texture-array layer per cascade.
         static constexpr int kMaxShadowCascades = 4;
@@ -529,35 +529,35 @@ namespace kemena
         float    shadowSoftness     = 1.5f;   ///< PCF tap spacing in shadow-map texels.
         uint32_t shadowFbo          = 0;      ///< Single FBO; layer re-attached per cascade.
         uint32_t shadowTexArray     = 0;      ///< GL_TEXTURE_2D_ARRAY depth texture.
-        kMat4    lightSpaceMatrices[kMaxShadowCascades];
-        float    cascadeSplits[kMaxShadowCascades] = {};
+        kMat4    lightSpaceMatrices[kMaxShadowCascades]; ///< Per-cascade light projection*view matrices.
+        float    cascadeSplits[kMaxShadowCascades] = {}; ///< Per-cascade far-plane split distances.
 
         // Picking FBO
-        bool enablePicking = false;
-        kShader *pickingShader = nullptr;
-        kShader *pickingIconShader = nullptr;
-        uint32_t pickingIconVAO = 0, pickingIconVBO = 0;
-        uint32_t pickFbo = 0, pickFboTex = 0, pickRboDepth = 0;
-        int pickFboWidth = 0, pickFboHeight = 0;
+        bool enablePicking = false; ///< True when color-ID object picking is active.
+        kShader *pickingShader = nullptr; ///< Shader that writes each mesh's unique ID as a flat color.
+        kShader *pickingIconShader = nullptr; ///< Shader for picking editor icon billboards (lights/cameras).
+        uint32_t pickingIconVAO = 0, pickingIconVBO = 0; ///< GPU buffers for picking icon quads.
+        uint32_t pickFbo = 0, pickFboTex = 0, pickRboDepth = 0; ///< Picking FBO and its color/depth attachments.
+        int pickFboWidth = 0, pickFboHeight = 0; ///< Current picking FBO dimensions in pixels.
 
         // Outline shader (compiled on first renderOutline call)
-        kShader *outlineShader = nullptr;
+        kShader *outlineShader = nullptr; ///< Shader that composites selection outlines from the picking texture.
 
         // Passthrough shader for Object IDs display mode
-        kShader *debugPickShader = nullptr;
+        kShader *debugPickShader = nullptr; ///< Shader that displays the raw picking IDs as colours.
 
         // Debug / render-mode shaders (compiled on first use)
-        kShader *debugAlbedoShader  = nullptr;
-        kShader *debugNormalsShader = nullptr;
-        kShader *debugWireShader    = nullptr;
-        kShader *debugDepthShader   = nullptr;
+        kShader *debugAlbedoShader  = nullptr; ///< Visualises base colour only.
+        kShader *debugNormalsShader = nullptr; ///< Visualises world/view-space normals.
+        kShader *debugWireShader    = nullptr; ///< Renders meshes as wireframe.
+        kShader *debugDepthShader   = nullptr; ///< Visualises linearised scene depth.
 
         // Debug shape line rendering
-        kShader  *debugLineShader = nullptr;
-        uint32_t  debugLineVao    = 0;
-        uint32_t  debugLineVbo    = 0;
+        kShader  *debugLineShader = nullptr; ///< Shader for solid-colour debug line segments.
+        uint32_t  debugLineVao    = 0;       ///< Vertex array for debug line geometry.
+        uint32_t  debugLineVbo    = 0;       ///< Vertex buffer for debug line geometry.
 
-        kRenderMode renderMode = kRenderMode::RENDER_MODE_FULL;
+        kRenderMode renderMode = kRenderMode::RENDER_MODE_FULL; ///< Active debug visualization mode.
 
         /**
          * @brief Renders the scene graph using a single override shader (no lights/shadows).
@@ -571,12 +571,12 @@ namespace kemena
                                    kShader *shader, bool wireframe);
 
         // Auto exposure
-        bool enableAutoExposure = false;
-        float averageLuminance = 0.0f;
-        float averageLuminanceColor[4] = {};
-        float exposureKey = 0.18f;
-        float exposureAdaptationRate = 2.0f;
-        float exposure = 1.0f;
+        bool enableAutoExposure = false; ///< True when automatic exposure adjustment is active.
+        float averageLuminance = 0.0f; ///< Smoothed scene average luminance.
+        float averageLuminanceColor[4] = {}; ///< Last sampled average colour (RGBA) from the resolved FBO.
+        float exposureKey = 0.18f; ///< Target middle-grey key value for exposure.
+        float exposureAdaptationRate = 2.0f; ///< Speed at which exposure adapts to luminance changes.
+        float exposure = 1.0f; ///< Current exposure multiplier passed to the screen shader.
     };
 }
 

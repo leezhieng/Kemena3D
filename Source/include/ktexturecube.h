@@ -22,7 +22,10 @@ namespace kemena
     class KEMENA3D_API kTextureCube : public kTexture
     {
     public:
+        /** @brief Constructs an empty cube-map texture. */
         kTextureCube();
+
+        /** @brief Destroys the cube-map texture and releases its GPU resources. */
         virtual ~kTextureCube();
 
     protected:

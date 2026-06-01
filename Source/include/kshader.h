@@ -20,6 +20,21 @@ namespace kemena
 
 
     /**
+     * @brief Holds the split stages of a combined shader source.
+     *
+     * Combined shader files use section markers to separate stages:
+     *   - vertex source appears before any marker (or after "// --- VERTEX ---")
+     *   - "// --- GEOMETRY ---" introduces an optional geometry stage
+     *   - "// --- FRAGMENT ---" introduces the fragment / pixel stage
+     */
+    struct KEMENA3D_API kShaderSource
+    {
+        kString vertex;   ///< Vertex stage source.
+        kString geometry; ///< Optional geometry stage source (empty if absent).
+        kString fragment; ///< Fragment / pixel stage source.
+    };
+
+    /**
      * @brief Wraps a compiled GLSL shader program.
      *
      * Shaders can be loaded from source files or inline code strings.
@@ -36,27 +51,20 @@ namespace kemena
      *   shader.unuse();
      * @endcode
      */
-    /**
-     * @brief Holds the split stages of a combined shader source.
-     *
-     * Combined shader files use section markers to separate stages:
-     *   - vertex source appears before any marker (or after "// --- VERTEX ---")
-     *   - "// --- GEOMETRY ---" introduces an optional geometry stage
-     *   - "// --- FRAGMENT ---" introduces the fragment / pixel stage
-     */
-    struct KEMENA3D_API kShaderSource
-    {
-        kString vertex;
-        kString geometry;
-        kString fragment;
-    };
-
     class KEMENA3D_API kShader
     {
     public:
+        /** @brief Constructs an empty shader with no compiled program. */
         kShader();
+
+        /** @brief Destroys the shader, deleting the GPU program if one was compiled. */
         virtual ~kShader();
 
+        /**
+         * @brief Reads the entire contents of a text file into a string.
+         * @param filePath Path to the file to read.
+         * @return The file contents, or an empty string if the file cannot be opened.
+         */
         kString readFile(const kString filePath);
 
         /**

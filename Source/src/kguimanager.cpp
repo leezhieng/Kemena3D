@@ -116,6 +116,16 @@ namespace kemena
 	void kGuiManager::windowStart(kString title, bool *open, ImGuiWindowFlags flags)
 	{
 		ImGui::Begin(title.c_str(), open, flags);
+
+		// ImGui only brings a window forward on left click. Mirror that for the
+		// middle and right buttons so a click with any mouse button inside a
+		// panel focuses it (and, when docked, raises its tab).
+		if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+			(ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+			 ImGui::IsMouseClicked(ImGuiMouseButton_Middle)))
+		{
+			ImGui::SetWindowFocus();
+		}
 	}
 
 	void kGuiManager::windowEnd()

@@ -570,37 +570,71 @@ namespace kemena
      */
     struct kAABB
     {
-        kVec3 min = kVec3( 1e30f);
-        kVec3 max = kVec3(-1e30f);
+        kVec3 min = kVec3( 1e30f); ///< Minimum corner; initialised to +inf so the box starts empty/invalid.
+        kVec3 max = kVec3(-1e30f); ///< Maximum corner; initialised to -inf so the box starts empty/invalid.
 
+        /** @brief Constructs an empty (invalid) bounding box. */
         kAABB() = default;
+
+        /**
+         * @brief Constructs a bounding box from explicit corners.
+         * @param min Minimum corner.
+         * @param max Maximum corner.
+         */
         kAABB(kVec3 min, kVec3 max) : min(min), max(max) {}
 
+        /** @brief Returns the geometric centre of the box. */
         kVec3 center()      const { return (min + max) * 0.5f; }
+
+        /** @brief Returns half the size of the box along each axis. */
         kVec3 halfExtents() const { return (max - min) * 0.5f; }
 
+        /** @brief Returns true if min is component-wise less than or equal to max (i.e. the box is non-degenerate). */
         bool isValid() const { return min.x <= max.x && min.y <= max.y && min.z <= max.z; }
 
+        /**
+         * @brief Grows the box so that it encloses the given point.
+         * @param point Point to include.
+         */
         void expandBy(const kVec3 &point) {
             min = glm::min(min, point);
             max = glm::max(max, point);
         }
 
+        /**
+         * @brief Grows the box so that it encloses another box.
+         * @param other Box to merge into this one.
+         */
         void merge(const kAABB &other) {
             min = glm::min(min, other.min);
             max = glm::max(max, other.max);
         }
 
+        /**
+         * @brief Returns a copy of the box uniformly expanded outward by the given amount on every side.
+         * @param amount Distance to push each face outward.
+         * @return Expanded bounding box.
+         */
         kAABB expanded(float amount) const {
             return { min - kVec3(amount), max + kVec3(amount) };
         }
 
+        /**
+         * @brief Tests whether this box fully contains another box.
+         * @param other Box to test for containment.
+         * @return true if @p other lies entirely within this box.
+         */
         bool contains(const kAABB &other) const {
             return other.min.x >= min.x && other.max.x <= max.x
                 && other.min.y >= min.y && other.max.y <= max.y
                 && other.min.z >= min.z && other.max.z <= max.z;
         }
 
+        /**
+         * @brief Tests whether this box intersects another box.
+         * @param other Box to test against.
+         * @return true if the two boxes overlap (touching counts as overlap).
+         */
         bool overlaps(const kAABB &other) const {
             return min.x <= other.max.x && max.x >= other.min.x
                 && min.y <= other.max.y && max.y >= other.min.y

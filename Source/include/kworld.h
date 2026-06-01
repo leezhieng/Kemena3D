@@ -53,7 +53,10 @@ namespace kemena
     class KEMENA3D_API kWorld
     {
     public:
+        /** @brief Constructs an empty world and creates its script manager. */
         kWorld();
+
+        /** @brief Destroys the world, releasing owned scenes, cameras, and managers. */
         virtual ~kWorld();
 
         /**

@@ -40,7 +40,9 @@ namespace kemena
     class KEMENA3D_API kPrefab
     {
     public:
+        /** @brief Constructs an empty prefab with no UUID, name, or root subtree. */
         kPrefab();
+        /** @brief Destroys the prefab and releases its stored JSON. */
         ~kPrefab();
 
         /**
@@ -68,6 +70,7 @@ namespace kemena
 
         /** @brief Returns the object subtree JSON (the "root" field). */
         const json &getRootJson() const { return rootJson; }
+        /** @brief Returns a mutable reference to the object subtree JSON (the "root" field). */
         json       &getRootJson()       { return rootJson; }
         /** @brief Replaces the object subtree JSON. */
         void        setRootJson(const json &j) { rootJson = j; }

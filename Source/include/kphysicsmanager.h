@@ -56,7 +56,10 @@ namespace kemena
     class KEMENA3D_API kPhysicsManager
     {
     public:
+        /** @brief Constructs an uninitialised manager; call init() before use. */
         kPhysicsManager();
+
+        /** @brief Destroys the manager, calling shutdown() to release all bodies. */
         ~kPhysicsManager();
 
         // --- Lifecycle -------------------------------------------------------

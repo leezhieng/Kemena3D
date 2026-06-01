@@ -39,6 +39,10 @@ namespace kemena
          * @param parentNode Parent scene-graph node, or nullptr for a root node.
          */
         kMesh(kObject *parentNode = nullptr);
+
+        /**
+         * @brief Destroys the mesh and releases its GPU buffers.
+         */
         ~kMesh();
 
         /**
@@ -82,8 +86,15 @@ namespace kemena
          *        ("cube", "sphere", "cylinder", "capsule", "plane"). Set by
          *        kMeshGenerator so save/load and duplicate can rebuild the
          *        geometry from the marker instead of needing a file on disk.
+         * @param type Primitive marker name (e.g. "cube", "sphere"), or empty
+         *        for non-primitive meshes.
          */
         void    setPrimitiveType(kString type);
+
+        /**
+         * @brief Returns the procedural-primitive marker, if any.
+         * @return Primitive type name, or an empty kString for file-loaded meshes.
+         */
         kString getPrimitiveType() const;
 
         /** @brief Propagates a local position change to this mesh and its children. */

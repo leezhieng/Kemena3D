@@ -16,19 +16,48 @@ namespace kemena
     class KEMENA3D_API kMeshGenerator
     {
     public:
-        /** @brief 2×2 quad in the XZ plane, facing +Y. */
+        /**
+         * @brief Generate a flat quad in the XZ plane, facing +Y.
+         * @param size Edge length of the quad along both X and Z (defaults to a 2×2 quad).
+         * @return Heap-allocated, GPU-uploaded kMesh; caller takes ownership.
+         */
         static kMesh *generatePlane(float size = 2.0f);
 
-        /** @brief Axis-aligned cube centred at the origin. */
+        /**
+         * @brief Generate an axis-aligned cube centred at the origin.
+         * @param size Edge length of the cube along each axis.
+         * @return Heap-allocated, GPU-uploaded kMesh; caller takes ownership.
+         */
         static kMesh *generateCube(float size = 2.0f);
 
-        /** @brief UV sphere with the given radius, stacks and slices. */
+        /**
+         * @brief Generate a UV sphere centred at the origin.
+         * @param radius Sphere radius.
+         * @param stacks Number of horizontal subdivisions (latitude bands).
+         * @param slices Number of vertical subdivisions (longitude segments).
+         * @return Heap-allocated, GPU-uploaded kMesh; caller takes ownership.
+         */
         static kMesh *generateSphere(float radius = 1.0f, int stacks = 18, int slices = 36);
 
-        /** @brief Upright cylinder with flat caps. */
+        /**
+         * @brief Generate an upright cylinder with flat top and bottom caps.
+         * @param radius Radius of the cylinder.
+         * @param height Height of the cylindrical body along the Y axis.
+         * @param slices Number of radial subdivisions around the circumference.
+         * @return Heap-allocated, GPU-uploaded kMesh; caller takes ownership.
+         */
         static kMesh *generateCylinder(float radius = 1.0f, float height = 2.0f, int slices = 36);
 
-        /** @brief Cylinder with hemispherical caps (total height = height + 2*radius). */
+        /**
+         * @brief Generate a capsule: a cylinder closed with hemispherical caps.
+         *
+         * The total height of the resulting mesh is height + 2*radius.
+         * @param radius Radius of the cylindrical body and hemispherical caps.
+         * @param height Height of the straight cylindrical section (excluding caps).
+         * @param slices Number of radial subdivisions around the circumference.
+         * @param hemiStacks Number of stacks per hemispherical cap.
+         * @return Heap-allocated, GPU-uploaded kMesh; caller takes ownership.
+         */
         static kMesh *generateCapsule(float radius = 1.0f, float height = 2.0f,
                                       int slices = 36, int hemiStacks = 8);
     };

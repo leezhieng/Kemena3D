@@ -32,8 +32,8 @@ namespace kemena
         float slopeLimit    = 45.0f; ///< Maximum walkable slope, in degrees.
         float stepHeight     = 0.3f; ///< Reserved for step-up handling.
 
-        kVec3 position = kVec3(0.0f, 0.0f, 0.0f);
-        kQuat rotation = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+        kVec3 position = kVec3(0.0f, 0.0f, 0.0f);       ///< Initial world-space position (capsule feet origin).
+        kQuat rotation = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Initial world-space orientation.
     };
 
     /**
@@ -46,7 +46,10 @@ namespace kemena
     class KEMENA3D_API kCharacterController
     {
     public:
+        /** @brief Constructs an uninitialised character controller; call init() before use. */
         kCharacterController();
+
+        /** @brief Destroys the controller, releasing any underlying Jolt character. */
         ~kCharacterController();
 
         /**
@@ -66,13 +69,31 @@ namespace kemena
          */
         void update(float deltaTime);
 
+        /** @brief Returns the character's current world-space position (capsule feet origin). */
         kVec3 getPosition() const;
+
+        /**
+         * @brief Teleports the character to a world-space position.
+         * @param position New world-space position (capsule feet origin).
+         */
         void  setPosition(const kVec3 &position);
+
+        /** @brief Returns the character's current world-space orientation. */
         kQuat getRotation() const;
+
+        /**
+         * @brief Sets the character's world-space orientation.
+         * @param rotation New world-space orientation.
+         */
         void  setRotation(const kQuat &rotation);
 
-        /** @brief Sets the character's world-space velocity (m/s). */
+        /**
+         * @brief Sets the character's world-space velocity (m/s).
+         * @param velocity Desired linear velocity in metres per second.
+         */
         void  setLinearVelocity(const kVec3 &velocity);
+
+        /** @brief Returns the character's current world-space velocity (m/s). */
         kVec3 getLinearVelocity() const;
 
         /** @brief True when the character is standing on walkable ground. */

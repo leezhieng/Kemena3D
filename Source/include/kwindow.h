@@ -31,7 +31,10 @@ namespace kemena
     class KEMENA3D_API kWindow
     {
     public:
+        /** @brief Constructs an uninitialised window; call init() to create the SDL window. */
         kWindow();
+
+        /** @brief Destroys the window, releasing the SDL window and frame timer. */
         virtual ~kWindow();
 
         /**

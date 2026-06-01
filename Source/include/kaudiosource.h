@@ -19,12 +19,12 @@ namespace kemena
      */
     struct KEMENA3D_API kAudioSource
     {
-        kString uuid;
-        kString name        = "Audio Source";
+        kString uuid;                ///< Unique identifier of this audio source.
+        kString name        = "Audio Source"; ///< Human-readable name shown in the editor.
         kString audioFile   = "";    ///< Path to the audio clip (WAV / MP3 / OGG / FLAC).
-        bool    isActive    = true;
-        bool    playOnAwake = false;
-        bool    loop        = false;
+        bool    isActive    = true;  ///< When false, the source is ignored by the audio manager.
+        bool    playOnAwake = false; ///< If true, playback starts automatically when the scene begins.
+        bool    loop        = false; ///< If true, the clip repeats continuously.
         float   volume      = 1.0f;  ///< 0 = silent, 1 = full volume.
         float   pitch       = 1.0f;  ///< 1 = normal speed/pitch.
         bool    spatialize  = true;  ///< false = 2-D (no panning/attenuation).
@@ -41,8 +41,8 @@ namespace kemena
      */
     struct KEMENA3D_API kAudioListener
     {
-        kString uuid;
-        bool    isActive = true;
+        kString uuid;               ///< Unique identifier of this listener.
+        bool    isActive = true;    ///< When false, this object is not used as the active listener.
     };
 
 } // namespace kemena

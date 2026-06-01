@@ -97,13 +97,13 @@ namespace kemena
         std::vector<kSkeletalAnimation *> animations;                   ///< Registered skeletal clips.
 
         // Non-skeletal placeholder.
-        kAnimation                      *objectAnimation = nullptr;
+        kAnimation                      *objectAnimation = nullptr;       ///< Registered non-skeletal clip (not yet driven).
 
         // Playback time / pacing.
-        float currentTime    = 0.0f;
-        float deltaTime      = 0.0f;
-        float speed          = 1.0f;
-        int   currentFrameId = -1;
+        float currentTime    = 0.0f;                                      ///< Current playback position in ticks.
+        float deltaTime      = 0.0f;                                      ///< Last elapsed time in seconds.
+        float speed          = 1.0f;                                      ///< Global playback speed multiplier.
+        int   currentFrameId = -1;                                        ///< Last processed frame id (guards duplicate updates).
     };
 }
 

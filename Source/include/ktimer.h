@@ -21,6 +21,9 @@ namespace kemena
     class KEMENA3D_API kTimer
     {
     public:
+        /**
+         * @brief Constructs the timer and initialises its internal reference timestamp.
+         */
         kTimer();
 
         /**

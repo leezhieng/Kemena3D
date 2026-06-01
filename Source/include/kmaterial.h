@@ -26,7 +26,17 @@ namespace kemena
     class kMaterial
     {
     public:
+        /**
+         * @brief Constructs a material with default surface parameters and no shader.
+         */
         kMaterial();
+
+        /**
+         * @brief Destroys the material.
+         *
+         * Does not free the shader or textures; ownership of those resources
+         * remains with the caller.
+         */
         virtual ~kMaterial();
 
         /**

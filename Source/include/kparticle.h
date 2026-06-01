@@ -21,27 +21,27 @@ namespace kemena
      */
     struct KEMENA3D_API kParticle
     {
-        kString uuid;
-        kString name     = "Particle System";
-        bool    isActive = true;
-        bool    looping  = true;
+        kString uuid;                       ///< Unique identifier for this particle system.
+        kString name     = "Particle System"; ///< Human-readable display name.
+        bool    isActive = true;            ///< Whether this system emits/simulates particles.
+        bool    looping  = true;            ///< Whether emission restarts after one cycle.
 
         // Emitter
-        int   maxParticles = 100;
+        int   maxParticles = 100;           ///< Maximum number of live particles at once.
         float emissionRate = 10.0f;  ///< Particles spawned per second.
         float lifetime     = 2.0f;   ///< Each particle's lifespan in seconds.
-        float gravityScale = 1.0f;
+        float gravityScale = 1.0f;          ///< Multiplier applied to gravity acting on particles.
 
         // Velocity
-        kVec3 startVelocity    = kVec3(0.0f, 1.0f, 0.0f);
-        float startSpeed       = 1.0f;
-        kVec3 velocityVariance = kVec3(0.1f, 0.1f, 0.1f);
+        kVec3 startVelocity    = kVec3(0.0f, 1.0f, 0.0f); ///< Base initial velocity direction/magnitude.
+        float startSpeed       = 1.0f;                    ///< Scalar speed applied to the start velocity.
+        kVec3 velocityVariance = kVec3(0.1f, 0.1f, 0.1f); ///< Per-axis random spread added to start velocity.
 
         // Visual
-        kVec4 colorStart = kVec4(1.0f, 1.0f, 1.0f, 1.0f);
-        kVec4 colorEnd   = kVec4(1.0f, 1.0f, 1.0f, 0.0f);
-        float sizeStart  = 0.1f;
-        float sizeEnd    = 0.0f;
+        kVec4 colorStart = kVec4(1.0f, 1.0f, 1.0f, 1.0f); ///< Particle color (RGBA) at birth.
+        kVec4 colorEnd   = kVec4(1.0f, 1.0f, 1.0f, 0.0f); ///< Particle color (RGBA) at death.
+        float sizeStart  = 0.1f;                          ///< Particle size at birth.
+        float sizeEnd    = 0.0f;                          ///< Particle size at death.
     };
 
     /**
@@ -53,7 +53,10 @@ namespace kemena
     class KEMENA3D_API kParticleManager
     {
     public:
+        /** @brief Constructs an empty particle manager with no registered emitters. */
         kParticleManager()  = default;
+
+        /** @brief Destroys the manager; does not own the registered descriptors. */
         ~kParticleManager() = default;
 
         /**

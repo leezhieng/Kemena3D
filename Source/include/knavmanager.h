@@ -44,11 +44,14 @@ namespace kemena
     {
     public:
         /**
+         * @brief Constructs a navigation manager for a baked navmesh.
          * @param mesh   A successfully baked kNavMesh. The manager holds a
          *               non-owning pointer — the mesh must outlive the manager.
          * @param maxAgents  Maximum simultaneous crowd agents (default 128).
          */
         kNavManager(kNavMesh *mesh, int maxAgents = 128);
+
+        /** @brief Destroys the manager, shutting down the crowd and freeing agents/obstacles. */
         ~kNavManager();
 
         // --- Lifecycle -------------------------------------------------------

@@ -17,6 +17,8 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
+#include <fstream> // [TEMP DIAGNOSTIC] skybox trace logging
+
 namespace kemena
 {
     kAssetManager::kAssetManager()
@@ -374,9 +376,16 @@ namespace kemena
 		glGenTextures(1, &textureID);
 		glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
 
+		// [TEMP DIAGNOSTIC] Trace the skybox cubemap upload to find the
+		// intermittent blank-on-launch. Remove once the cause is identified.
+		std::ofstream sbLog("d:/Projects/Kemena3D/skybox_debug.log", std::ios::app);
+		sbLog << "=== loadTextureCubeFromResource id=" << textureID << " ===\n";
+		while (glGetError() != GL_NO_ERROR) {}
+
 		int width, height, nrChannels;
 		for (unsigned int i = 0; i < faces.size(); i++)
 		{
+			width = height = nrChannels = -1;
 			unsigned char* data = loadImageFromResource(faces[i].c_str(), width, height, nrChannels);
 			if (data)
 			{
@@ -387,10 +396,15 @@ namespace kemena
 					0, GL_RGB, GL_UNSIGNED_BYTE,
 					data
 				);
+				GLenum e = glGetError();
+				sbLog << "  face[" << i << "] " << faces[i]
+				      << " data=OK w=" << width << " h=" << height
+				      << " ch=" << nrChannels << " uploadErr=0x" << std::hex << e << std::dec << "\n";
 				stbi_image_free(data);
 			}
 			else
 			{
+				sbLog << "  face[" << i << "] " << faces[i] << " data=NULL (load failed)\n";
 				std::cout << "Cubemap tex failed to load from resource: " << faces[i] << std::endl;
 			}
 		}
@@ -402,6 +416,7 @@ namespace kemena
 		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
 		glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+		sbLog << "  genMipmapErr=0x" << std::hex << glGetError() << std::dec << "\n";
 
 		kTextureCube* newTexture = new kTextureCube();
 		newTexture->setType(kTextureType::TEX_TYPE_CUBE);
@@ -431,26 +446,30 @@ namespace kemena
         kString ext = getFileExtension(fileName);
         kMesh *mesh = nullptr;
 
-        if (ext == "gltf" || ext == "glb")
-        {
-            // glTF/GLB always go through tinygltf — available in both build
-            // flavours.
-            mesh = loadMeshGltf(fileName);
-        }
 #ifndef KEMENA_NO_ASSIMP
-        else if (ext == "obj" || ext == "fbx")
+        // Full editor build: assimp reads every supported format, including
+        // glTF/GLB. The tinygltf path (loadMeshGltf) is only a stub right now,
+        // so routing .glb through it here returned empty meshes — use assimp.
+        if (ext == "obj" || ext == "fbx" || ext == "gltf" || ext == "glb")
         {
             mesh = loadMeshFileAssimp(fileName);
         }
-#endif
+        else
+        {
+            std::cout << "loadMesh: unsupported extension '" << ext << "'" << std::endl;
+        }
+#else
+        // Slim runtime build (no assimp): glTF/GLB only, via tinygltf.
+        if (ext == "gltf" || ext == "glb")
+        {
+            mesh = loadMeshGltf(fileName);
+        }
         else
         {
             std::cout << "loadMesh: unsupported extension '" << ext << "'"
-#ifdef KEMENA_NO_ASSIMP
-                      << " (slim runtime build accepts only .gltf / .glb)"
-#endif
-                      << std::endl;
+                      << " (slim runtime build accepts only .gltf / .glb)" << std::endl;
         }
+#endif
 
         if (mesh)
         {

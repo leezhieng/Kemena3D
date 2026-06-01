@@ -21,7 +21,14 @@ namespace kemena
     class KEMENA3D_API kTexture2D : public kTexture
     {
     public:
+        /**
+         * @brief Constructs an empty 2D texture with zeroed metadata and no pixel data.
+         */
         kTexture2D();
+
+        /**
+         * @brief Destroys the 2D texture and releases any retained CPU-side pixel data.
+         */
         virtual ~kTexture2D();
 
         /**

@@ -17,6 +17,12 @@ namespace kemena
     // Partition algorithm used during Recast region building
     // -------------------------------------------------------------------------
 
+    /**
+     * @brief Partition algorithm used during Recast region building.
+     *
+     * Selects how the walkable heightfield is divided into regions, trading
+     * bake speed against mesh quality.
+     */
     enum class kNavPartitionType
     {
         Watershed, ///< Best quality; slower on complex geometry.
@@ -56,10 +62,10 @@ namespace kemena
         int   maxVertsPerPoly      = 6;     ///< Maximum vertices per navmesh polygon (2–6).
 
         // Detail mesh
-        float detailSampleDist     = 6.0f;
-        float detailSampleMaxError = 1.0f;
+        float detailSampleDist     = 6.0f; ///< Detail mesh sample spacing (cells); 0 disables detail sampling.
+        float detailSampleMaxError = 1.0f; ///< Maximum detail mesh deviation from heightfield (cells).
 
-        kNavPartitionType partition = kNavPartitionType::Watershed;
+        kNavPartitionType partition = kNavPartitionType::Watershed; ///< Region partition algorithm.
 
         /**
          * Tile size in voxel cells. Must be > 0 to enable dynamic obstacle support.
@@ -133,7 +139,9 @@ namespace kemena
     class KEMENA3D_API kNavMesh
     {
     public:
+        /** @brief Constructs an empty, unbaked navigation mesh. */
         kNavMesh();
+        /** @brief Destroys the navmesh and releases all baked Recast/Detour data. */
         ~kNavMesh();
 
         // --- Baking ----------------------------------------------------------
@@ -200,7 +208,7 @@ namespace kemena
 
     protected:
     private:
-        Impl *m_impl;
+        Impl *m_impl; ///< Owned pointer to the opaque implementation state.
     };
 
 } // namespace kemena

@@ -35,7 +35,10 @@ namespace kemena
     class KEMENA3D_API kAudio
     {
     public:
+        /** @brief Constructs an empty audio clip; call initFromFile() (via kAudioManager) before use. */
         kAudio();
+
+        /** @brief Destructor; releases the underlying miniaudio sound resource. */
         ~kAudio();
 
         // --- Playback controls -----------------------------------------------

@@ -348,6 +348,12 @@ void main() {}
             renderShadowPass(world, scene, camera);
         }
 
+        // Lit shaders sample a sampler2DArray shadow map; guarantee a valid array
+        // exists to bind even when no shadow pass ran (an unbound array sampler
+        // makes some drivers drop the whole draw). Allocate it BEFORE binding the
+        // colour FBO so we don't disturb that binding mid-draw.
+        ensureShadowResources();
+
         driver->bindFramebuffer(fbo);
         driver->setViewport(0, 0, width * ssaaScale, height * ssaaScale);
         driver->setClearColor(bgColor.r, bgColor.g, bgColor.b, bgColor.a);
@@ -570,6 +576,9 @@ void main() {}
         GLint savedVP[4];
         glGetIntegerv(GL_VIEWPORT, savedVP);
 
+        // Allocate the shadow array before binding the FBO (see render()).
+        ensureShadowResources();
+
         driver->bindFramebuffer(fbo);
         driver->setViewport(0, 0, width * ssaaScale, height * ssaaScale);
         driver->setClearColor(bgColor.r, bgColor.g, bgColor.b, bgColor.a);
@@ -685,11 +694,14 @@ void main() {}
         const bool skyboxBound =
             skyboxMaterial && !skyboxMaterial->getTextures().empty() &&
             skyboxMaterial->getTexture(0)->getType() == kTextureType::TEX_TYPE_CUBE;
+        // Always point skyboxMap at its own unit, even with no skybox bound. The
+        // lit shaders declare samplerCube skyboxMap, sampler2DArray shadowMapArray
+        // and sampler2D maps; if skyboxMap is left unassigned it defaults to unit
+        // 0 alongside the sampler2D maps, and sampling one unit as two sampler
+        // types is GL_INVALID_OPERATION — which silently drops the whole draw.
+        shader->setValue("skyboxMap", skyboxUnit);
         if (skyboxBound)
-        {
             driver->bindTextureCube(skyboxUnit, skyboxMaterial->getTexture(0)->getTextureID());
-            shader->setValue("skyboxMap", skyboxUnit);
-        }
 
         // Shadow-map uniforms — always set so the offscreen pass never inherits
         // stale values left by an earlier main-renderer draw on the same shader
@@ -699,7 +711,9 @@ void main() {}
         const bool shadowsOn = scene && scene->getShadowsEnabled() && shadowTexArray != 0;
         shader->setValue("enableShadow",     shadowsOn);
         shader->setValue("receiveShadow",    mesh->getReceiveShadow());
-        shader->setValue("cascadeCount",     scene ? shadowCascadeCount : 0);
+        // cascadeCount<=0 is the lit shaders' signal that shadow uniforms aren't
+        // set up — keep it 0 unless we actually have a shadow map this draw.
+        shader->setValue("cascadeCount",     shadowsOn ? shadowCascadeCount : 0);
         shader->setValue("shadowResolution", (float)shadowResolution);
         shader->setValue("shadowBias",       scene ? scene->getShadowBias()       : 0.0008f);
         shader->setValue("shadowNormalBias", scene ? scene->getShadowNormalBias() : 0.003f);
@@ -708,7 +722,15 @@ void main() {}
             kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
         std::vector<kMat4> lsm(lightSpaceMatrices, lightSpaceMatrices + shadowCascadeCount);
         shader->setValue("lightSpaceMatrices", lsm);
-        if (shadowsOn)
+
+        // The lit shaders (Phong/PBR) declare a `sampler2DArray shadowMapArray`.
+        // Even when shadows are off, leaving that sampler unbound (or pointing at
+        // a 2D texture on unit 0) makes many drivers drop the whole draw — the
+        // symptom is lit materials rendering blank in previews/thumbnails while
+        // Unlit (which has no such sampler) renders fine. So always bind the
+        // depth array (allocated by the caller before the FBO was bound) and set
+        // the sampler; enableShadow/cascadeCount gate whether it's sampled.
+        if (shadowTexArray != 0)
         {
             driver->bindTexture2DArray(shadowUnit, shadowTexArray);
             shader->setValue("shadowMapArray", shadowUnit);
@@ -720,8 +742,7 @@ void main() {}
 
         unbindMaterialTextures(mesh);
 
-        if (shadowsOn)
-            driver->unbindTexture2DArray(shadowUnit);
+        driver->unbindTexture2DArray(shadowUnit);
         if (skyboxBound)
             driver->unbindTextureCube(skyboxUnit);
     }
