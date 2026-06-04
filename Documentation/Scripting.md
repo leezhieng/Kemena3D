@@ -53,7 +53,10 @@ script-global variables are **not** shared between objects.
 
 ## Host API
 
-The engine exposes the following to every script.
+The engine exposes the following to every script. For the **complete** reference
+— every `kObject`/`kVec3` member, the `string` standard library, number
+formatting, and worked examples — see
+[**ScriptingAPI.md**](ScriptingAPI.md).
 
 ### Globals
 

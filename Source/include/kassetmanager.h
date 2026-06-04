@@ -122,6 +122,22 @@ namespace kemena
         kTexture2D *loadTexture2D(const kString fileName, const kString textureName, const kTextureFormat format = kTextureFormat::TEX_FORMAT_SRGBA, const bool flipVertical = false, const bool keepData = false);
 
         /**
+         * @brief Loads a 2D texture from a DDS file (DXT5 or uncompressed RGBA8).
+         *
+         * Reads a standard 128-byte DDS header and uploads every stored mip level
+         * via glCompressedTexImage2D (DXT5) or glTexImage2D (RGBA8). Colour-space,
+         * wrap and filter are applied here rather than baked into the file.
+         *
+         * @param fileName    Path to the .dds file.
+         * @param textureName GLSL sampler uniform name.
+         * @param sRGB        Upload with an sRGB internal format (decode to linear on sample).
+         * @param wrapMode    0=Repeat, 1=Clamp, 2=Mirror.
+         * @param filterMode  0=Point, 1=Bilinear, 2=Trilinear.
+         * @return Heap-allocated kTexture2D, or nullptr if the file is missing/invalid.
+         */
+        kTexture2D *loadTexture2DDDS(const kString fileName, const kString textureName, const bool sRGB = true, const int wrapMode = 0, const int filterMode = 1);
+
+        /**
          * @brief Loads a 2D texture from an in-memory Assimp texture blob.
          * @param rawData      Assimp embedded texture descriptor.
          * @param textureName  GLSL sampler uniform name.

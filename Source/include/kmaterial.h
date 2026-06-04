@@ -13,8 +13,43 @@
 #include "ktexture2d.h"
 #include "ktexturecube.h"
 
+#include <map>
+#include <string>
+
 namespace kemena
 {
+    /**
+     * @brief GLSL/HLSL type of a dynamic material parameter.
+     *
+     * Drives both how the value is stored and how the renderer pushes it to the
+     * shader uniform of the same name.
+     */
+    enum class kMaterialParamType
+    {
+        FLOAT,        ///< Single float.
+        INT,          ///< Single int (stored in value.x).
+        BOOL,         ///< Boolean (stored in value.x as 0/1).
+        VEC2,         ///< 2-component vector (value.xy).
+        VEC3,         ///< 3-component vector / colour (value.xyz).
+        VEC4,         ///< 4-component vector / colour (value.xyzw).
+        SAMPLER2D,    ///< 2D texture sampler (uses the texture pointer).
+        SAMPLERCUBE   ///< Cubemap sampler (uses the texture pointer).
+    };
+
+    /**
+     * @brief One dynamic, shader-driven material parameter.
+     *
+     * Materials expose a set of these, named after shader uniforms discovered
+     * from `// @var <type> <name>` annotations. Scalar/vector types use @ref
+     * value; sampler types use @ref texture.
+     */
+    struct kMaterialParam
+    {
+        kMaterialParamType type    = kMaterialParamType::FLOAT; ///< Parameter type.
+        kVec4              value   = kVec4(0.0f);               ///< Scalar/vector value (lower components used per type).
+        kTexture          *texture = nullptr;                   ///< Texture for sampler types (not owned).
+    };
+
     /**
      * @brief Groups a shader program with textures and surface parameters.
      *
@@ -185,6 +220,57 @@ namespace kemena
          */
         bool getCullBack();
 
+        // --- Dynamic, shader-driven parameters -------------------------------
+        // A material may carry arbitrary named parameters discovered from the
+        // shader's `// @var <type> <name>` annotations. The renderer pushes
+        // each one to the uniform of the same name. This is how custom (and,
+        // eventually, all) materials drive their shaders without hardcoded
+        // fields. Sampler params also have their texture bound by name.
+
+        /**
+         * @brief Sets (or replaces) a named dynamic parameter.
+         * @param name  Shader uniform name (matches a `@var` annotation).
+         * @param param Parameter type + value/texture.
+         */
+        void setParam(const kString &name, const kMaterialParam &param) { params[name] = param; }
+
+        /** @brief Sets a float parameter. */
+        void setParamFloat(const kString &name, float v)
+        { kMaterialParam p; p.type = kMaterialParamType::FLOAT; p.value.x = v; params[name] = p; }
+        /** @brief Sets an int parameter. */
+        void setParamInt(const kString &name, int v)
+        { kMaterialParam p; p.type = kMaterialParamType::INT; p.value.x = (float)v; params[name] = p; }
+        /** @brief Sets a bool parameter. */
+        void setParamBool(const kString &name, bool v)
+        { kMaterialParam p; p.type = kMaterialParamType::BOOL; p.value.x = v ? 1.0f : 0.0f; params[name] = p; }
+        /** @brief Sets a vec2 parameter. */
+        void setParamVec2(const kString &name, kVec2 v)
+        { kMaterialParam p; p.type = kMaterialParamType::VEC2; p.value = kVec4(v.x, v.y, 0, 0); params[name] = p; }
+        /** @brief Sets a vec3 parameter. */
+        void setParamVec3(const kString &name, kVec3 v)
+        { kMaterialParam p; p.type = kMaterialParamType::VEC3; p.value = kVec4(v.x, v.y, v.z, 0); params[name] = p; }
+        /** @brief Sets a vec4 parameter. */
+        void setParamVec4(const kString &name, kVec4 v)
+        { kMaterialParam p; p.type = kMaterialParamType::VEC4; p.value = v; params[name] = p; }
+        /** @brief Sets a sampler2D parameter (texture bound by uniform name). */
+        void setParamSampler2D(const kString &name, kTexture *tex)
+        { kMaterialParam p; p.type = kMaterialParamType::SAMPLER2D; p.texture = tex; params[name] = p; }
+        /** @brief Sets a samplerCube parameter. */
+        void setParamSamplerCube(const kString &name, kTexture *tex)
+        { kMaterialParam p; p.type = kMaterialParamType::SAMPLERCUBE; p.texture = tex; params[name] = p; }
+
+        /** @brief Whether a named parameter exists. */
+        bool hasParam(const kString &name) const { return params.find(name) != params.end(); }
+
+        /** @brief Removes all dynamic parameters. */
+        void clearParams() { params.clear(); }
+
+        /**
+         * @brief Returns the full set of dynamic parameters (name → value).
+         * @return Const reference to the parameter map.
+         */
+        const std::map<kString, kMaterialParam> &getParams() const { return params; }
+
     protected:
     private:
         kShader          *shader      = nullptr;         ///< Bound shader program.
@@ -202,6 +288,8 @@ namespace kemena
 
         bool isSingleSided = true; ///< Face culling enabled.
         bool isCullBack    = true; ///< Cull back (true) or front (false) faces.
+
+        std::map<kString, kMaterialParam> params; ///< Dynamic shader-driven parameters (name → value).
     };
 }
 

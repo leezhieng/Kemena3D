@@ -20,10 +20,11 @@ int main()
                                        kCameraType::CAMERA_TYPE_LOCKED);
     world->setMainCamera(camera);
 
-    // Load the flat (unlit) shader from source files and build a textured material
+    // Load the flat (unlit) shader from a single combined .glsl source and build
+    // a textured material. The file uses "// --- VERTEX ---" / "// --- FRAGMENT ---"
+    // markers, split by loadGlslFile().
     kShader* shader = new kShader();
-    shader->loadShadersFile("../../../Assets/shader/glsl/flat.vert",
-                            "../../../Assets/shader/glsl/flat.frag");
+    shader->loadGlslFile("../flat.glsl");
 
     kMaterial* mat = assetManager->createMaterial(shader);
     kTexture2D* diff = assetManager->loadTexture2D("../diffuse.png", "albedoMap");

@@ -678,6 +678,7 @@ void main() {}
         shader->setValue("has_albedoMap",            false);
         shader->setValue("has_normalMap",            false);
         shader->setValue("has_specularMap",          false);
+        shader->setValue("has_glossinessMap",        false);
         shader->setValue("has_emissiveMap",          false);
         shader->setValue("has_metallicRoughnessMap", false);
         shader->setValue("has_aoMap",                false);
@@ -738,9 +739,51 @@ void main() {}
 
         bindMaterialTextures(mesh, shader);
 
+        // Dynamic, shader-driven parameters (from `// @var` annotations). Mirrors
+        // kRenderer: scalars/vectors set the uniform of the same name; sampler
+        // params bind their texture to a free unit (kept below the shadow unit).
+        int paramTexUnit = (int)mesh->getMaterial()->getTextures().size();
+        for (const auto &kv : mesh->getMaterial()->getParams())
+        {
+            const kString        &pn = kv.first;
+            const kMaterialParam &p  = kv.second;
+            switch (p.type)
+            {
+                case kMaterialParamType::FLOAT: shader->setValue(pn, p.value.x); break;
+                case kMaterialParamType::INT:   shader->setValue(pn, (int)p.value.x); break;
+                case kMaterialParamType::BOOL:  shader->setValue(pn, p.value.x != 0.0f); break;
+                case kMaterialParamType::VEC2:  shader->setValue(pn, kVec2(p.value.x, p.value.y)); break;
+                case kMaterialParamType::VEC3:  shader->setValue(pn, kVec3(p.value.x, p.value.y, p.value.z)); break;
+                case kMaterialParamType::VEC4:  shader->setValue(pn, p.value); break;
+                case kMaterialParamType::SAMPLER2D:
+                    if (p.texture && paramTexUnit < shadowUnit)
+                    {
+                        driver->bindTexture2D(paramTexUnit, p.texture->getTextureID());
+                        shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                        shader->setValue("has_" + pn, true);
+                        paramTexUnit++;
+                    }
+                    break;
+                case kMaterialParamType::SAMPLERCUBE:
+                    if (p.texture && paramTexUnit < shadowUnit)
+                    {
+                        driver->bindTextureCube(paramTexUnit, p.texture->getTextureID());
+                        shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                        shader->setValue("has_" + pn, true);
+                        paramTexUnit++;
+                    }
+                    break;
+            }
+        }
+
         mesh->draw();
 
         unbindMaterialTextures(mesh);
+        for (int k = (int)mesh->getMaterial()->getTextures().size(); k < paramTexUnit; k++)
+        {
+            driver->unbindTexture2D(k);
+            driver->unbindTextureCube(k);
+        }
 
         driver->unbindTexture2DArray(shadowUnit);
         if (skyboxBound)
@@ -830,7 +873,7 @@ void main() {}
             else if (tex->getType() == kTextureType::TEX_TYPE_CUBE)
                 driver->bindTextureCube((int)i, tex->getTextureID());
 
-            shader->setValue(tex->getTextureName().c_str(), (unsigned int)i);
+            shader->setValue(tex->getTextureName().c_str(), (int)i); // sampler -> glUniform1i
             shader->setValue("has_" + tex->getTextureName(), true);
         }
     }

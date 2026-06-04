@@ -1,3 +1,5 @@
+// --- VERTEX ---
+
 #version 450
 
 // Input
@@ -19,6 +21,23 @@ void main()
 	mat4 mvp = projectionMatrix * viewMatrix * modelMatrix;
 
 	texCoordFrag = texCoord;
-	
+
 	gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+
+// --- FRAGMENT ---
+
+#version 450
+
+in vec2 texCoordFrag;
+
+out vec4 fragColor;
+
+uniform sampler2D albedoMap;
+
+void main()
+{
+	vec4 diffuseTexture = texture(albedoMap, texCoordFrag);
+
+	fragColor = diffuseTexture;
 }

@@ -524,6 +524,27 @@ namespace kemena
         driver->drawArrays(iconVAO, kPrimitiveType::TRIANGLE_STRIP, 4);
     }
 
+    // Collect material assignments on import-child sub-meshes. Those nodes are
+    // excluded from the normal children serialization (they're rebuilt from the
+    // model file on load), so their per-sub-mesh material would otherwise be
+    // lost. Key each by an index-path among import-child siblings — the model
+    // importer recreates sub-meshes in a deterministic order, and their UUIDs
+    // are regenerated every load, so the index-path is the only stable handle.
+    static void collectSubmeshMaterials(kObject *node, const std::string &path, json &out)
+    {
+        int idx = 0;
+        for (kObject *c : node->getChildren())
+        {
+            if (!c->getImportChild()) continue;
+            std::string p = path.empty() ? std::to_string(idx)
+                                          : path + "." + std::to_string(idx);
+            if (!c->getMaterialUuid().empty())
+                out.push_back({ {"path", p}, {"material_uuid", c->getMaterialUuid()} });
+            collectSubmeshMaterials(c, p, out);
+            ++idx;
+        }
+    }
+
     json kObject::serialize()
     {
         json childrenData = json::array();
@@ -585,6 +606,12 @@ namespace kemena
         // Assigned material asset — only emit when set. The editor re-applies
         // the material from this UUID on load (see Manager::loadObjectFromJson).
         if (!materialUuid.empty()) data["material_uuid"] = materialUuid;
+
+        // Per-sub-mesh material overrides for import-derived sub-meshes (which
+        // are not serialized as children). Re-applied on load by index-path.
+        json submeshMats = json::array();
+        collectSubmeshMaterials(this, "", submeshMats);
+        if (!submeshMats.empty()) data["submesh_materials"] = submeshMats;
 
         // Physics body descriptor — only emitted when the object opted in.
         // The fields mirror kPhysicsObjectDesc; readers should populate the

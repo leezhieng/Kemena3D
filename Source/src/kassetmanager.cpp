@@ -18,6 +18,18 @@
 #include "stb_truetype.h"
 
 #include <fstream> // [TEMP DIAGNOSTIC] skybox trace logging
+#include <vector>
+#include <cstring>
+#include <cstdint>
+
+// S3TC / sRGB-S3TC tokens (from GL_EXT_texture_compression_s3tc and
+// GL_EXT_texture_sRGB). Guarded in case the GL loader doesn't expose them.
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT 0x8C4F
+#endif
 
 namespace kemena
 {
@@ -115,10 +127,17 @@ namespace kemena
         int height;
         int channels;
 
-        if (flipVertical)
-            stbi_set_flip_vertically_on_load(true);
+        // Set the flip state explicitly every call — it's a sticky global, so
+        // leaving it on would silently flip every later load.
+        stbi_set_flip_vertically_on_load(flipVertical);
 
-        unsigned char *data = stbi_load(fileName.c_str(), &width, &height, &channels, 0);
+        // Force stb to decode the exact channel count the GL upload expects.
+        // Decoding native channels (0) and then uploading as a fixed format
+        // (e.g. a 3-channel RGB image uploaded as GL_RGBA) reads past the pixel
+        // buffer and corrupts the texture, which crashes the GL driver on draw.
+        int reqChannels = (format == kTextureFormat::TEX_FORMAT_RGB ||
+                           format == kTextureFormat::TEX_FORMAT_SRGB) ? 3 : 4;
+        unsigned char *data = stbi_load(fileName.c_str(), &width, &height, &channels, reqChannels);
 
         GLuint textureID;
         glGenTextures(1, &textureID);
@@ -131,6 +150,10 @@ namespace kemena
 
         if (data)
         {
+            // Tightly-packed rows (handles widths whose byte length isn't a
+            // multiple of 4, e.g. odd-width 3-channel images).
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
             if (format == kTextureFormat::TEX_FORMAT_RGB)
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
             else if (format == kTextureFormat::TEX_FORMAT_RGBA)
@@ -164,6 +187,113 @@ namespace kemena
 
         glBindTexture(GL_TEXTURE_2D, 0);
 
+        return texture;
+    }
+
+    kTexture2D *kAssetManager::loadTexture2DDDS(const kString fileName, const kString textureName, const bool sRGB, const int wrapMode, const int filterMode)
+    {
+        std::ifstream f(fileName.c_str(), std::ios::binary | std::ios::ate);
+        if (!f.is_open())
+        {
+            std::cout << "Failed to open DDS: " << fileName << std::endl;
+            return nullptr;
+        }
+        std::streamsize sz = f.tellg();
+        if (sz < 128) { std::cout << "DDS too small: " << fileName << std::endl; return nullptr; }
+        f.seekg(0, std::ios::beg);
+        std::vector<unsigned char> buf((size_t)sz);
+        f.read(reinterpret_cast<char *>(buf.data()), sz);
+        f.close();
+
+        auto rd = [&](size_t off) -> uint32_t {
+            return  (uint32_t)buf[off]
+                 | ((uint32_t)buf[off + 1] << 8)
+                 | ((uint32_t)buf[off + 2] << 16)
+                 | ((uint32_t)buf[off + 3] << 24);
+        };
+
+        if (rd(0) != 0x20534444) { std::cout << "Not a DDS file: " << fileName << std::endl; return nullptr; } // "DDS "
+
+        int      width    = (int)rd(16);
+        int      height   = (int)rd(12);
+        uint32_t mipCount = rd(28);
+        uint32_t pfFlags  = rd(80);
+        uint32_t fourCC   = rd(84);
+        int      levels   = mipCount > 0 ? (int)mipCount : 1;
+
+        const bool compressed = (pfFlags & 0x4) != 0;            // DDPF_FOURCC
+        const uint32_t DXT5   = ('D') | ('X' << 8) | ('T' << 16) | ('5' << 24);
+        if (compressed && fourCC != DXT5)
+        {
+            std::cout << "Unsupported DDS FourCC in " << fileName << " (only DXT5 supported)" << std::endl;
+            return nullptr;
+        }
+
+        GLenum internalFmt = compressed
+            ? (sRGB ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
+            : (sRGB ? GL_SRGB8_ALPHA8                        : GL_RGBA8);
+
+        GLuint textureID;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+
+        GLint wrap = (wrapMode == 1) ? GL_CLAMP_TO_EDGE
+                   : (wrapMode == 2) ? GL_MIRRORED_REPEAT
+                                     : GL_REPEAT;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+
+        const bool hasMips = levels > 1;
+        GLint magFilter = (filterMode == 0) ? GL_NEAREST : GL_LINEAR;
+        GLint minFilter;
+        if (filterMode == 0) minFilter = hasMips ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST;
+        else if (filterMode == 2) minFilter = hasMips ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR;
+        else /* bilinear */       minFilter = hasMips ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+        const unsigned char *p = buf.data() + 128;
+        size_t remaining = buf.size() - 128;
+        int w = width, h = height;
+        int uploaded = 0;
+        for (int level = 0; level < levels; ++level)
+        {
+            size_t levelSize = compressed
+                ? (size_t)((w + 3) / 4) * ((h + 3) / 4) * 16
+                : (size_t)w * h * 4;
+            if (levelSize == 0 || levelSize > remaining) break; // truncated / safety
+
+            if (compressed)
+                glCompressedTexImage2D(GL_TEXTURE_2D, level, internalFmt, w, h, 0, (GLsizei)levelSize, p);
+            else
+                glTexImage2D(GL_TEXTURE_2D, level, internalFmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, p);
+
+            p += levelSize;
+            remaining -= levelSize;
+            ++uploaded;
+            w = w > 1 ? w / 2 : 1;
+            h = h > 1 ? h / 2 : 1;
+        }
+
+        if (uploaded == 0)
+        {
+            std::cout << "DDS had no usable levels: " << fileName << std::endl;
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glDeleteTextures(1, &textureID);
+            return nullptr;
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, uploaded - 1);
+
+        kTexture2D *texture = new kTexture2D();
+        texture->setType(TEX_TYPE_2D);
+        texture->setTextureID(textureID);
+        texture->setWidth(width);
+        texture->setHeight(height);
+        texture->setChannels(4);
+        texture->setTextureName(textureName);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
         return texture;
     }
 

@@ -24,7 +24,7 @@ up whichever configuration (Debug / Release) you build it in.
 ## Build & run
 
 The model, texture and shader are referenced with **relative paths** (e.g.
-`../diffuse.png`, `../../../Assets/shader/glsl/flat.vert`), so run the executable
+`../diffuse.png`, `../flat.glsl`), so run the executable
 from its build output folder so those paths resolve.
 
 ### Windows (Visual Studio 2022)

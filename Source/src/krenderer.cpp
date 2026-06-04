@@ -2,6 +2,7 @@
 #include "kopengldriver.h"
 #include "kphysicsobject.h"
 #include <functional>
+#include <fstream>
 
 namespace kemena
 {
@@ -291,19 +292,14 @@ void main()
     vec2 texel       = 1.0 / viewportSize;
     vec3 centerRgb   = texture(pickTex, texCoord).rgb;
     bool centerSel   = isSelected(centerRgb);
-    int  centerId    = int(centerRgb.r * 255.0 + 0.5)
-                     + int(centerRgb.g * 255.0 + 0.5) * 256
-                     + int(centerRgb.b * 255.0 + 0.5) * 65536;
 
     // Interior of a selected object — no outline.
     if (centerSel) { fragColor = vec4(0.0); return; }
 
-    // Only background pixels (id==0) can become outline. Pixels belonging to
-    // other (non-selected) meshes are occluders, not edges of the selected
-    // object — outlining them would bleed the outline onto whatever happens
-    // to be in front of the selection.
-    if (centerId != 0) { fragColor = vec4(0.0); return; }
-
+    // Any NON-selected pixel (the sky background OR another object) that sits
+    // next to a selected pixel is an edge of the selection — draw the outline
+    // there. This outlines the full visible silhouette regardless of what is
+    // behind the selected object.
     bool nearSelected = false;
     for (int dx = -outlinePixels; dx <= outlinePixels && !nearSelected; dx++)
     {
@@ -780,6 +776,7 @@ void main()
                     shader->setValue("has_albedoMap",            false);
                     shader->setValue("has_normalMap",            false);
                     shader->setValue("has_specularMap",          false);
+                    shader->setValue("has_glossinessMap",        false);
                     shader->setValue("has_emissiveMap",          false);
                     shader->setValue("has_metallicRoughnessMap", false);
                     shader->setValue("has_aoMap",                false);
@@ -831,14 +828,71 @@ void main()
                         else if (tex->getType() == kTextureType::TEX_TYPE_CUBE)
                             driver->bindTextureCube((int)k, tex->getTextureID());
 
-                        shader->setValue(tex->getTextureName().c_str(), (unsigned int)k);
+                        shader->setValue(tex->getTextureName().c_str(), (int)k); // sampler -> glUniform1i
                         shader->setValue("has_" + tex->getTextureName(), true);
+                    }
+
+                    // [TEMP DIAGNOSTIC] What does the *scene* mesh actually
+                    // carry at draw time? If params=0 here, the object isn't
+                    // using the JSON-built material (assignment problem), not a
+                    // shader problem. Remove once resolved.
+                    {
+                        static int s_rdbg = 0;
+                        if (s_rdbg++ < 30)
+                        {
+                            std::ofstream rlog("d:/Projects/Kemena3D/render_debug.log", std::ios::app);
+                            rlog << "draw mesh='" << currentMesh->getName()
+                                 << "' shaderProg=" << shader->getShaderProgram()
+                                 << " texs=" << currentMesh->getMaterial()->getTextures().size()
+                                 << " params=" << currentMesh->getMaterial()->getParams().size();
+                            for (const auto &kv : currentMesh->getMaterial()->getParams())
+                                rlog << " [" << kv.first << "]";
+                            rlog << "\n";
+                        }
+                    }
+
+                    // Dynamic, shader-driven parameters (from `// @var`
+                    // annotations). Scalars/vectors set the uniform of the same
+                    // name; sampler params bind their texture to a free unit
+                    // (kept below the shadow unit) and set the sampler + has_<n>.
+                    int paramTexUnit = (int)currentMesh->getMaterial()->getTextures().size();
+                    for (const auto &kv : currentMesh->getMaterial()->getParams())
+                    {
+                        const kString        &pn = kv.first;
+                        const kMaterialParam &p  = kv.second;
+                        switch (p.type)
+                        {
+                            case kMaterialParamType::FLOAT: shader->setValue(pn, p.value.x); break;
+                            case kMaterialParamType::INT:   shader->setValue(pn, (int)p.value.x); break;
+                            case kMaterialParamType::BOOL:  shader->setValue(pn, p.value.x != 0.0f); break;
+                            case kMaterialParamType::VEC2:  shader->setValue(pn, kVec2(p.value.x, p.value.y)); break;
+                            case kMaterialParamType::VEC3:  shader->setValue(pn, kVec3(p.value.x, p.value.y, p.value.z)); break;
+                            case kMaterialParamType::VEC4:  shader->setValue(pn, p.value); break;
+                            case kMaterialParamType::SAMPLER2D:
+                                if (p.texture && paramTexUnit < shadowUnit)
+                                {
+                                    driver->bindTexture2D(paramTexUnit, p.texture->getTextureID());
+                                    shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                                    shader->setValue("has_" + pn, true);
+                                    paramTexUnit++;
+                                }
+                                break;
+                            case kMaterialParamType::SAMPLERCUBE:
+                                if (p.texture && paramTexUnit < shadowUnit)
+                                {
+                                    driver->bindTextureCube(paramTexUnit, p.texture->getTextureID());
+                                    shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                                    shader->setValue("has_" + pn, true);
+                                    paramTexUnit++;
+                                }
+                                break;
+                        }
                     }
 
                     currentMesh->draw();
 
-                    // Unbind material units, shadow array, and skybox.
-                    int matUnits = (int)currentMesh->getMaterial()->getTextures().size();
+                    // Unbind material + param units, shadow array, and skybox.
+                    int matUnits = paramTexUnit;
                     for (int k = matUnits - 1; k >= 0; k--)
                     {
                         driver->unbindTexture2D(k);
