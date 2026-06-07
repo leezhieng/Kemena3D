@@ -524,12 +524,14 @@ namespace kemena
         driver->drawArrays(iconVAO, kPrimitiveType::TRIANGLE_STRIP, 4);
     }
 
-    // Collect material assignments on import-child sub-meshes. Those nodes are
+    // Collect per-sub-mesh overrides on import-child nodes. Those nodes are
     // excluded from the normal children serialization (they're rebuilt from the
-    // model file on load), so their per-sub-mesh material would otherwise be
-    // lost. Key each by an index-path among import-child siblings — the model
-    // importer recreates sub-meshes in a deterministic order, and their UUIDs
-    // are regenerated every load, so the index-path is the only stable handle.
+    // model file on load), so any property the user changed on a sub-mesh would
+    // otherwise be lost. Key each by an index-path among import-child siblings —
+    // the model importer recreates sub-meshes in a deterministic order, and their
+    // UUIDs are regenerated every load, so the index-path is the only stable
+    // handle. Only non-default (overridden) fields are written, so an untouched
+    // sub-mesh contributes nothing.
     static void collectSubmeshMaterials(kObject *node, const std::string &path, json &out)
     {
         int idx = 0;
@@ -538,8 +540,23 @@ namespace kemena
             if (!c->getImportChild()) continue;
             std::string p = path.empty() ? std::to_string(idx)
                                           : path + "." + std::to_string(idx);
-            if (!c->getMaterialUuid().empty())
-                out.push_back({ {"path", p}, {"material_uuid", c->getMaterialUuid()} });
+
+            json e;
+            if (!c->getMaterialUuid().empty()) e["material_uuid"]  = c->getMaterialUuid();
+            if (!c->getActive())               e["active"]         = false; // default true
+            if (c->getStatic())                e["static"]         = true;  // default false
+            if (kMesh *m = dynamic_cast<kMesh *>(c))
+            {
+                if (!m->getVisible())        e["visible"]        = false; // default true
+                if (!m->getCastShadow())     e["cast_shadow"]    = false; // default true
+                if (!m->getReceiveShadow())  e["receive_shadow"] = false; // default true
+            }
+            if (!e.empty())
+            {
+                e["path"] = p;
+                out.push_back(e);
+            }
+
             collectSubmeshMaterials(c, p, out);
             ++idx;
         }
@@ -607,8 +624,10 @@ namespace kemena
         // the material from this UUID on load (see Manager::loadObjectFromJson).
         if (!materialUuid.empty()) data["material_uuid"] = materialUuid;
 
-        // Per-sub-mesh material overrides for import-derived sub-meshes (which
-        // are not serialized as children). Re-applied on load by index-path.
+        // Per-sub-mesh overrides for import-derived sub-meshes (which are not
+        // serialized as children): material plus any changed flag (active,
+        // visible, static, shadows). Re-applied on load by index-path. The key
+        // stays "submesh_materials" for backward compatibility.
         json submeshMats = json::array();
         collectSubmeshMaterials(this, "", submeshMats);
         if (!submeshMats.empty()) data["submesh_materials"] = submeshMats;

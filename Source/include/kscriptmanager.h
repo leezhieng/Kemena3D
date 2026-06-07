@@ -24,6 +24,7 @@
 #include <map>
 #include <cstdio>
 #include <iostream>
+#include <functional>
 
 #include <angelscript.h>
 #include <scriptstdstring/scriptstdstring.h>
@@ -183,6 +184,28 @@ namespace kemena
 
         /** @brief Returns the underlying AngelScript engine (for binding setup). */
         asIScriptEngine *getEngine() { return engine; }
+
+        /** @brief Severity of a script compiler message. */
+        enum MessageSeverity { MSG_ERROR = 0, MSG_WARNING = 1, MSG_INFO = 2 };
+
+        /**
+         * @brief Sink for AngelScript compiler messages.
+         * @param severity One of MessageSeverity.
+         * @param section  Source section (file/module) the message refers to.
+         * @param row,col  Location in the section.
+         * @param message  Human-readable compiler message.
+         */
+        using MessageHandler = std::function<void(int severity, const char *section,
+                                                  int row, int col, const char *message)>;
+
+        /**
+         * @brief Installs a process-wide handler for compiler messages.
+         *
+         * When set, every script compile error/warning/info is forwarded here
+         * (in addition to stdout) so a host (e.g. the editor) can surface them.
+         * Pass an empty handler to revert to stdout-only.
+         */
+        static void setMessageHandler(MessageHandler handler);
 
         // --- Script-asset registry ------------------------------------------
 

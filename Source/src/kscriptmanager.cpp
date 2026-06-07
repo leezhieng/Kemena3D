@@ -55,14 +55,24 @@ namespace kemena
     // Engine message callback
     // -----------------------------------------------------------------------
 
+    // Process-wide host sink for compiler messages (see setMessageHandler()).
+    static kScriptManager::MessageHandler g_messageHandler;
+
     static void messageCallback(const asSMessageInfo *msg, void * /*param*/)
     {
         const char *type = "ERR ";
-        if (msg->type == asMSGTYPE_WARNING)
-            type = "WARN";
-        else if (msg->type == asMSGTYPE_INFORMATION)
-            type = "INFO";
+        int severity = kScriptManager::MSG_ERROR;
+        if (msg->type == asMSGTYPE_WARNING)      { type = "WARN"; severity = kScriptManager::MSG_WARNING; }
+        else if (msg->type == asMSGTYPE_INFORMATION) { type = "INFO"; severity = kScriptManager::MSG_INFO; }
         printf("%s (%d, %d) : %s : %s\n", msg->section, msg->row, msg->col, type, msg->message);
+
+        if (g_messageHandler)
+            g_messageHandler(severity, msg->section, msg->row, msg->col, msg->message);
+    }
+
+    void kScriptManager::setMessageHandler(MessageHandler handler)
+    {
+        g_messageHandler = std::move(handler);
     }
 
     // -----------------------------------------------------------------------

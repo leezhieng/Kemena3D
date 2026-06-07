@@ -29,6 +29,22 @@ namespace kemena
      * @param manager The script manager whose engine receives the bindings.
      */
     KEMENA3D_API void registerScriptBindings(kScriptManager *manager);
+
+    /**
+     * @brief Routes the global host-API context (getSelf/getDeltaTime/etc.) to
+     *        @p manager without re-registering anything on its engine.
+     *
+     * @c getSelf() and the time accessors resolve through a single global
+     * pointer. Because every kWorld owns its own kScriptManager and calls
+     * registerScriptBindings() in its constructor, the last world constructed
+     * would otherwise "win" that global — so a secondary world (e.g. an editor
+     * material/mesh preview) silently hijacks the running game's getSelf().
+     * Call this at the top of each script-dispatch pass so the world about to
+     * run scripts reclaims the context. Cheap: it only assigns the pointer.
+     *
+     * @param manager The script manager that should back the host API now.
+     */
+    KEMENA3D_API void setActiveScriptContext(kScriptManager *manager);
 }
 
 #endif // KSCRIPTBINDINGS_H

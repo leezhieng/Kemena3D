@@ -10,8 +10,10 @@
 namespace kemena
 {
     // The manager whose scripts are currently being driven. getSelf() and the
-    // time accessors resolve through this. Updated by registerScriptBindings();
-    // in a single-world application there is exactly one.
+    // time accessors resolve through this. Each kWorld owns its own manager and
+    // sets this in its constructor (registerScriptBindings); when several worlds
+    // exist (e.g. editor previews), the world about to run scripts must reclaim
+    // it via setActiveScriptContext() — see kWorld::updateScripts().
     static kScriptManager *g_boundManager = nullptr;
 
     // -----------------------------------------------------------------------
@@ -97,6 +99,12 @@ namespace kemena
     // -----------------------------------------------------------------------
     // Registration
     // -----------------------------------------------------------------------
+
+    void setActiveScriptContext(kScriptManager *manager)
+    {
+        // Lightweight: only repoints the host-API context. No engine work.
+        g_boundManager = manager;
+    }
 
     void registerScriptBindings(kScriptManager *manager)
     {

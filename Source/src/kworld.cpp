@@ -227,6 +227,10 @@ namespace kemena
         if (scriptsRunning || !scriptManager)
             return;
 
+        // Reclaim the global host-API context: a secondary world (e.g. an editor
+        // material/mesh preview) may have repointed getSelf() at its own manager.
+        setActiveScriptContext(scriptManager);
+
         std::vector<kObject *> objects = collectAllObjects();
 
         // Pass 1 — build every instance, then dispatch Awake().
@@ -275,6 +279,9 @@ namespace kemena
         if (!scriptsRunning || !scriptManager)
             return;
 
+        // Reclaim the host-API context so OnDestroy()'s getSelf() resolves here.
+        setActiveScriptContext(scriptManager);
+
         for (kObject *obj : collectAllObjects())
         {
             for (kScript &comp : obj->getScripts())
@@ -296,6 +303,10 @@ namespace kemena
     {
         if (!scriptsRunning || !scriptManager)
             return;
+
+        // Reclaim the host-API context in case another world (preview/thumbnail)
+        // hijacked it since the last frame — otherwise getSelf() returns null.
+        setActiveScriptContext(scriptManager);
 
         scriptManager->setDeltaTime(deltaTime);
         std::vector<kObject *> objects = collectAllObjects();
@@ -339,6 +350,9 @@ namespace kemena
     {
         if (!scriptsRunning || !scriptManager)
             return;
+
+        // Reclaim the host-API context (see updateScripts).
+        setActiveScriptContext(scriptManager);
 
         scriptManager->setFixedDeltaTime(fixedDeltaTime);
 
