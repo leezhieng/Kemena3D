@@ -225,11 +225,11 @@ def write_imguizmo_cmakelists(imguizmo_dir: Path, imgui_dir: Path, linking: str)
 project(ImGuiLib LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 file(GLOB IMGUI_SRC
-    GraphEditor.cpp
-    ImCurveEdit.cpp
-    ImGradient.cpp
-    ImGuizmo.cpp
-    ImSequencer.cpp
+    src/GraphEditor.cpp
+    src/ImCurveEdit.cpp
+    src/ImGradient.cpp
+    src/ImGuizmo.cpp
+    src/ImSequencer.cpp
 )
 {add_lib}
 target_include_directories(imguizmo PUBLIC ${{CMAKE_CURRENT_SOURCE_DIR}} {imgui_dir.as_posix()})
@@ -310,7 +310,7 @@ IMGUIZMO_PATCHES = [
 
 def patch_imguizmo(imguizmo_dir: Path):
     """Patch ImGuizmo.cpp to draw scale handles as squares. Idempotent."""
-    cpp = imguizmo_dir / "ImGuizmo.cpp"
+    cpp = imguizmo_dir / "src" / "ImGuizmo.cpp"
     if not cpp.exists():
         die(f"ImGuizmo: source not found at '{cpp}' — cannot apply patch.")
 
