@@ -54,8 +54,8 @@ file(GLOB IMGUI_BACKENDS
 )
 
 # ImGuizmo sources
-file(GLOB IMGUIZMO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/*.cpp)
-file(GLOB IMGUIZMO_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/*.h)
+file(GLOB IMGUIZMO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.cpp)
+file(GLOB IMGUIZMO_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.h)
 
 # Create library target
 add_library(kemena3d ${SRC_FILES} ${HEADER_FILES} ${ANGELSCRIPT_SRC} ${ANGELSCRIPT_HEADERS} ${IMGUI_SRC} ${IMGUI_HEADERS} ${IMGUI_BACKENDS} ${IMGUIZMO_SRC} ${IMGUIZMO_HEADERS})
@@ -93,7 +93,7 @@ target_include_directories(kemena3d
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/nlohmann/include
 		${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/portable-file-dialogs
-		${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo
+		${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/recast/dist/include/recastnavigation
 )
@@ -326,7 +326,7 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/nlohmann/include/nloh
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/portable-file-dialogs/
     DESTINATION include FILES_MATCHING PATTERN "*.h*"
 )
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/
     DESTINATION include FILES_MATCHING PATTERN "*.h*"
 )
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/slang/build_Release/dist/include/
