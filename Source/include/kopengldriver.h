@@ -238,6 +238,15 @@ namespace kemena
         void uploadVertexBuffer(uint32_t bufferId, const void *data, size_t size) override;
 
         /**
+         * @brief Updates a sub-region of an existing vertex buffer without reallocation.
+         * @param bufferId Target buffer handle.
+         * @param data     Pointer to new data.
+         * @param size     Size of the sub-region in bytes.
+         * @param offset   Byte offset from the start of the buffer.
+         */
+        void updateBufferSubData(uint32_t bufferId, const void *data, size_t size, size_t offset) override;
+
+        /**
          * @brief Defines a floating-point vertex attribute layout.
          * @param location   Attribute location index.
          * @param components Number of components per vertex (1-4).

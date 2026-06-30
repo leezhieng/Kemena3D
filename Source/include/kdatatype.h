@@ -60,12 +60,12 @@ namespace kemena
      */
     enum class kRenderMode
     {
-        RENDER_MODE_FULL           = 0, ///< Normal fully-lit render.
-        RENDER_MODE_ALBEDO         = 1, ///< Albedo / diffuse texture only, no lighting.
-        RENDER_MODE_NORMALS        = 2, ///< World normals visualized as RGB.
-        RENDER_MODE_WIREFRAME      = 3, ///< Flat-color wireframe only.
-        RENDER_MODE_DEPTH          = 4, ///< Linearized depth as greyscale.
-        RENDER_MODE_OBJECT_IDS     = 5, ///< Color-coded object ID picking buffer.
+        RENDER_MODE_FULL = 0,           ///< Normal fully-lit render.
+        RENDER_MODE_ALBEDO = 1,         ///< Albedo / diffuse texture only, no lighting.
+        RENDER_MODE_NORMALS = 2,        ///< World normals visualized as RGB.
+        RENDER_MODE_WIREFRAME = 3,      ///< Flat-color wireframe only.
+        RENDER_MODE_DEPTH = 4,          ///< Linearized depth as greyscale.
+        RENDER_MODE_OBJECT_IDS = 5,     ///< Color-coded object ID picking buffer.
         RENDER_MODE_FULL_WIREFRAME = 6, ///< Full lit render with wireframe overlay.
     };
 
@@ -87,7 +87,9 @@ namespace kemena
         NODE_TYPE_OBJECT, ///< Generic empty object.
         NODE_TYPE_MESH,   ///< Renderable mesh.
         NODE_TYPE_CAMERA, ///< Camera.
-        NODE_TYPE_LIGHT   ///< Light source.
+        NODE_TYPE_LIGHT,  ///< Light source.
+        NODE_TYPE_AUDIO,  ///< Audio emitter object.
+        NODE_TYPE_TERRAIN ///< Terrain tile object.
     };
 
     /**
@@ -570,7 +572,7 @@ namespace kemena
      */
     struct kAABB
     {
-        kVec3 min = kVec3( 1e30f); ///< Minimum corner; initialised to +inf so the box starts empty/invalid.
+        kVec3 min = kVec3(1e30f);  ///< Minimum corner; initialised to +inf so the box starts empty/invalid.
         kVec3 max = kVec3(-1e30f); ///< Maximum corner; initialised to -inf so the box starts empty/invalid.
 
         /** @brief Constructs an empty (invalid) bounding box. */
@@ -584,7 +586,7 @@ namespace kemena
         kAABB(kVec3 min, kVec3 max) : min(min), max(max) {}
 
         /** @brief Returns the geometric centre of the box. */
-        kVec3 center()      const { return (min + max) * 0.5f; }
+        kVec3 center() const { return (min + max) * 0.5f; }
 
         /** @brief Returns half the size of the box along each axis. */
         kVec3 halfExtents() const { return (max - min) * 0.5f; }
@@ -596,7 +598,8 @@ namespace kemena
          * @brief Grows the box so that it encloses the given point.
          * @param point Point to include.
          */
-        void expandBy(const kVec3 &point) {
+        void expandBy(const kVec3 &point)
+        {
             min = glm::min(min, point);
             max = glm::max(max, point);
         }
@@ -605,7 +608,8 @@ namespace kemena
          * @brief Grows the box so that it encloses another box.
          * @param other Box to merge into this one.
          */
-        void merge(const kAABB &other) {
+        void merge(const kAABB &other)
+        {
             min = glm::min(min, other.min);
             max = glm::max(max, other.max);
         }
@@ -615,8 +619,9 @@ namespace kemena
          * @param amount Distance to push each face outward.
          * @return Expanded bounding box.
          */
-        kAABB expanded(float amount) const {
-            return { min - kVec3(amount), max + kVec3(amount) };
+        kAABB expanded(float amount) const
+        {
+            return {min - kVec3(amount), max + kVec3(amount)};
         }
 
         /**
@@ -624,10 +629,9 @@ namespace kemena
          * @param other Box to test for containment.
          * @return true if @p other lies entirely within this box.
          */
-        bool contains(const kAABB &other) const {
-            return other.min.x >= min.x && other.max.x <= max.x
-                && other.min.y >= min.y && other.max.y <= max.y
-                && other.min.z >= min.z && other.max.z <= max.z;
+        bool contains(const kAABB &other) const
+        {
+            return other.min.x >= min.x && other.max.x <= max.x && other.min.y >= min.y && other.max.y <= max.y && other.min.z >= min.z && other.max.z <= max.z;
         }
 
         /**
@@ -635,10 +639,9 @@ namespace kemena
          * @param other Box to test against.
          * @return true if the two boxes overlap (touching counts as overlap).
          */
-        bool overlaps(const kAABB &other) const {
-            return min.x <= other.max.x && max.x >= other.min.x
-                && min.y <= other.max.y && max.y >= other.min.y
-                && min.z <= other.max.z && max.z >= other.min.z;
+        bool overlaps(const kAABB &other) const
+        {
+            return min.x <= other.max.x && max.x >= other.min.x && min.y <= other.max.y && max.y >= other.min.y && min.z <= other.max.z && max.z >= other.min.z;
         }
     };
 
@@ -698,9 +701,9 @@ namespace kemena
      */
     struct kNodeData
     {
-        kMat4   transformation;          ///< Local-space transform for this node.
+        kMat4 transformation;            ///< Local-space transform for this node.
         kString name;                    ///< Node name (used to look up bones by name).
-        int     childrenCount;           ///< Number of child nodes.
+        int childrenCount;               ///< Number of child nodes.
         std::vector<kNodeData> children; ///< Child nodes.
     };
 

@@ -14,18 +14,29 @@ namespace kemena
     kMesh::~kMesh()
     {
         kDriver *driver = kDriver::getCurrent();
-        if (driver == nullptr) return;
+        if (driver == nullptr)
+            return;
 
-        if (vao)               driver->deleteVertexArray(vao);
-        if (indicesEbo)        driver->deleteBuffer(indicesEbo);
-        if (vertexBuffer)      driver->deleteBuffer(vertexBuffer);
-        if (vertexColorBuffer) driver->deleteBuffer(vertexColorBuffer);
-        if (uvBuffer)          driver->deleteBuffer(uvBuffer);
-        if (normalBuffer)      driver->deleteBuffer(normalBuffer);
-        if (tangentBuffer)     driver->deleteBuffer(tangentBuffer);
-        if (bitangentBuffer)   driver->deleteBuffer(bitangentBuffer);
-        if (boneIDBuffer)      driver->deleteBuffer(boneIDBuffer);
-        if (weightBuffer)      driver->deleteBuffer(weightBuffer);
+        if (vao)
+            driver->deleteVertexArray(vao);
+        if (indicesEbo)
+            driver->deleteBuffer(indicesEbo);
+        if (vertexBuffer)
+            driver->deleteBuffer(vertexBuffer);
+        if (vertexColorBuffer)
+            driver->deleteBuffer(vertexColorBuffer);
+        if (uvBuffer)
+            driver->deleteBuffer(uvBuffer);
+        if (normalBuffer)
+            driver->deleteBuffer(normalBuffer);
+        if (tangentBuffer)
+            driver->deleteBuffer(tangentBuffer);
+        if (bitangentBuffer)
+            driver->deleteBuffer(bitangentBuffer);
+        if (boneIDBuffer)
+            driver->deleteBuffer(boneIDBuffer);
+        if (weightBuffer)
+            driver->deleteBuffer(weightBuffer);
     }
 
     void kMesh::setLoaded(bool newLoaded)
@@ -148,6 +159,11 @@ namespace kemena
         return vertices;
     }
 
+    std::vector<kVec3> &kMesh::getVerticesRef()
+    {
+        return vertices;
+    }
+
     void kMesh::addUV(kVec2 uv)
     {
         uvs.push_back(uv);
@@ -174,6 +190,11 @@ namespace kemena
     }
 
     std::vector<kVec3> kMesh::getNormals()
+    {
+        return normals;
+    }
+
+    std::vector<kVec3> &kMesh::getNormalsRef()
     {
         return normals;
     }
@@ -308,7 +329,8 @@ namespace kemena
 
     void kMesh::generateTangents()
     {
-        if (vertices.empty() || uvs.empty() || indices.empty()) return;
+        if (vertices.empty() || uvs.empty() || indices.empty())
+            return;
 
         tangents.assign(vertices.size(), kVec3(0.0f));
         bitangents.assign(vertices.size(), kVec3(0.0f));
@@ -316,28 +338,35 @@ namespace kemena
         for (size_t i = 0; i + 2 < indices.size(); i += 3)
         {
             uint32_t i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
-            kVec3 edge1  = vertices[i1] - vertices[i0];
-            kVec3 edge2  = vertices[i2] - vertices[i0];
-            kVec2 dUV1   = uvs[i1] - uvs[i0];
-            kVec2 dUV2   = uvs[i2] - uvs[i0];
+            kVec3 edge1 = vertices[i1] - vertices[i0];
+            kVec3 edge2 = vertices[i2] - vertices[i0];
+            kVec2 dUV1 = uvs[i1] - uvs[i0];
+            kVec2 dUV2 = uvs[i2] - uvs[i0];
 
             float denom = dUV1.x * dUV2.y - dUV2.x * dUV1.y;
-            if (std::abs(denom) < 1e-6f) continue;
+            if (std::abs(denom) < 1e-6f)
+                continue;
             float f = 1.0f / denom;
 
             kVec3 t = f * (dUV2.y * edge1 - dUV1.y * edge2);
             kVec3 b = f * (-dUV2.x * edge1 + dUV1.x * edge2);
 
-            tangents[i0]   += t; tangents[i1]   += t; tangents[i2]   += t;
-            bitangents[i0] += b; bitangents[i1] += b; bitangents[i2] += b;
+            tangents[i0] += t;
+            tangents[i1] += t;
+            tangents[i2] += t;
+            bitangents[i0] += b;
+            bitangents[i1] += b;
+            bitangents[i2] += b;
         }
 
         for (size_t i = 0; i < tangents.size(); ++i)
         {
             float tlen = glm::length(tangents[i]);
             float blen = glm::length(bitangents[i]);
-            if (tlen > 1e-6f) tangents[i]   = tangents[i] / tlen;
-            if (blen > 1e-6f) bitangents[i] = bitangents[i] / blen;
+            if (tlen > 1e-6f)
+                tangents[i] = tangents[i] / tlen;
+            if (blen > 1e-6f)
+                bitangents[i] = bitangents[i] / blen;
         }
     }
 
@@ -477,6 +506,33 @@ namespace kemena
         return result;
     }
 
+    void kMesh::updatePositions()
+    {
+        if (vertexBuffer == 0 || vertices.empty())
+            return;
+        kDriver::getCurrent()->updateBufferSubData(
+            vertexBuffer, vertices.data(), vertices.size() * sizeof(kVec3), 0);
+    }
+
+    void kMesh::updateNormals()
+    {
+        if (normalBuffer == 0 || normals.empty())
+            return;
+        kDriver::getCurrent()->updateBufferSubData(
+            normalBuffer, normals.data(), normals.size() * sizeof(kVec3), 0);
+    }
+
+    void kMesh::updateTangents()
+    {
+        generateTangents();
+        if (tangentBuffer != 0 && !tangents.empty())
+            kDriver::getCurrent()->updateBufferSubData(
+                tangentBuffer, tangents.data(), tangents.size() * sizeof(kVec3), 0);
+        if (bitangentBuffer != 0 && !bitangents.empty())
+            kDriver::getCurrent()->updateBufferSubData(
+                bitangentBuffer, bitangents.data(), bitangents.size() * sizeof(kVec3), 0);
+    }
+
     void kMesh::calculateNormalMatrix()
     {
         setNormalMatrix(glm::transpose(glm::inverse(getModelMatrixWorld())));
@@ -496,16 +552,49 @@ namespace kemena
         // physics, character controller and navigation components are all
         // emitted consistently, then add mesh-specific fields on top.
         json data = kObject::serialize();
-        data["type"]           = "mesh";
-        data["visible"]        = getVisible();
-        data["static"]         = getStatic();
-        data["file_name"]      = getFileName();
-        data["reference"]      = getRefName();
-        data["cast_shadow"]    = getCastShadow();
+        // Use type override (e.g. "terrain") if set, otherwise default "mesh"
+        data["type"] = m_serializeType.empty() ? "mesh" : m_serializeType;
+        data["visible"] = getVisible();
+        data["static"] = getStatic();
+        data["file_name"] = getFileName();
+        data["reference"] = getRefName();
+        data["cast_shadow"] = getCastShadow();
         data["receive_shadow"] = getReceiveShadow();
         if (!primitiveType.empty())
-            data["primitive"]  = primitiveType;
+            data["primitive"] = primitiveType;
+        // Terrain tiles embed their metadata so loadObjectFromJson can
+        // recreate the kTerrain object with the correct grid/data references.
+        if (m_serializeType == "terrain")
+        {
+            data["gridX"] = m_terrainGridX;
+            data["gridZ"] = m_terrainGridZ;
+            data["worldSize"] = m_terrainWorldSize;
+            data["heightRes"] = m_terrainHeightRes;
+            data["heightFile"] = m_terrainHeightFile.empty() ? (getUuid() + ".height") : m_terrainHeightFile;
+            data["splatFile"] = m_terrainSplatFile.empty() ? (getUuid() + ".splat") : m_terrainSplatFile;
+        }
         return data;
+    }
+
+    void kMesh::setTerrainData(int gridX, int gridZ, float worldSize, int heightRes,
+                               const kString &heightFile, const kString &splatFile)
+    {
+        m_terrainGridX = gridX;
+        m_terrainGridZ = gridZ;
+        m_terrainWorldSize = worldSize;
+        m_terrainHeightRes = heightRes;
+        m_terrainHeightFile = heightFile;
+        m_terrainSplatFile = splatFile;
+    }
+
+    void kMesh::setSerializeType(const kString &type)
+    {
+        m_serializeType = type;
+    }
+
+    const kString &kMesh::getSerializeType() const
+    {
+        return m_serializeType;
     }
 
     void kMesh::deserialize(json data)

@@ -29,14 +29,14 @@ namespace kemena
      */
     enum class kBlendFactor
     {
-        ZERO,                  ///< Factor = 0.
-        ONE,                   ///< Factor = 1.
-        SRC_ALPHA,             ///< Factor = source alpha.
-        ONE_MINUS_SRC_ALPHA,   ///< Factor = 1 - source alpha.
-        SRC_COLOR,             ///< Factor = source colour.
-        ONE_MINUS_SRC_COLOR,   ///< Factor = 1 - source colour.
-        DST_ALPHA,             ///< Factor = destination alpha.
-        ONE_MINUS_DST_ALPHA,   ///< Factor = 1 - destination alpha.
+        ZERO,                ///< Factor = 0.
+        ONE,                 ///< Factor = 1.
+        SRC_ALPHA,           ///< Factor = source alpha.
+        ONE_MINUS_SRC_ALPHA, ///< Factor = 1 - source alpha.
+        SRC_COLOR,           ///< Factor = source colour.
+        ONE_MINUS_SRC_COLOR, ///< Factor = 1 - source colour.
+        DST_ALPHA,           ///< Factor = destination alpha.
+        ONE_MINUS_DST_ALPHA, ///< Factor = 1 - destination alpha.
     };
 
     /**
@@ -316,6 +316,15 @@ namespace kemena
          * @param size     Size of the data in bytes.
          */
         virtual void uploadVertexBuffer(uint32_t bufferId, const void *data, size_t size) = 0;
+
+        /**
+         * @brief Updates a sub-region of an existing vertex buffer without reallocation.
+         * @param bufferId Target buffer handle.
+         * @param data     Pointer to new data.
+         * @param size     Size of the sub-region in bytes.
+         * @param offset   Byte offset from the start of the buffer.
+         */
+        virtual void updateBufferSubData(uint32_t bufferId, const void *data, size_t size, size_t offset) = 0;
 
         /**
          * @brief Defines a float vertex attribute on the currently-bound VAO.

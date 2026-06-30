@@ -437,6 +437,12 @@ namespace kemena
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(size), data, GL_STATIC_DRAW);
     }
 
+    void kOpenGLDriver::updateBufferSubData(uint32_t bufferId, const void *data, size_t size, size_t offset)
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(bufferId));
+        glBufferSubData(GL_ARRAY_BUFFER, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(size), data);
+    }
+
     void kOpenGLDriver::setVertexAttribFloat(int location, int components, int stride, size_t offset)
     {
         glEnableVertexAttribArray(static_cast<GLuint>(location));

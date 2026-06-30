@@ -30,7 +30,7 @@ namespace kemena
 
             if (window != nullptr)
             {
-                fboWidth  = window->getWindowWidth();
+                fboWidth = window->getWindowWidth();
                 fboHeight = window->getWindowHeight();
             }
         }
@@ -40,34 +40,91 @@ namespace kemena
 
     void kRenderer::destroy()
     {
-        if (driver == nullptr) return;
+        if (driver == nullptr)
+            return;
 
         if (enableScreenBuffer)
         {
-            if (fboMsaa)         { driver->deleteFramebuffer(fboMsaa);        fboMsaa = 0; }
-            if (fboTexColorMsaa) { driver->deleteFBOTexture(fboTexColorMsaa); fboTexColorMsaa = 0; }
-            if (rboDepthMsaa)    { driver->deleteRenderbuffer(rboDepthMsaa);  rboDepthMsaa = 0; }
+            if (fboMsaa)
+            {
+                driver->deleteFramebuffer(fboMsaa);
+                fboMsaa = 0;
+            }
+            if (fboTexColorMsaa)
+            {
+                driver->deleteFBOTexture(fboTexColorMsaa);
+                fboTexColorMsaa = 0;
+            }
+            if (rboDepthMsaa)
+            {
+                driver->deleteRenderbuffer(rboDepthMsaa);
+                rboDepthMsaa = 0;
+            }
 
-            if (fbo)             { driver->deleteFramebuffer(fbo);            fbo = 0; }
-            if (fboTexColor)     { driver->deleteFBOTexture(fboTexColor);     fboTexColor = 0; }
-            if (rboDepth)        { driver->deleteRenderbuffer(rboDepth);      rboDepth = 0; }
+            if (fbo)
+            {
+                driver->deleteFramebuffer(fbo);
+                fbo = 0;
+            }
+            if (fboTexColor)
+            {
+                driver->deleteFBOTexture(fboTexColor);
+                fboTexColor = 0;
+            }
+            if (rboDepth)
+            {
+                driver->deleteRenderbuffer(rboDepth);
+                rboDepth = 0;
+            }
 
-            if (quadVao)         { driver->deleteVertexArray(quadVao);        quadVao = 0; }
-            if (quadVbo)         { driver->deleteBuffer(quadVbo);             quadVbo = 0; }
-            if (quadEbo)         { driver->deleteBuffer(quadEbo);             quadEbo = 0; }
+            if (quadVao)
+            {
+                driver->deleteVertexArray(quadVao);
+                quadVao = 0;
+            }
+            if (quadVbo)
+            {
+                driver->deleteBuffer(quadVbo);
+                quadVbo = 0;
+            }
+            if (quadEbo)
+            {
+                driver->deleteBuffer(quadEbo);
+                quadEbo = 0;
+            }
         }
 
         if (enableShadow)
         {
-            if (shadowFbo)      { driver->deleteFramebuffer(shadowFbo);   shadowFbo = 0; }
-            if (shadowTexArray) { driver->deleteFBOTexture(shadowTexArray); shadowTexArray = 0; }
+            if (shadowFbo)
+            {
+                driver->deleteFramebuffer(shadowFbo);
+                shadowFbo = 0;
+            }
+            if (shadowTexArray)
+            {
+                driver->deleteFBOTexture(shadowTexArray);
+                shadowTexArray = 0;
+            }
         }
 
         if (enablePicking)
         {
-            if (pickFbo)      { driver->deleteFramebuffer(pickFbo);    pickFbo = 0; }
-            if (pickFboTex)   { driver->deleteFBOTexture(pickFboTex);  pickFboTex = 0; }
-            if (pickRboDepth) { driver->deleteRenderbuffer(pickRboDepth); pickRboDepth = 0; }
+            if (pickFbo)
+            {
+                driver->deleteFramebuffer(pickFbo);
+                pickFbo = 0;
+            }
+            if (pickFboTex)
+            {
+                driver->deleteFBOTexture(pickFboTex);
+                pickFboTex = 0;
+            }
+            if (pickRboDepth)
+            {
+                driver->deleteRenderbuffer(pickRboDepth);
+                pickRboDepth = 0;
+            }
         }
 
         if (outlineShader)
@@ -76,15 +133,47 @@ namespace kemena
             outlineShader = nullptr;
         }
 
-        if (debugAlbedoShader)  { delete debugAlbedoShader;  debugAlbedoShader  = nullptr; }
-        if (debugNormalsShader) { delete debugNormalsShader; debugNormalsShader = nullptr; }
-        if (debugWireShader)    { delete debugWireShader;    debugWireShader    = nullptr; }
-        if (debugDepthShader)   { delete debugDepthShader;   debugDepthShader   = nullptr; }
-        if (debugPickShader)    { delete debugPickShader;    debugPickShader    = nullptr; }
+        if (debugAlbedoShader)
+        {
+            delete debugAlbedoShader;
+            debugAlbedoShader = nullptr;
+        }
+        if (debugNormalsShader)
+        {
+            delete debugNormalsShader;
+            debugNormalsShader = nullptr;
+        }
+        if (debugWireShader)
+        {
+            delete debugWireShader;
+            debugWireShader = nullptr;
+        }
+        if (debugDepthShader)
+        {
+            delete debugDepthShader;
+            debugDepthShader = nullptr;
+        }
+        if (debugPickShader)
+        {
+            delete debugPickShader;
+            debugPickShader = nullptr;
+        }
 
-        if (debugLineShader) { delete debugLineShader; debugLineShader = nullptr; }
-        if (debugLineVao)    { driver->deleteVertexArray(debugLineVao); debugLineVao = 0; }
-        if (debugLineVbo)    { driver->deleteBuffer(debugLineVbo);      debugLineVbo = 0; }
+        if (debugLineShader)
+        {
+            delete debugLineShader;
+            debugLineShader = nullptr;
+        }
+        if (debugLineVao)
+        {
+            driver->deleteVertexArray(debugLineVao);
+            debugLineVao = 0;
+        }
+        if (debugLineVbo)
+        {
+            driver->deleteBuffer(debugLineVbo);
+            debugLineVbo = 0;
+        }
 
         driver->destroy();
         delete driver;
@@ -328,17 +417,17 @@ void main()
         {
             kCamera *shadowCam = world->getMainCamera();
             float camNear = shadowCam->getNearClip();
-            float camFar  = shadowCam->getFarClip();
+            float camFar = shadowCam->getFarClip();
             kMat4 camView = shadowCam->getViewMatrix();
 
             // Practical split scheme: blend logarithmic and uniform by lambda.
-            const int   cascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
-            const float lambda    = shadowSplitLambda;
+            const int cascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
+            const float lambda = shadowSplitLambda;
             for (int i = 0; i < cascCount; ++i)
             {
                 float ratio = (float)(i + 1) / (float)cascCount;
-                float cLog  = camNear * std::pow(camFar / camNear, ratio);
-                float cUni  = camNear + (camFar - camNear) * ratio;
+                float cLog = camNear * std::pow(camFar / camNear, ratio);
+                float cUni = camNear + (camFar - camNear) * ratio;
                 cascadeSplits[i] = lambda * cLog + (1.0f - lambda) * cUni;
             }
 
@@ -359,7 +448,8 @@ void main()
             if (hasSun)
             {
                 kVec3 up = (std::abs(glm::dot(lightDir, kVec3(0, 1, 0))) > 0.99f)
-                               ? kVec3(1, 0, 0) : kVec3(0, 1, 0);
+                               ? kVec3(1, 0, 0)
+                               : kVec3(0, 1, 0);
 
                 driver->bindFramebuffer(shadowFbo);
                 driver->setDepthTest(true);
@@ -367,7 +457,7 @@ void main()
                 for (int cascade = 0; cascade < cascCount; ++cascade)
                 {
                     float splitNear = (cascade == 0) ? camNear : cascadeSplits[cascade - 1];
-                    float splitFar  = cascadeSplits[cascade];
+                    float splitFar = cascadeSplits[cascade];
 
                     // World-space corners of this cascade's view sub-frustum.
                     kMat4 subProj = glm::perspective(
@@ -379,18 +469,19 @@ void main()
                     kVec3 corners[8];
                     int idx = 0;
                     for (int ix = 0; ix < 2; ++ix)
-                    for (int iy = 0; iy < 2; ++iy)
-                    for (int iz = 0; iz < 2; ++iz)
-                    {
-                        kVec4 pt = invPV * kVec4(ix * 2.0f - 1.0f, iy * 2.0f - 1.0f, iz * 2.0f - 1.0f, 1.0f);
-                        corners[idx++] = kVec3(pt / pt.w);
-                    }
+                        for (int iy = 0; iy < 2; ++iy)
+                            for (int iz = 0; iz < 2; ++iz)
+                            {
+                                kVec4 pt = invPV * kVec4(ix * 2.0f - 1.0f, iy * 2.0f - 1.0f, iz * 2.0f - 1.0f, 1.0f);
+                                corners[idx++] = kVec3(pt / pt.w);
+                            }
 
                     // Bounding sphere of the slice — its radius is independent of
                     // camera orientation, so the shadow box size stays constant
                     // and the map doesn't shimmer as the camera rotates.
                     kVec3 center(0.0f);
-                    for (int c = 0; c < 8; ++c) center += corners[c];
+                    for (int c = 0; c < 8; ++c)
+                        center += corners[c];
                     center /= 8.0f;
                     float radius = 0.0f;
                     for (int c = 0; c < 8; ++c)
@@ -400,8 +491,8 @@ void main()
                     // Texel-snap the sphere centre in light space to kill the
                     // shimmer that otherwise appears as the camera translates.
                     float texelsPerUnit = (float)shadowResolution / (2.0f * radius);
-                    kMat4 snapView    = glm::scale(kMat4(1.0f), kVec3(texelsPerUnit)) *
-                                        glm::lookAt(kVec3(0.0f), lightDir, up);
+                    kMat4 snapView = glm::scale(kMat4(1.0f), kVec3(texelsPerUnit)) *
+                                     glm::lookAt(kVec3(0.0f), lightDir, up);
                     kMat4 snapViewInv = glm::inverse(snapView);
                     kVec4 cLS = snapView * kVec4(center, 1.0f);
                     cLS.x = std::floor(cLS.x);
@@ -528,50 +619,55 @@ void main()
 
                 switch (renderMode)
                 {
-                    case kRenderMode::RENDER_MODE_ALBEDO:
-                        if (!debugAlbedoShader) {
-                            debugAlbedoShader = new kShader();
-                            debugAlbedoShader->loadShadersCode(kDebugVS, kDebugAlbedoFS);
-                        }
-                        dbgShader = debugAlbedoShader;
-                        break;
-                    case kRenderMode::RENDER_MODE_NORMALS:
-                        if (!debugNormalsShader) {
-                            debugNormalsShader = new kShader();
-                            debugNormalsShader->loadShadersCode(kDebugVS, kDebugNormalsFS);
-                        }
-                        dbgShader = debugNormalsShader;
-                        break;
-                    case kRenderMode::RENDER_MODE_WIREFRAME:
-                        if (!debugWireShader) {
-                            debugWireShader = new kShader();
-                            debugWireShader->loadShadersCode(kDebugVS, kDebugWireFS);
-                        }
-                        dbgShader = debugWireShader;
-                        wireframe = true;
-                        break;
-                    case kRenderMode::RENDER_MODE_DEPTH:
-                        if (!debugDepthShader) {
-                            debugDepthShader = new kShader();
-                            debugDepthShader->loadShadersCode(kDebugVS, kDebugDepthFS);
-                        }
-                        dbgShader = debugDepthShader;
-                        // Set camera near/far once before the traversal
-                        dbgShader->use();
-                        dbgShader->setValue("near", world->getMainCamera()->getNearClip());
-                        dbgShader->setValue("far",  world->getMainCamera()->getFarClip());
-                        dbgShader->unuse();
-                        break;
-                    case kRenderMode::RENDER_MODE_FULL_WIREFRAME:
-                        if (!debugWireShader) {
-                            debugWireShader = new kShader();
-                            debugWireShader->loadShadersCode(kDebugVS, kDebugWireFS);
-                        }
-                        dbgShader = debugWireShader;
-                        wireframe = true;
-                        break;
-                    default:
-                        break;
+                case kRenderMode::RENDER_MODE_ALBEDO:
+                    if (!debugAlbedoShader)
+                    {
+                        debugAlbedoShader = new kShader();
+                        debugAlbedoShader->loadShadersCode(kDebugVS, kDebugAlbedoFS);
+                    }
+                    dbgShader = debugAlbedoShader;
+                    break;
+                case kRenderMode::RENDER_MODE_NORMALS:
+                    if (!debugNormalsShader)
+                    {
+                        debugNormalsShader = new kShader();
+                        debugNormalsShader->loadShadersCode(kDebugVS, kDebugNormalsFS);
+                    }
+                    dbgShader = debugNormalsShader;
+                    break;
+                case kRenderMode::RENDER_MODE_WIREFRAME:
+                    if (!debugWireShader)
+                    {
+                        debugWireShader = new kShader();
+                        debugWireShader->loadShadersCode(kDebugVS, kDebugWireFS);
+                    }
+                    dbgShader = debugWireShader;
+                    wireframe = true;
+                    break;
+                case kRenderMode::RENDER_MODE_DEPTH:
+                    if (!debugDepthShader)
+                    {
+                        debugDepthShader = new kShader();
+                        debugDepthShader->loadShadersCode(kDebugVS, kDebugDepthFS);
+                    }
+                    dbgShader = debugDepthShader;
+                    // Set camera near/far once before the traversal
+                    dbgShader->use();
+                    dbgShader->setValue("near", world->getMainCamera()->getNearClip());
+                    dbgShader->setValue("far", world->getMainCamera()->getFarClip());
+                    dbgShader->unuse();
+                    break;
+                case kRenderMode::RENDER_MODE_FULL_WIREFRAME:
+                    if (!debugWireShader)
+                    {
+                        debugWireShader = new kShader();
+                        debugWireShader->loadShadersCode(kDebugVS, kDebugWireFS);
+                    }
+                    dbgShader = debugWireShader;
+                    wireframe = true;
+                    break;
+                default:
+                    break;
                 }
 
                 if (dbgShader)
@@ -606,9 +702,7 @@ void main()
                 driver->generateMipmaps2D(fboTexColor);
                 int mipLevel = (int)std::floor(std::log2(std::max(width, height)));
                 driver->readTexture2DRGB(fboTexColor, mipLevel, averageLuminanceColor);
-                averageLuminance = 0.2126f * averageLuminanceColor[0]
-                                 + 0.7152f * averageLuminanceColor[1]
-                                 + 0.0722f * averageLuminanceColor[2];
+                averageLuminance = 0.2126f * averageLuminanceColor[0] + 0.7152f * averageLuminanceColor[1] + 0.0722f * averageLuminanceColor[2];
                 float targetExposure = exposureKey / (averageLuminance + 0.001f);
                 exposure = glm::mix(exposure, targetExposure, deltaTime * exposureAdaptationRate);
             }
@@ -633,7 +727,8 @@ void main()
 
     void kRenderer::renderSceneGraph(kWorld *world, kScene *scene, kObject *currentNode, bool transparent, float deltaTime)
     {
-        if (currentNode == nullptr || !currentNode->getActive()) return;
+        if (currentNode == nullptr || !currentNode->getActive())
+            return;
 
         currentNode->calculateModelMatrix();
 
@@ -695,12 +790,12 @@ void main()
                     shader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
                     shader->setValue("viewPos", world->getMainCamera()->getPosition());
 
-                    shader->setValue("material.tiling",    currentMesh->getMaterial()->getUvTiling());
-                    shader->setValue("material.ambient",   currentMesh->getMaterial()->getAmbientColor());
-                    shader->setValue("material.diffuse",   currentMesh->getMaterial()->getDiffuseColor());
-                    shader->setValue("material.specular",  currentMesh->getMaterial()->getSpecularColor());
+                    shader->setValue("material.tiling", currentMesh->getMaterial()->getUvTiling());
+                    shader->setValue("material.ambient", currentMesh->getMaterial()->getAmbientColor());
+                    shader->setValue("material.diffuse", currentMesh->getMaterial()->getDiffuseColor());
+                    shader->setValue("material.specular", currentMesh->getMaterial()->getSpecularColor());
                     shader->setValue("material.shininess", currentMesh->getMaterial()->getShininess());
-                    shader->setValue("material.metallic",  currentMesh->getMaterial()->getMetallic());
+                    shader->setValue("material.metallic", currentMesh->getMaterial()->getMetallic());
                     shader->setValue("material.roughness", currentMesh->getMaterial()->getRoughness());
 
                     std::vector<kMat4> boneTransforms(128, kMat4(1.0f));
@@ -718,52 +813,53 @@ void main()
                     for (size_t j = 0; j < scene->getLights().size(); ++j)
                     {
                         kLight *light = scene->getLights().at(j);
-                        if (light == nullptr || !light->getActive()) continue;
+                        if (light == nullptr || !light->getActive())
+                            continue;
 
                         if (light->getLightType() == LIGHT_TYPE_SUN)
                         {
                             kString idx = std::to_string(countSun);
-                            shader->setValue("sunLights[" + idx + "].power",     light->getPower());
+                            shader->setValue("sunLights[" + idx + "].power", light->getPower());
                             shader->setValue("sunLights[" + idx + "].direction", glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
-                            shader->setValue("sunLights[" + idx + "].diffuse",   light->getDiffuseColor());
-                            shader->setValue("sunLights[" + idx + "].specular",  light->getSpecularColor());
+                            shader->setValue("sunLights[" + idx + "].diffuse", light->getDiffuseColor());
+                            shader->setValue("sunLights[" + idx + "].specular", light->getSpecularColor());
                             countSun++;
                         }
                         else if (light->getLightType() == LIGHT_TYPE_POINT)
                         {
                             kString idx = std::to_string(countPoint);
-                            shader->setValue("pointLights[" + idx + "].power",     light->getPower());
-                            shader->setValue("pointLights[" + idx + "].position",  light->getPosition());
-                            shader->setValue("pointLights[" + idx + "].constant",  light->getConstant());
-                            shader->setValue("pointLights[" + idx + "].linear",    light->getLinear());
+                            shader->setValue("pointLights[" + idx + "].power", light->getPower());
+                            shader->setValue("pointLights[" + idx + "].position", light->getPosition());
+                            shader->setValue("pointLights[" + idx + "].constant", light->getConstant());
+                            shader->setValue("pointLights[" + idx + "].linear", light->getLinear());
                             shader->setValue("pointLights[" + idx + "].quadratic", light->getQuadratic());
-                            shader->setValue("pointLights[" + idx + "].diffuse",   light->getDiffuseColor());
-                            shader->setValue("pointLights[" + idx + "].specular",  light->getSpecularColor());
+                            shader->setValue("pointLights[" + idx + "].diffuse", light->getDiffuseColor());
+                            shader->setValue("pointLights[" + idx + "].specular", light->getSpecularColor());
                             countPoint++;
                         }
                         else if (light->getLightType() == LIGHT_TYPE_SPOT)
                         {
                             kString idx = std::to_string(countSpot);
-                            shader->setValue("spotLights[" + idx + "].power",       light->getPower());
-                            shader->setValue("spotLights[" + idx + "].position",    light->getPosition());
-                            shader->setValue("spotLights[" + idx + "].direction",   glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
-                            shader->setValue("spotLights[" + idx + "].cutOff",      light->getCutOff());
+                            shader->setValue("spotLights[" + idx + "].power", light->getPower());
+                            shader->setValue("spotLights[" + idx + "].position", light->getPosition());
+                            shader->setValue("spotLights[" + idx + "].direction", glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                            shader->setValue("spotLights[" + idx + "].cutOff", light->getCutOff());
                             shader->setValue("spotLights[" + idx + "].outerCutOff", light->getOuterCutOff());
-                            shader->setValue("spotLights[" + idx + "].constant",    light->getConstant());
-                            shader->setValue("spotLights[" + idx + "].linear",      light->getLinear());
-                            shader->setValue("spotLights[" + idx + "].quadratic",   light->getQuadratic());
-                            shader->setValue("spotLights[" + idx + "].diffuse",     light->getDiffuseColor());
-                            shader->setValue("spotLights[" + idx + "].specular",    light->getSpecularColor());
+                            shader->setValue("spotLights[" + idx + "].constant", light->getConstant());
+                            shader->setValue("spotLights[" + idx + "].linear", light->getLinear());
+                            shader->setValue("spotLights[" + idx + "].quadratic", light->getQuadratic());
+                            shader->setValue("spotLights[" + idx + "].diffuse", light->getDiffuseColor());
+                            shader->setValue("spotLights[" + idx + "].specular", light->getSpecularColor());
                             countSpot++;
                         }
                     }
-                    shader->setValue("sunLightNum",   countSun);
+                    shader->setValue("sunLightNum", countSun);
                     shader->setValue("pointLightNum", countPoint);
-                    shader->setValue("spotLightNum",  countSpot);
+                    shader->setValue("spotLightNum", countSpot);
 
                     // Scene ambient
                     shader->setValue("sceneAmbient", scene->getAmbientLightColor());
-                    shader->setValue("skyboxAmbientEnabled",  scene->getSkyboxAmbientEnabled());
+                    shader->setValue("skyboxAmbientEnabled", scene->getSkyboxAmbientEnabled());
                     shader->setValue("skyboxAmbientStrength", scene->getSkyboxAmbientStrength());
 
                     // Reset texture-presence flags so a previous draw's
@@ -773,13 +869,13 @@ void main()
                     // texture unit 0 — where the sampler2DArray shadow texture
                     // is bound — and the cross-type read returns garbage that
                     // poisons the lighting math and dims the mesh.
-                    shader->setValue("has_albedoMap",            false);
-                    shader->setValue("has_normalMap",            false);
-                    shader->setValue("has_specularMap",          false);
-                    shader->setValue("has_glossinessMap",        false);
-                    shader->setValue("has_emissiveMap",          false);
+                    shader->setValue("has_albedoMap", false);
+                    shader->setValue("has_normalMap", false);
+                    shader->setValue("has_specularMap", false);
+                    shader->setValue("has_glossinessMap", false);
+                    shader->setValue("has_emissiveMap", false);
                     shader->setValue("has_metallicRoughnessMap", false);
-                    shader->setValue("has_aoMap",                false);
+                    shader->setValue("has_aoMap", false);
 
                     // Texture units: material textures take 0..N-1, shadow
                     // array sits at a fixed high unit so sampler2D defaults
@@ -807,21 +903,22 @@ void main()
                     shader->setValue("lightSpaceMatrices", lsm);
                     // Up to 4 split distances packed into a vec4; cascadeCount says how many are valid.
                     shader->setValue("cascadeSplits",
-                        kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
-                    shader->setValue("cascadeCount",    cascCount);
+                                     kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
+                    shader->setValue("cascadeCount", cascCount);
                     shader->setValue("shadowResolution", (float)shadowResolution);
-                    shader->setValue("shadowDebug",      shadowDebug);
-                    shader->setValue("enableShadow",     enableShadow);
-                    shader->setValue("receiveShadow",    currentMesh->getReceiveShadow());
-                    shader->setValue("shadowBias",       shadowBias);
+                    shader->setValue("shadowDebug", shadowDebug);
+                    shader->setValue("enableShadow", enableShadow);
+                    shader->setValue("receiveShadow", currentMesh->getReceiveShadow());
+                    shader->setValue("shadowBias", shadowBias);
                     shader->setValue("shadowNormalBias", shadowNormalBias);
-                    shader->setValue("shadowSoftness",   shadowSoftness);
+                    shader->setValue("shadowSoftness", shadowSoftness);
 
                     // Material textures
                     for (size_t k = 0; k < currentMesh->getMaterial()->getTextures().size(); k++)
                     {
                         kTexture *tex = currentMesh->getMaterial()->getTexture(k);
-                        if (tex == nullptr) continue;
+                        if (tex == nullptr)
+                            continue;
 
                         if (tex->getType() == kTextureType::TEX_TYPE_2D)
                             driver->bindTexture2D((int)k, tex->getTextureID());
@@ -858,34 +955,46 @@ void main()
                     int paramTexUnit = (int)currentMesh->getMaterial()->getTextures().size();
                     for (const auto &kv : currentMesh->getMaterial()->getParams())
                     {
-                        const kString        &pn = kv.first;
-                        const kMaterialParam &p  = kv.second;
+                        const kString &pn = kv.first;
+                        const kMaterialParam &p = kv.second;
                         switch (p.type)
                         {
-                            case kMaterialParamType::FLOAT: shader->setValue(pn, p.value.x); break;
-                            case kMaterialParamType::INT:   shader->setValue(pn, (int)p.value.x); break;
-                            case kMaterialParamType::BOOL:  shader->setValue(pn, p.value.x != 0.0f); break;
-                            case kMaterialParamType::VEC2:  shader->setValue(pn, kVec2(p.value.x, p.value.y)); break;
-                            case kMaterialParamType::VEC3:  shader->setValue(pn, kVec3(p.value.x, p.value.y, p.value.z)); break;
-                            case kMaterialParamType::VEC4:  shader->setValue(pn, p.value); break;
-                            case kMaterialParamType::SAMPLER2D:
-                                if (p.texture && paramTexUnit < shadowUnit)
-                                {
-                                    driver->bindTexture2D(paramTexUnit, p.texture->getTextureID());
-                                    shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
-                                    shader->setValue("has_" + pn, true);
-                                    paramTexUnit++;
-                                }
-                                break;
-                            case kMaterialParamType::SAMPLERCUBE:
-                                if (p.texture && paramTexUnit < shadowUnit)
-                                {
-                                    driver->bindTextureCube(paramTexUnit, p.texture->getTextureID());
-                                    shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
-                                    shader->setValue("has_" + pn, true);
-                                    paramTexUnit++;
-                                }
-                                break;
+                        case kMaterialParamType::FLOAT:
+                            shader->setValue(pn, p.value.x);
+                            break;
+                        case kMaterialParamType::INT:
+                            shader->setValue(pn, (int)p.value.x);
+                            break;
+                        case kMaterialParamType::BOOL:
+                            shader->setValue(pn, p.value.x != 0.0f);
+                            break;
+                        case kMaterialParamType::VEC2:
+                            shader->setValue(pn, kVec2(p.value.x, p.value.y));
+                            break;
+                        case kMaterialParamType::VEC3:
+                            shader->setValue(pn, kVec3(p.value.x, p.value.y, p.value.z));
+                            break;
+                        case kMaterialParamType::VEC4:
+                            shader->setValue(pn, p.value);
+                            break;
+                        case kMaterialParamType::SAMPLER2D:
+                            if (p.texture && paramTexUnit < shadowUnit)
+                            {
+                                driver->bindTexture2D(paramTexUnit, p.texture->getTextureID());
+                                shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                                shader->setValue("has_" + pn, true);
+                                paramTexUnit++;
+                            }
+                            break;
+                        case kMaterialParamType::SAMPLERCUBE:
+                            if (p.texture && paramTexUnit < shadowUnit)
+                            {
+                                driver->bindTextureCube(paramTexUnit, p.texture->getTextureID());
+                                shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                                shader->setValue("has_" + pn, true);
+                                paramTexUnit++;
+                            }
+                            break;
                         }
                     }
 
@@ -913,12 +1022,12 @@ void main()
             if (world->getMainCamera() != nullptr && currentLight->getMaterial() != nullptr)
             {
                 kMat4 view = lookAt(world->getMainCamera()->getPosition(),
-                                   world->getMainCamera()->getLookAt(),
-                                   world->getMainCamera()->calculateUp());
+                                    world->getMainCamera()->getLookAt(),
+                                    world->getMainCamera()->calculateUp());
                 kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
-                                                   world->getMainCamera()->getAspectRatio(),
-                                                   world->getMainCamera()->getNearClip(),
-                                                   world->getMainCamera()->getFarClip());
+                                                    world->getMainCamera()->getAspectRatio(),
+                                                    world->getMainCamera()->getNearClip(),
+                                                    world->getMainCamera()->getFarClip());
 
                 if (currentLight->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
                 {
@@ -935,12 +1044,12 @@ void main()
                     kShader *shader = currentLight->getMaterial()->getShader();
                     shader->use();
 
-                    shader->setValue("viewProjection",           projection * view);
-                    shader->setValue("cameraRightWorldSpace",    kVec3(view[0][0], view[1][0], view[2][0]));
-                    shader->setValue("cameraUpWorldSpace",       kVec3(view[0][1], view[1][1], view[2][1]));
-                    shader->setValue("billboardPosition",        currentLight->getPosition());
-                    shader->setValue("billboardSize",            kVec2(0.8f, 0.8f));
-                    shader->setValue("color",                    currentLight->getDiffuseColor());
+                    shader->setValue("viewProjection", projection * view);
+                    shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
+                    shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+                    shader->setValue("billboardPosition", currentLight->getPosition());
+                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("color", currentLight->getDiffuseColor());
 
                     for (size_t l = 0; l < currentLight->getMaterial()->getTextures().size(); l++)
                     {
@@ -972,12 +1081,12 @@ void main()
             if (world->getMainCamera() != nullptr && currentCamera->getMaterial() != nullptr)
             {
                 kMat4 view = lookAt(world->getMainCamera()->getPosition(),
-                                   world->getMainCamera()->getLookAt(),
-                                   world->getMainCamera()->calculateUp());
+                                    world->getMainCamera()->getLookAt(),
+                                    world->getMainCamera()->calculateUp());
                 kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
-                                                   world->getMainCamera()->getAspectRatio(),
-                                                   world->getMainCamera()->getNearClip(),
-                                                   world->getMainCamera()->getFarClip());
+                                                    world->getMainCamera()->getAspectRatio(),
+                                                    world->getMainCamera()->getNearClip(),
+                                                    world->getMainCamera()->getFarClip());
 
                 if (currentCamera->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
                 {
@@ -994,12 +1103,12 @@ void main()
                     kShader *shader = currentCamera->getMaterial()->getShader();
                     shader->use();
 
-                    shader->setValue("viewProjection",           projection * view);
-                    shader->setValue("cameraRightWorldSpace",    kVec3(view[0][0], view[1][0], view[2][0]));
-                    shader->setValue("cameraUpWorldSpace",       kVec3(view[0][1], view[1][1], view[2][1]));
-                    shader->setValue("billboardPosition",        currentCamera->getPosition());
-                    shader->setValue("billboardSize",            kVec2(0.8f, 0.8f));
-                    shader->setValue("color",                    kVec3(1.0f, 1.0f, 1.0f));
+                    shader->setValue("viewProjection", projection * view);
+                    shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
+                    shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+                    shader->setValue("billboardPosition", currentCamera->getPosition());
+                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < currentCamera->getMaterial()->getTextures().size(); l++)
                     {
@@ -1039,8 +1148,8 @@ void main()
                     kShader *shader = currentObject->getMaterial()->getShader();
                     shader->use();
 
-                    shader->setValue("modelMatrix",      currentObject->getModelMatrixWorld());
-                    shader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+                    shader->setValue("modelMatrix", currentObject->getModelMatrixWorld());
+                    shader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
                     shader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
 
                     currentObject->draw();
@@ -1051,7 +1160,7 @@ void main()
             }
         }
 
-        renderChildren:
+    renderChildren:
         // Recurse children
         for (size_t i = 0; i < currentNode->getChildren().size(); ++i)
         {
@@ -1061,9 +1170,10 @@ void main()
     }
 
     void kRenderer::renderSceneGraphShadow(kWorld *world, kScene *scene, kObject *currentNode,
-                                            const kMat4 &lightSpaceMatrix, float deltaTime)
+                                           const kMat4 &lightSpaceMatrix, float deltaTime)
     {
-        if (currentNode == nullptr || !currentNode->getActive()) return;
+        if (currentNode == nullptr || !currentNode->getActive())
+            return;
 
         currentNode->calculateModelMatrix();
 
@@ -1074,7 +1184,7 @@ void main()
             if (currentMesh->getCastShadow())
             {
                 shadowShader->setValue("lightSpaceMatrix", lightSpaceMatrix);
-                shadowShader->setValue("modelMatrix",      currentMesh->getModelMatrixWorld());
+                shadowShader->setValue("modelMatrix", currentMesh->getModelMatrixWorld());
 
                 std::vector<kMat4> boneTransforms(128, kMat4(1.0f));
                 if (currentMesh->getSkinned() && currentMesh->getAnimator() != nullptr)
@@ -1086,7 +1196,30 @@ void main()
                 }
                 shadowShader->setValue("finalBonesMatrices", boneTransforms);
 
+                // Terrain height displacement: bind u_HeightMap if the mesh's
+                // material has it as a dynamic parameter.
+                bool hasHeightMap = false;
+                kMaterial *mat = currentMesh->getMaterial();
+                if (mat && mat->hasParam("u_HeightMap"))
+                {
+                    const kMaterialParam &hp = mat->getParams().at("u_HeightMap");
+                    if (hp.type == kMaterialParamType::SAMPLER2D && hp.texture && hp.texture->getTextureID() != 0)
+                    {
+                        driver->bindTexture2D(0, hp.texture->getTextureID());
+                        shadowShader->setValue("u_HeightMap", 0);
+                        shadowShader->setValue("has_u_HeightMap", true);
+                        hasHeightMap = true;
+                    }
+                    if (mat->hasParam("u_HeightScale"))
+                        shadowShader->setValue("u_HeightScale", mat->getParams().at("u_HeightScale").value.x);
+                }
+                if (!hasHeightMap)
+                    shadowShader->setValue("has_u_HeightMap", false);
+
                 currentMesh->draw();
+
+                if (hasHeightMap)
+                    driver->unbindTexture2D(0);
             }
         }
 
@@ -1124,10 +1257,22 @@ void main()
 
             // Screen quad
             float quadVerts[] = {
-                -1.0f, -1.0f,  0.0f, 0.0f,
-                 1.0f, -1.0f,  1.0f, 0.0f,
-                 1.0f,  1.0f,  1.0f, 1.0f,
-                -1.0f,  1.0f,  0.0f, 1.0f,
+                -1.0f,
+                -1.0f,
+                0.0f,
+                0.0f,
+                1.0f,
+                -1.0f,
+                1.0f,
+                0.0f,
+                1.0f,
+                1.0f,
+                1.0f,
+                1.0f,
+                -1.0f,
+                1.0f,
+                0.0f,
+                1.0f,
             };
             uint32_t quadIndices[] = {0, 1, 2, 2, 3, 0};
 
@@ -1142,7 +1287,7 @@ void main()
             driver->unbindVertexArray();
 
             // MSAA FBO
-            fboMsaa         = driver->createFramebuffer();
+            fboMsaa = driver->createFramebuffer();
             fboTexColorMsaa = driver->createFBOColorTextureMSAA(8, fboWidth, fboHeight);
             driver->attachFBOColorTextureMSAA(fboMsaa, fboTexColorMsaa);
             rboDepthMsaa = driver->createRenderbuffer();
@@ -1158,7 +1303,7 @@ void main()
             driver->unbindFramebuffer();
 
             // Resolve FBO
-            fbo         = driver->createFramebuffer();
+            fbo = driver->createFramebuffer();
             fboTexColor = driver->createFBOColorTexture(fboWidth, fboHeight);
             driver->attachFBOColorTexture(fbo, fboTexColor);
             rboDepth = driver->createRenderbuffer();
@@ -1256,11 +1401,16 @@ void main()
             {
                 kString vertexShader = R"(#version 330 core
 layout (location = 0) in vec3 vertexPosition;
+layout (location = 2) in vec2 texCoord;
 layout (location = 6) in ivec4 boneIDs;
 layout (location = 7) in vec4 weights;
 
 uniform mat4 lightSpaceMatrix;
 uniform mat4 modelMatrix;
+
+uniform bool        has_u_HeightMap;
+uniform sampler2D   u_HeightMap;
+uniform float       u_HeightScale;
 
 const int MAX_BONES = 128;
 const int MAX_BONE_INFLUENCE = 4;
@@ -1284,7 +1434,10 @@ void main()
     if (totalWeight == 0.0)
         totalPosition = vec4(vertexPosition, 1.0);
 
-    gl_Position = lightSpaceMatrix * (modelMatrix * totalPosition);
+    vec4 worldPos = modelMatrix * totalPosition;
+    if (has_u_HeightMap)
+        worldPos.y += texture(u_HeightMap, texCoord).r * u_HeightScale;
+    gl_Position = lightSpaceMatrix * worldPos;
 })";
 
                 kString fragmentShader = R"(#version 330 core
@@ -1347,8 +1500,10 @@ void main() {}
 
     void kRenderer::resizeFbo(int newWidth, int newHeight)
     {
-        if (newWidth == fboWidth && newHeight == fboHeight) return;
-        if (newWidth <= 0 || newHeight <= 0) return;
+        if (newWidth == fboWidth && newHeight == fboHeight)
+            return;
+        if (newWidth <= 0 || newHeight <= 0)
+            return;
 
         driver->setMultisample(true);
 
@@ -1374,7 +1529,7 @@ void main() {}
         driver->setFramebufferDrawBuffer();
         driver->unbindFramebuffer();
 
-        fboWidth  = newWidth;
+        fboWidth = newWidth;
         fboHeight = newHeight;
     }
 
@@ -1422,8 +1577,8 @@ void main() {}
         if (enable)
         {
             // Allocate picking FBO at 1×1; it will be resized on first use.
-            pickFbo     = driver->createFramebuffer();
-            pickFboTex  = driver->createFBOColorTexture(1, 1);
+            pickFbo = driver->createFramebuffer();
+            pickFboTex = driver->createFBOColorTexture(1, 1);
             driver->attachFBOColorTexture(pickFbo, pickFboTex);
             pickRboDepth = driver->createRenderbuffer();
             driver->setupRenderbuffer(pickRboDepth, 1, 1);
@@ -1433,7 +1588,7 @@ void main() {}
             if (!driver->isFramebufferComplete())
                 std::cerr << "Picking FBO not complete!" << std::endl;
             driver->unbindFramebuffer();
-            pickFboWidth  = 1;
+            pickFboWidth = 1;
             pickFboHeight = 1;
 
             if (useDefaultShader)
@@ -1509,10 +1664,18 @@ void main()
 
                 // Create a reusable billboard quad VAO
                 float iconVerts[12] = {
-                    -0.5f, -0.5f, 0.0f,
-                     0.5f, -0.5f, 0.0f,
-                    -0.5f,  0.5f, 0.0f,
-                     0.5f,  0.5f, 0.0f,
+                    -0.5f,
+                    -0.5f,
+                    0.0f,
+                    0.5f,
+                    -0.5f,
+                    0.0f,
+                    -0.5f,
+                    0.5f,
+                    0.0f,
+                    0.5f,
+                    0.5f,
+                    0.0f,
                 };
                 pickingIconVAO = driver->createVertexArray();
                 pickingIconVBO = driver->createBuffer();
@@ -1524,14 +1687,36 @@ void main()
         }
         else
         {
-            if (pickFbo)      { driver->deleteFramebuffer(pickFbo);      pickFbo = 0; }
-            if (pickFboTex)   { driver->deleteFBOTexture(pickFboTex);    pickFboTex = 0; }
-            if (pickRboDepth) { driver->deleteRenderbuffer(pickRboDepth); pickRboDepth = 0; }
-            delete pickingShader;     pickingShader     = nullptr;
-            delete pickingIconShader; pickingIconShader = nullptr;
-            if (pickingIconVAO) { driver->deleteVertexArray(pickingIconVAO); pickingIconVAO = 0; }
-            if (pickingIconVBO) { driver->deleteBuffer(pickingIconVBO);      pickingIconVBO = 0; }
-            pickFboWidth  = 0;
+            if (pickFbo)
+            {
+                driver->deleteFramebuffer(pickFbo);
+                pickFbo = 0;
+            }
+            if (pickFboTex)
+            {
+                driver->deleteFBOTexture(pickFboTex);
+                pickFboTex = 0;
+            }
+            if (pickRboDepth)
+            {
+                driver->deleteRenderbuffer(pickRboDepth);
+                pickRboDepth = 0;
+            }
+            delete pickingShader;
+            pickingShader = nullptr;
+            delete pickingIconShader;
+            pickingIconShader = nullptr;
+            if (pickingIconVAO)
+            {
+                driver->deleteVertexArray(pickingIconVAO);
+                pickingIconVAO = 0;
+            }
+            if (pickingIconVBO)
+            {
+                driver->deleteBuffer(pickingIconVBO);
+                pickingIconVBO = 0;
+            }
+            pickFboWidth = 0;
             pickFboHeight = 0;
         }
     }
@@ -1543,7 +1728,8 @@ void main()
 
     void kRenderer::renderSceneGraphPicking(kWorld *world, kScene *scene, kObject *currentNode)
     {
-        if (currentNode == nullptr || !currentNode->getActive()) return;
+        if (currentNode == nullptr || !currentNode->getActive())
+            return;
 
         currentNode->calculateModelMatrix();
 
@@ -1554,9 +1740,9 @@ void main()
             {
                 kVec3 idColor = idToRgb(currentMesh->getId());
                 pickingShader->setValue("modelMatrix", currentMesh->getModelMatrixWorld());
-                pickingShader->setValue("pickColor",   kVec3(idColor.r / 255.0f,
-                                                             idColor.g / 255.0f,
-                                                             idColor.b / 255.0f));
+                pickingShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
+                                                           idColor.g / 255.0f,
+                                                           idColor.b / 255.0f));
 
                 std::vector<kMat4> boneTransforms(128, kMat4(1.0f));
                 if (currentMesh->getSkinned() && currentMesh->getAnimator() != nullptr)
@@ -1569,7 +1755,8 @@ void main()
         else if (pickingIconShader && pickingIconVAO &&
                  (currentNode->getType() == kNodeType::NODE_TYPE_LIGHT ||
                   currentNode->getType() == kNodeType::NODE_TYPE_CAMERA ||
-                  currentNode->getType() == kNodeType::NODE_TYPE_OBJECT) &&
+                  currentNode->getType() == kNodeType::NODE_TYPE_OBJECT ||
+                  currentNode->getType() == kNodeType::NODE_TYPE_AUDIO) &&
                  currentNode->getMaterial() != nullptr &&
                  world->getMainCamera() != nullptr)
         {
@@ -1586,14 +1773,14 @@ void main()
                                           world->getMainCamera()->getFarClip());
 
             kVec3 idColor = idToRgb(currentNode->getId());
-            pickingIconShader->setValue("viewProjection",        proj * view);
+            pickingIconShader->setValue("viewProjection", proj * view);
             pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
-            pickingIconShader->setValue("cameraUpWorldSpace",    kVec3(view[0][1], view[1][1], view[2][1]));
-            pickingIconShader->setValue("billboardPosition",     currentNode->getPosition());
-            pickingIconShader->setValue("billboardSize",         kVec2(0.8f, 0.8f));
-            pickingIconShader->setValue("pickColor",             kVec3(idColor.r / 255.0f,
-                                                                       idColor.g / 255.0f,
-                                                                       idColor.b / 255.0f));
+            pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+            pickingIconShader->setValue("billboardPosition", currentNode->getPosition());
+            pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+            pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
+                                                           idColor.g / 255.0f,
+                                                           idColor.b / 255.0f));
 
             driver->drawArrays(pickingIconVAO, kPrimitiveType::TRIANGLE_STRIP, 4);
 
@@ -1610,21 +1797,27 @@ void main()
 
     static kObject *findObjectById(kObject *node, unsigned int id)
     {
-        if (node == nullptr) return nullptr;
-        if (node->getId() == id) return node;
+        if (node == nullptr)
+            return nullptr;
+        if (node->getId() == id)
+            return node;
         for (kObject *child : node->getChildren())
         {
             kObject *found = findObjectById(child, id);
-            if (found) return found;
+            if (found)
+                return found;
         }
         return nullptr;
     }
 
     void kRenderer::renderPickingPass(kWorld *world, kScene *scene, int viewWidth, int viewHeight)
     {
-        if (!enablePicking || pickingShader == nullptr) return;
-        if (!world || !scene || !world->getMainCamera()) return;
-        if (viewWidth <= 0 || viewHeight <= 0) return;
+        if (!enablePicking || pickingShader == nullptr)
+            return;
+        if (!world || !scene || !world->getMainCamera())
+            return;
+        if (viewWidth <= 0 || viewHeight <= 0)
+            return;
 
         if (viewWidth != pickFboWidth || viewHeight != pickFboHeight)
         {
@@ -1632,7 +1825,7 @@ void main()
             driver->setupRenderbuffer(pickRboDepth, viewWidth, viewHeight);
             driver->attachFBOColorTexture(pickFbo, pickFboTex);
             driver->attachRenderbufferDepthStencil(pickFbo, pickRboDepth);
-            pickFboWidth  = viewWidth;
+            pickFboWidth = viewWidth;
             pickFboHeight = viewHeight;
         }
 
@@ -1648,7 +1841,7 @@ void main()
 
         world->getMainCamera()->setAspectRatio((float)viewWidth / (float)viewHeight);
         pickingShader->use();
-        pickingShader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+        pickingShader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
         pickingShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
         renderSceneGraphPicking(world, scene, scene->getRootNode());
         pickingShader->unuse();
@@ -1696,16 +1889,19 @@ void main()
                                    int mouseX, int mouseY,
                                    int viewWidth, int viewHeight)
     {
-        if (!enablePicking || pickingShader == nullptr) return nullptr;
-        if (!world || !scene || !world->getMainCamera()) return nullptr;
-        if (viewWidth <= 0 || viewHeight <= 0) return nullptr;
+        if (!enablePicking || pickingShader == nullptr)
+            return nullptr;
+        if (!world || !scene || !world->getMainCamera())
+            return nullptr;
+        if (viewWidth <= 0 || viewHeight <= 0)
+            return nullptr;
 
         // Re-render if FBO size doesn't match — handles first call and panel resize.
         if (viewWidth != pickFboWidth || viewHeight != pickFboHeight)
             renderPickingPass(world, scene, viewWidth, viewHeight);
 
         // Read back pixel. OpenGL origin is bottom-left; flip Y for screen coords.
-        int glX = std::max(0, std::min(mouseX,                     pickFboWidth  - 1));
+        int glX = std::max(0, std::min(mouseX, pickFboWidth - 1));
         int glY = std::max(0, std::min(pickFboHeight - 1 - mouseY, pickFboHeight - 1));
 
         driver->setSRGBEncoding(false);
@@ -1717,7 +1913,8 @@ void main()
             driver->setSRGBEncoding(true);
 
         unsigned int pickedId = rgbToId(r, g, b);
-        if (pickedId == 0) return nullptr;
+        if (pickedId == 0)
+            return nullptr;
         return findObjectById(scene->getRootNode(), pickedId);
     }
 
@@ -1734,7 +1931,8 @@ void main()
     void kRenderer::renderSceneGraphDebug(kWorld *world, kScene *scene, kObject *currentNode,
                                           kShader *shader, bool wireframe)
     {
-        if (!currentNode || !currentNode->getActive()) return;
+        if (!currentNode || !currentNode->getActive())
+            return;
         currentNode->calculateModelMatrix();
 
         if (currentNode->getType() == kNodeType::NODE_TYPE_MESH)
@@ -1743,8 +1941,8 @@ void main()
             if (mesh->getLoaded())
             {
                 shader->use();
-                shader->setValue("modelMatrix",      mesh->getModelMatrixWorld());
-                shader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+                shader->setValue("modelMatrix", mesh->getModelMatrixWorld());
+                shader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
                 shader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
 
                 std::vector<kMat4> bones(128, kMat4(1.0f));
@@ -1760,7 +1958,7 @@ void main()
                     if (tex && tex->getType() == kTextureType::TEX_TYPE_2D)
                     {
                         driver->bindTexture2D(0, tex->getTextureID());
-                        shader->setValue("debugTex",    0);
+                        shader->setValue("debugTex", 0);
                         shader->setValue("hasDebugTex", true);
                         hasTex = true;
                     }
@@ -1769,8 +1967,8 @@ void main()
                 {
                     shader->setValue("hasDebugTex", false);
                     kVec3 diff = mesh->getMaterial()
-                                    ? mesh->getMaterial()->getDiffuseColor()
-                                    : kVec3(0.7f, 0.7f, 0.7f);
+                                     ? mesh->getMaterial()->getDiffuseColor()
+                                     : kVec3(0.7f, 0.7f, 0.7f);
                     shader->setValue("diffuseColor", diff);
                 }
 
@@ -1837,34 +2035,40 @@ void main() { outColor = vec4(lineColor, 1.0); }
             float a1 = pi2 * (i + 1) / segments;
             kVec3 p0 = center + axisU * (radius * cosf(a0)) + axisV * (radius * sinf(a0));
             kVec3 p1 = center + axisU * (radius * cosf(a1)) + axisV * (radius * sinf(a1));
-            verts.insert(verts.end(), { p0.x, p0.y, p0.z, p1.x, p1.y, p1.z });
+            verts.insert(verts.end(), {p0.x, p0.y, p0.z, p1.x, p1.y, p1.z});
         }
     }
 
     static void appendLine(std::vector<float> &verts, kVec3 a, kVec3 b)
     {
-        verts.insert(verts.end(), { a.x, a.y, a.z, b.x, b.y, b.z });
+        verts.insert(verts.end(), {a.x, a.y, a.z, b.x, b.y, b.z});
     }
 
     static kObject *findNodeByUuid(kObject *node, const kString &uuid)
     {
-        if (!node) return nullptr;
-        if (node->getUuid() == uuid) return node;
+        if (!node)
+            return nullptr;
+        if (node->getUuid() == uuid)
+            return node;
         for (kObject *child : node->getChildren())
         {
             kObject *found = findNodeByUuid(child, uuid);
-            if (found) return found;
+            if (found)
+                return found;
         }
         return nullptr;
     }
 
     void kRenderer::renderOutline(kWorld *world, kScene *scene,
-                                   const std::vector<kString> &selectedUuids,
-                                   kVec4 color, float thickness)
+                                  const std::vector<kString> &selectedUuids,
+                                  kVec4 color, float thickness)
     {
-        if (!enableScreenBuffer || selectedUuids.empty() || !world || !scene) return;
-        if (!world->getMainCamera()) return;
-        if (!enablePicking || pickFboWidth <= 0 || pickFboHeight <= 0) return;
+        if (!enableScreenBuffer || selectedUuids.empty() || !world || !scene)
+            return;
+        if (!world->getMainCamera())
+            return;
+        if (!enablePicking || pickFboWidth <= 0 || pickFboHeight <= 0)
+            return;
 
         // Lazy-compile the post-process outline shader.
         if (!outlineShader)
@@ -1879,7 +2083,8 @@ void main() { outColor = vec4(lineColor, 1.0); }
         std::function<void(kObject *, std::vector<int> &)> collectIds;
         collectIds = [&](kObject *node, std::vector<int> &ids)
         {
-            if (!node || !node->getActive()) return;
+            if (!node || !node->getActive())
+                return;
             ids.push_back((int)node->getId());
             for (kObject *child : node->getChildren())
                 collectIds(child, ids);
@@ -1889,10 +2094,13 @@ void main() { outColor = vec4(lineColor, 1.0); }
         for (const auto &uuid : selectedUuids)
         {
             kObject *obj = findNodeByUuid(scene->getRootNode(), uuid);
-            if (obj) collectIds(obj, selectedIds);
+            if (obj)
+                collectIds(obj, selectedIds);
         }
-        if (selectedIds.empty()) return;
-        if ((int)selectedIds.size() > 256) selectedIds.resize(256);
+        if (selectedIds.empty())
+            return;
+        if ((int)selectedIds.size() > 256)
+            selectedIds.resize(256);
 
         // Draw the outline into the MSAA FBO on top of the rendered scene.
         driver->bindFramebuffer(fboMsaa);
@@ -1900,10 +2108,10 @@ void main() { outColor = vec4(lineColor, 1.0); }
 
         outlineShader->use();
         driver->bindTexture2D(0, pickFboTex);
-        outlineShader->setValue("pickTex",       0);
-        outlineShader->setValue("viewportSize",  kVec2((float)fboWidth, (float)fboHeight));
-        outlineShader->setValue("numSelected",   (int)selectedIds.size());
-        outlineShader->setValue("outlineColor",  color);
+        outlineShader->setValue("pickTex", 0);
+        outlineShader->setValue("viewportSize", kVec2((float)fboWidth, (float)fboHeight));
+        outlineShader->setValue("numSelected", (int)selectedIds.size());
+        outlineShader->setValue("outlineColor", color);
         outlineShader->setValue("outlinePixels", (int)std::max(1.0f, thickness));
 
         GLint idLoc = glGetUniformLocation(static_cast<GLuint>(outlineShader->getShaderProgram()), "selectedIds");
@@ -1934,8 +2142,10 @@ void main() { outColor = vec4(lineColor, 1.0); }
     void kRenderer::renderDebugShapes(kWorld *world, kScene *scene,
                                       const std::vector<kString> &selectedUuids)
     {
-        if (!enableScreenBuffer || !world || !scene || selectedUuids.empty()) return;
-        if (!world->getMainCamera()) return;
+        if (!enableScreenBuffer || !world || !scene || selectedUuids.empty())
+            return;
+        if (!world->getMainCamera())
+            return;
 
         // Lazy-compile line shader
         if (!debugLineShader)
@@ -1960,7 +2170,8 @@ void main() { outColor = vec4(lineColor, 1.0); }
         // Helper: upload vertices and draw as lines
         auto drawLines = [&](const std::vector<float> &verts, kVec3 color)
         {
-            if (verts.empty()) return;
+            if (verts.empty())
+                return;
             glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(debugLineVbo));
             glBufferData(GL_ARRAY_BUFFER,
                          static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
@@ -1974,7 +2185,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
         driver->setViewport(0, 0, fboWidth, fboHeight);
 
         debugLineShader->use();
-        debugLineShader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+        debugLineShader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
         debugLineShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
 
         // Always-on-top: physics debug wireframes are an editor overlay, so
@@ -1991,8 +2202,10 @@ void main() { outColor = vec4(lineColor, 1.0); }
         // --- Lights ---
         for (kLight *light : scene->getLights())
         {
-            if (!light->getActive()) continue;
-            if (selectedSet.find(light->getUuid()) == selectedSet.end()) continue;
+            if (!light->getActive())
+                continue;
+            if (selectedSet.find(light->getUuid()) == selectedSet.end())
+                continue;
             light->calculateModelMatrix();
 
             std::vector<float> verts;
@@ -2012,11 +2225,12 @@ void main() { outColor = vec4(lineColor, 1.0); }
                 {
                     // Find d where P/(C+L*d+Q*d²) = 5% (reasonable visual range)
                     float target = P / 0.05f - C;
-                    float disc   = L * L + 4.0f * Q * target;
+                    float disc = L * L + 4.0f * Q * target;
                     if (disc > 0.0f)
                     {
                         float r = (-L + sqrtf(disc)) / (2.0f * Q);
-                        if (r > 0.0f) radius = r;
+                        if (r > 0.0f)
+                            radius = r;
                     }
                 }
                 appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 1, 0), radius);
@@ -2026,17 +2240,17 @@ void main() { outColor = vec4(lineColor, 1.0); }
             else if (lt == kLightType::LIGHT_TYPE_SPOT)
             {
                 color = kVec3(1.0f, 0.6f, 0.0f); // orange
-                float innerAngle = glm::acos(glm::clamp(light->getCutOff(),      -1.0f, 1.0f));
+                float innerAngle = glm::acos(glm::clamp(light->getCutOff(), -1.0f, 1.0f));
                 float outerAngle = glm::acos(glm::clamp(light->getOuterCutOff(), -1.0f, 1.0f));
                 float coneLen = 5.0f;
-                float innerR  = tanf(innerAngle) * coneLen;
-                float outerR  = tanf(outerAngle) * coneLen;
+                float innerR = tanf(innerAngle) * coneLen;
+                float outerR = tanf(outerAngle) * coneLen;
 
                 kVec3 dir = glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
                 kVec3 crossY = glm::cross(dir, kVec3(0, 1, 0));
                 kVec3 right = (glm::length(crossY) > 0.001f)
-                    ? glm::normalize(crossY)
-                    : glm::normalize(glm::cross(dir, kVec3(1, 0, 0)));
+                                  ? glm::normalize(crossY)
+                                  : glm::normalize(glm::cross(dir, kVec3(1, 0, 0)));
                 kVec3 up = glm::normalize(glm::cross(right, dir));
 
                 kVec3 endCenter = pos + dir * coneLen;
@@ -2045,7 +2259,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
                 const int coneSegs = 8;
                 for (int i = 0; i < coneSegs; ++i)
                 {
-                    float a    = 2.0f * glm::pi<float>() * i / coneSegs;
+                    float a = 2.0f * glm::pi<float>() * i / coneSegs;
                     kVec3 edge = endCenter + right * (outerR * cosf(a)) + up * (outerR * sinf(a));
                     appendLine(verts, pos, edge);
                 }
@@ -2055,24 +2269,24 @@ void main() { outColor = vec4(lineColor, 1.0); }
             else if (lt == kLightType::LIGHT_TYPE_SUN)
             {
                 color = kVec3(1.0f, 1.0f, 0.3f); // bright yellow
-                kVec3 dir      = glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
+                kVec3 dir = glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
                 float arrowLen = 3.0f;
-                float headLen  = 0.5f;
+                float headLen = 0.5f;
 
                 kVec3 perp = glm::cross(dir, kVec3(0, 1, 0));
                 if (glm::length(perp) < 0.01f)
                     perp = glm::cross(dir, kVec3(1, 0, 0));
                 perp = glm::normalize(perp);
 
-                const float offsets[] = { 0.0f, -1.0f, 1.0f };
+                const float offsets[] = {0.0f, -1.0f, 1.0f};
                 for (float off : offsets)
                 {
                     kVec3 start = pos + perp * off;
-                    kVec3 end   = start + dir * arrowLen;
+                    kVec3 end = start + dir * arrowLen;
                     appendLine(verts, start, end);
                     kVec3 back = -dir;
-                    appendLine(verts, end, end + back * headLen + perp  * (headLen * 0.4f));
-                    appendLine(verts, end, end + back * headLen - perp  * (headLen * 0.4f));
+                    appendLine(verts, end, end + back * headLen + perp * (headLen * 0.4f));
+                    appendLine(verts, end, end + back * headLen - perp * (headLen * 0.4f));
                 }
             }
 
@@ -2082,46 +2296,56 @@ void main() { outColor = vec4(lineColor, 1.0); }
         // --- Cameras ---
         for (kObject *obj : scene->getObjects())
         {
-            if (obj->getType() != kNodeType::NODE_TYPE_CAMERA) continue;
-            if (!obj->getActive()) continue;
-            if (selectedSet.find(obj->getUuid()) == selectedSet.end()) continue;
+            if (obj->getType() != kNodeType::NODE_TYPE_CAMERA)
+                continue;
+            if (!obj->getActive())
+                continue;
+            if (selectedSet.find(obj->getUuid()) == selectedSet.end())
+                continue;
             obj->calculateModelMatrix();
 
             kCamera *cam = static_cast<kCamera *>(obj);
             float fovRad = glm::radians(cam->getFOV());
             float aspect = cam->getAspectRatio();
-            float nearD  = cam->getNearClip();
-            float farD   = glm::min(cam->getFarClip(), 50.0f);
+            float nearD = cam->getNearClip();
+            float farD = glm::min(cam->getFarClip(), 50.0f);
 
             float nearH = tanf(fovRad * 0.5f) * nearD;
             float nearW = nearH * aspect;
-            float farH  = tanf(fovRad * 0.5f) * farD;
-            float farW  = farH * aspect;
+            float farH = tanf(fovRad * 0.5f) * farD;
+            float farW = farH * aspect;
 
             kMat4 invView = glm::inverse(cam->getViewMatrix());
-            auto corner = [&](float x, float y, float z) -> kVec3 {
+            auto corner = [&](float x, float y, float z) -> kVec3
+            {
                 return kVec3(invView * kVec4(x, y, z, 1.0f));
             };
 
             kVec3 nBL = corner(-nearW, -nearH, -nearD);
-            kVec3 nBR = corner( nearW, -nearH, -nearD);
-            kVec3 nTL = corner(-nearW,  nearH, -nearD);
-            kVec3 nTR = corner( nearW,  nearH, -nearD);
+            kVec3 nBR = corner(nearW, -nearH, -nearD);
+            kVec3 nTL = corner(-nearW, nearH, -nearD);
+            kVec3 nTR = corner(nearW, nearH, -nearD);
             kVec3 fBL = corner(-farW, -farH, -farD);
-            kVec3 fBR = corner( farW, -farH, -farD);
-            kVec3 fTL = corner(-farW,  farH, -farD);
-            kVec3 fTR = corner( farW,  farH, -farD);
+            kVec3 fBR = corner(farW, -farH, -farD);
+            kVec3 fTL = corner(-farW, farH, -farD);
+            kVec3 fTR = corner(farW, farH, -farD);
 
             std::vector<float> verts;
             // Near plane
-            appendLine(verts, nBL, nBR); appendLine(verts, nBR, nTR);
-            appendLine(verts, nTR, nTL); appendLine(verts, nTL, nBL);
+            appendLine(verts, nBL, nBR);
+            appendLine(verts, nBR, nTR);
+            appendLine(verts, nTR, nTL);
+            appendLine(verts, nTL, nBL);
             // Far plane
-            appendLine(verts, fBL, fBR); appendLine(verts, fBR, fTR);
-            appendLine(verts, fTR, fTL); appendLine(verts, fTL, fBL);
+            appendLine(verts, fBL, fBR);
+            appendLine(verts, fBR, fTR);
+            appendLine(verts, fTR, fTL);
+            appendLine(verts, fTL, fBL);
             // Connecting edges
-            appendLine(verts, nBL, fBL); appendLine(verts, nBR, fBR);
-            appendLine(verts, nTL, fTL); appendLine(verts, nTR, fTR);
+            appendLine(verts, nBL, fBL);
+            appendLine(verts, nBR, fBR);
+            appendLine(verts, nTL, fTL);
+            appendLine(verts, nTR, fTR);
 
             drawLines(verts, kVec3(0.5f, 0.8f, 1.0f)); // light blue
         }
@@ -2131,7 +2355,8 @@ void main() { outColor = vec4(lineColor, 1.0); }
         const kVec3 physColor(0.2f, 1.0f, 0.2f);
         std::function<void(kObject *)> walkPhys = [&](kObject *node)
         {
-            if (!node) return;
+            if (!node)
+                return;
             if (node->getActive() && node->getHasPhysicsDesc() &&
                 selectedSet.find(node->getUuid()) != selectedSet.end())
             {
@@ -2158,122 +2383,114 @@ void main() { outColor = vec4(lineColor, 1.0); }
                         c[i] = pos + rx * sx + ry * sy + rz * sz;
                     }
                     const int e[12][2] = {
-                        {0,1},{2,3},{4,5},{6,7},
-                        {0,2},{1,3},{4,6},{5,7},
-                        {0,4},{1,5},{2,6},{3,7}
-                    };
-                    for (auto &edge : e) appendLine(verts, c[edge[0]], c[edge[1]]);
+                        {0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+                    for (auto &edge : e)
+                        appendLine(verts, c[edge[0]], c[edge[1]]);
                 };
 
                 switch (pd.shape.type)
                 {
-                    case kPhysicsShapeType::Sphere:
-                    {
-                        float r = pd.shape.radius;
-                        // World-axis rings (sphere is rotation-invariant)
-                        appendCircle(verts, pos, kVec3(1,0,0), kVec3(0,1,0), r);
-                        appendCircle(verts, pos, kVec3(1,0,0), kVec3(0,0,1), r);
-                        appendCircle(verts, pos, kVec3(0,1,0), kVec3(0,0,1), r);
-                        break;
-                    }
-                    case kPhysicsShapeType::Box:
-                        boxEdges(pd.shape.halfExtents);
-                        break;
-                    case kPhysicsShapeType::Capsule:
-                    case kPhysicsShapeType::Cylinder:
-                    {
-                        float radius = pd.shape.radius;
-                        float total  = pd.shape.height;
-                        bool  caps   = (pd.shape.type == kPhysicsShapeType::Capsule);
-                        // Jolt capsule height is total tip-to-tip; the
-                        // cylindrical core is (height - 2*radius).
-                        float cylHalf = caps ? std::max(0.0f, total * 0.5f - radius)
-                                             : total * 0.5f;
+                case kPhysicsShapeType::Sphere:
+                {
+                    float r = pd.shape.radius;
+                    // World-axis rings (sphere is rotation-invariant)
+                    appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 1, 0), r);
+                    appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 0, 1), r);
+                    appendCircle(verts, pos, kVec3(0, 1, 0), kVec3(0, 0, 1), r);
+                    break;
+                }
+                case kPhysicsShapeType::Box:
+                    boxEdges(pd.shape.halfExtents);
+                    break;
+                case kPhysicsShapeType::Capsule:
+                case kPhysicsShapeType::Cylinder:
+                {
+                    float radius = pd.shape.radius;
+                    float total = pd.shape.height;
+                    bool caps = (pd.shape.type == kPhysicsShapeType::Capsule);
+                    // Jolt capsule height is total tip-to-tip; the
+                    // cylindrical core is (height - 2*radius).
+                    float cylHalf = caps ? std::max(0.0f, total * 0.5f - radius)
+                                         : total * 0.5f;
 
-                        kVec3 topC = pos + ry * cylHalf;
-                        kVec3 botC = pos - ry * cylHalf;
+                    kVec3 topC = pos + ry * cylHalf;
+                    kVec3 botC = pos - ry * cylHalf;
 
-                        appendCircle(verts, topC, rx, rz, radius);
-                        appendCircle(verts, botC, rx, rz, radius);
-                        appendLine(verts, topC + rx * radius, botC + rx * radius);
-                        appendLine(verts, topC - rx * radius, botC - rx * radius);
-                        appendLine(verts, topC + rz * radius, botC + rz * radius);
-                        appendLine(verts, topC - rz * radius, botC - rz * radius);
+                    appendCircle(verts, topC, rx, rz, radius);
+                    appendCircle(verts, botC, rx, rz, radius);
+                    appendLine(verts, topC + rx * radius, botC + rx * radius);
+                    appendLine(verts, topC - rx * radius, botC - rx * radius);
+                    appendLine(verts, topC + rz * radius, botC + rz * radius);
+                    appendLine(verts, topC - rz * radius, botC - rz * radius);
 
-                        if (caps)
-                        {
-                            // Side-view great circles approximate the rounded caps.
-                            appendCircle(verts, topC, rx, ry, radius);
-                            appendCircle(verts, topC, rz, ry, radius);
-                            appendCircle(verts, botC, rx, ry, radius);
-                            appendCircle(verts, botC, rz, ry, radius);
-                        }
-                        break;
-                    }
-                    case kPhysicsShapeType::Plane:
+                    if (caps)
                     {
-                        // Rectangle outline in the local XZ plane (+Y normal)
-                        // sized by halfExtents.x / halfExtents.z, plus a short
-                        // stub showing the normal direction.
-                        float hx = std::max(0.1f, pd.shape.halfExtents.x);
-                        float hz = std::max(0.1f, pd.shape.halfExtents.z);
-                        kVec3 c0 = pos + rx * hx + rz * hz;
-                        kVec3 c1 = pos - rx * hx + rz * hz;
-                        kVec3 c2 = pos - rx * hx - rz * hz;
-                        kVec3 c3 = pos + rx * hx - rz * hz;
-                        appendLine(verts, c0, c1);
-                        appendLine(verts, c1, c2);
-                        appendLine(verts, c2, c3);
-                        appendLine(verts, c3, c0);
-                        appendLine(verts, pos, pos + ry * 0.75f);
-                        break;
+                        // Side-view great circles approximate the rounded caps.
+                        appendCircle(verts, topC, rx, ry, radius);
+                        appendCircle(verts, topC, rz, ry, radius);
+                        appendCircle(verts, botC, rx, ry, radius);
+                        appendCircle(verts, botC, rz, ry, radius);
                     }
-                    case kPhysicsShapeType::ConvexHull:
-                    case kPhysicsShapeType::Mesh:
+                    break;
+                }
+                case kPhysicsShapeType::Plane:
+                {
+                    // Rectangle outline in the local XZ plane (+Y normal)
+                    // sized by halfExtents.x / halfExtents.z, plus a short
+                    // stub showing the normal direction.
+                    float hx = std::max(0.1f, pd.shape.halfExtents.x);
+                    float hz = std::max(0.1f, pd.shape.halfExtents.z);
+                    kVec3 c0 = pos + rx * hx + rz * hz;
+                    kVec3 c1 = pos - rx * hx + rz * hz;
+                    kVec3 c2 = pos - rx * hx - rz * hz;
+                    kVec3 c3 = pos + rx * hx - rz * hz;
+                    appendLine(verts, c0, c1);
+                    appendLine(verts, c1, c2);
+                    appendLine(verts, c2, c3);
+                    appendLine(verts, c3, c0);
+                    appendLine(verts, pos, pos + ry * 0.75f);
+                    break;
+                }
+                case kPhysicsShapeType::ConvexHull:
+                case kPhysicsShapeType::Mesh:
+                {
+                    // Show the mesh's world AABB scaled by customScale so
+                    // the wireframe reflects what Jolt's ScaledShape will
+                    // actually simulate. When the AABB is degenerate
+                    // (e.g. the mesh hasn't streamed in yet) we fall back
+                    // to a unit cube around the body's position.
+                    kVec3 bmin, bmax;
+                    bool haveBox = false;
+                    if (node->getType() == kNodeType::NODE_TYPE_MESH)
                     {
-                        // Show the mesh's world AABB scaled by customScale so
-                        // the wireframe reflects what Jolt's ScaledShape will
-                        // actually simulate. When the AABB is degenerate
-                        // (e.g. the mesh hasn't streamed in yet) we fall back
-                        // to a unit cube around the body's position.
-                        kVec3 bmin, bmax;
-                        bool  haveBox = false;
-                        if (node->getType() == kNodeType::NODE_TYPE_MESH)
+                        kAABB box = ((kMesh *)node)->getWorldAABB();
+                        kVec3 ext = box.max - box.min;
+                        if (ext.x > 1e-4f || ext.y > 1e-4f || ext.z > 1e-4f)
                         {
-                            kAABB box = ((kMesh *)node)->getWorldAABB();
-                            kVec3 ext = box.max - box.min;
-                            if (ext.x > 1e-4f || ext.y > 1e-4f || ext.z > 1e-4f)
-                            {
-                                kVec3 c = (box.min + box.max) * 0.5f;
-                                kVec3 e = ext * 0.5f;
-                                e.x *= pd.shape.customScale.x;
-                                e.y *= pd.shape.customScale.y;
-                                e.z *= pd.shape.customScale.z;
-                                bmin = c - e;
-                                bmax = c + e;
-                                haveBox = true;
-                            }
+                            kVec3 c = (box.min + box.max) * 0.5f;
+                            kVec3 e = ext * 0.5f;
+                            e.x *= pd.shape.customScale.x;
+                            e.y *= pd.shape.customScale.y;
+                            e.z *= pd.shape.customScale.z;
+                            bmin = c - e;
+                            bmax = c + e;
+                            haveBox = true;
                         }
-                        if (!haveBox)
-                        {
-                            kVec3 e = pd.shape.customScale * 0.5f;
-                            bmin = pos - e;
-                            bmax = pos + e;
-                        }
-                        kVec3 c[8] = {
-                            {bmin.x, bmin.y, bmin.z}, {bmax.x, bmin.y, bmin.z},
-                            {bmin.x, bmax.y, bmin.z}, {bmax.x, bmax.y, bmin.z},
-                            {bmin.x, bmin.y, bmax.z}, {bmax.x, bmin.y, bmax.z},
-                            {bmin.x, bmax.y, bmax.z}, {bmax.x, bmax.y, bmax.z}
-                        };
-                        const int edges[12][2] = {
-                            {0,1},{2,3},{4,5},{6,7},
-                            {0,2},{1,3},{4,6},{5,7},
-                            {0,4},{1,5},{2,6},{3,7}
-                        };
-                        for (auto &edge : edges) appendLine(verts, c[edge[0]], c[edge[1]]);
-                        break;
                     }
+                    if (!haveBox)
+                    {
+                        kVec3 e = pd.shape.customScale * 0.5f;
+                        bmin = pos - e;
+                        bmax = pos + e;
+                    }
+                    kVec3 c[8] = {
+                        {bmin.x, bmin.y, bmin.z}, {bmax.x, bmin.y, bmin.z}, {bmin.x, bmax.y, bmin.z}, {bmax.x, bmax.y, bmin.z}, {bmin.x, bmin.y, bmax.z}, {bmax.x, bmin.y, bmax.z}, {bmin.x, bmax.y, bmax.z}, {bmax.x, bmax.y, bmax.z}};
+                    const int edges[12][2] = {
+                        {0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+                    for (auto &edge : edges)
+                        appendLine(verts, c[edge[0]], c[edge[1]]);
+                    break;
+                }
                 }
 
                 drawLines(verts, physColor);
@@ -2298,8 +2515,10 @@ void main() { outColor = vec4(lineColor, 1.0); }
 
     void kRenderer::renderOctreeDebug(kWorld *world, kScene *scene)
     {
-        if (!octreeDebugEnabled || !enableScreenBuffer || !world) return;
-        if (!world->getMainCamera()) return;
+        if (!octreeDebugEnabled || !enableScreenBuffer || !world)
+            return;
+        if (!world->getMainCamera())
+            return;
 
         // Lazy-compile line shader
         if (!debugLineShader)
@@ -2319,12 +2538,15 @@ void main() { outColor = vec4(lineColor, 1.0); }
             glBindVertexArray(0);
         }
 
-        auto appendLine = [](std::vector<float> &v, kVec3 a, kVec3 b) {
+        auto appendLine = [](std::vector<float> &v, kVec3 a, kVec3 b)
+        {
             v.insert(v.end(), {a.x, a.y, a.z, b.x, b.y, b.z});
         };
 
-        auto drawLines = [&](const std::vector<float> &verts, kVec3 color) {
-            if (verts.empty()) return;
+        auto drawLines = [&](const std::vector<float> &verts, kVec3 color)
+        {
+            if (verts.empty())
+                return;
             glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(debugLineVbo));
             glBufferData(GL_ARRAY_BUFFER,
                          static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
@@ -2338,7 +2560,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
         driver->setViewport(0, 0, fboWidth, fboHeight);
 
         debugLineShader->use();
-        debugLineShader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+        debugLineShader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
         debugLineShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
 
         driver->setDepthTest(false);
@@ -2350,7 +2572,8 @@ void main() { outColor = vec4(lineColor, 1.0); }
 
         std::vector<float> leafVerts, internalVerts;
 
-        sceneOctree->traverse([&](const kAABB &b, int /*depth*/, bool isLeaf) {
+        sceneOctree->traverse([&](const kAABB &b, int /*depth*/, bool isLeaf)
+                              {
             std::vector<float> &v = isLeaf ? leafVerts : internalVerts;
             kVec3 mn = b.min, mx = b.max;
             // Bottom face
@@ -2367,25 +2590,26 @@ void main() { outColor = vec4(lineColor, 1.0); }
             appendLine(v, {mn.x,mn.y,mn.z}, {mn.x,mx.y,mn.z});
             appendLine(v, {mx.x,mn.y,mn.z}, {mx.x,mx.y,mn.z});
             appendLine(v, {mx.x,mn.y,mx.z}, {mx.x,mx.y,mx.z});
-            appendLine(v, {mn.x,mn.y,mx.z}, {mn.x,mx.y,mx.z});
-        });
+            appendLine(v, {mn.x,mn.y,mx.z}, {mn.x,mx.y,mx.z}); });
 
         drawLines(internalVerts, colorInternal);
-        drawLines(leafVerts,     colorLeaf);
+        drawLines(leafVerts, colorLeaf);
 
         // Draw individual mesh world AABBs: yellow = static, cyan = dynamic
         if (scene)
         {
-            const kVec3 colorStatic (1.0f, 0.9f, 0.0f);
+            const kVec3 colorStatic(1.0f, 0.9f, 0.0f);
             const kVec3 colorDynamic(0.0f, 0.85f, 0.9f);
 
             std::vector<float> staticVerts, dynamicVerts;
 
-            std::function<void(kObject*)> collectMeshAABBs = [&](kObject *node) {
-                if (!node) return;
+            std::function<void(kObject *)> collectMeshAABBs = [&](kObject *node)
+            {
+                if (!node)
+                    return;
                 if (node->getType() == kNodeType::NODE_TYPE_MESH)
                 {
-                    kMesh *m = static_cast<kMesh*>(node);
+                    kMesh *m = static_cast<kMesh *>(node);
                     if (m->getLoaded())
                     {
                         m->calculateModelMatrix();
@@ -2394,18 +2618,18 @@ void main() { outColor = vec4(lineColor, 1.0); }
                         {
                             std::vector<float> &v = m->getStatic() ? staticVerts : dynamicVerts;
                             kVec3 mn = b.min, mx = b.max;
-                            appendLine(v, {mn.x,mn.y,mn.z}, {mx.x,mn.y,mn.z});
-                            appendLine(v, {mx.x,mn.y,mn.z}, {mx.x,mn.y,mx.z});
-                            appendLine(v, {mx.x,mn.y,mx.z}, {mn.x,mn.y,mx.z});
-                            appendLine(v, {mn.x,mn.y,mx.z}, {mn.x,mn.y,mn.z});
-                            appendLine(v, {mn.x,mx.y,mn.z}, {mx.x,mx.y,mn.z});
-                            appendLine(v, {mx.x,mx.y,mn.z}, {mx.x,mx.y,mx.z});
-                            appendLine(v, {mx.x,mx.y,mx.z}, {mn.x,mx.y,mx.z});
-                            appendLine(v, {mn.x,mx.y,mx.z}, {mn.x,mx.y,mn.z});
-                            appendLine(v, {mn.x,mn.y,mn.z}, {mn.x,mx.y,mn.z});
-                            appendLine(v, {mx.x,mn.y,mn.z}, {mx.x,mx.y,mn.z});
-                            appendLine(v, {mx.x,mn.y,mx.z}, {mx.x,mx.y,mx.z});
-                            appendLine(v, {mn.x,mn.y,mx.z}, {mn.x,mx.y,mx.z});
+                            appendLine(v, {mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z});
+                            appendLine(v, {mx.x, mn.y, mn.z}, {mx.x, mn.y, mx.z});
+                            appendLine(v, {mx.x, mn.y, mx.z}, {mn.x, mn.y, mx.z});
+                            appendLine(v, {mn.x, mn.y, mx.z}, {mn.x, mn.y, mn.z});
+                            appendLine(v, {mn.x, mx.y, mn.z}, {mx.x, mx.y, mn.z});
+                            appendLine(v, {mx.x, mx.y, mn.z}, {mx.x, mx.y, mx.z});
+                            appendLine(v, {mx.x, mx.y, mx.z}, {mn.x, mx.y, mx.z});
+                            appendLine(v, {mn.x, mx.y, mx.z}, {mn.x, mx.y, mn.z});
+                            appendLine(v, {mn.x, mn.y, mn.z}, {mn.x, mx.y, mn.z});
+                            appendLine(v, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z});
+                            appendLine(v, {mx.x, mn.y, mx.z}, {mx.x, mx.y, mx.z});
+                            appendLine(v, {mn.x, mn.y, mx.z}, {mn.x, mx.y, mx.z});
                         }
                     }
                 }
@@ -2414,7 +2638,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
             };
             collectMeshAABBs(scene->getRootNode());
 
-            drawLines(staticVerts,  colorStatic);
+            drawLines(staticVerts, colorStatic);
             drawLines(dynamicVerts, colorDynamic);
         }
 
@@ -2429,8 +2653,10 @@ void main() { outColor = vec4(lineColor, 1.0); }
 
     void kRenderer::renderDebugLines(kWorld *world, const std::vector<kVec3> &segments, kVec3 color)
     {
-        if (!enableScreenBuffer || !world || segments.empty()) return;
-        if (!world->getMainCamera()) return;
+        if (!enableScreenBuffer || !world || segments.empty())
+            return;
+        if (!world->getMainCamera())
+            return;
 
         // Lazy-compile the shared debug-line shader / buffers.
         if (!debugLineShader)
@@ -2463,7 +2689,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
         driver->setViewport(0, 0, fboWidth, fboHeight);
 
         debugLineShader->use();
-        debugLineShader->setValue("viewMatrix",       world->getMainCamera()->getViewMatrix());
+        debugLineShader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
         debugLineShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
         debugLineShader->setValue("lineColor", color);
 

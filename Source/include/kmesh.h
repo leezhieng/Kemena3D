@@ -89,13 +89,30 @@ namespace kemena
          * @param type Primitive marker name (e.g. "cube", "sphere"), or empty
          *        for non-primitive meshes.
          */
-        void    setPrimitiveType(kString type);
+        void setPrimitiveType(kString type);
 
         /**
          * @brief Returns the procedural-primitive marker, if any.
          * @return Primitive type name, or an empty kString for file-loaded meshes.
          */
         kString getPrimitiveType() const;
+
+        /**
+         * @brief Overrides the serialized type from "mesh" to a custom value
+         *        (e.g. "terrain"). Used by the terrain system so tiles are
+         *        saved/loaded as a distinct type in .world files.
+         */
+        void setSerializeType(const kString &type);
+
+        /** @brief Returns the serialized type override, or empty if default. */
+        const kString &getSerializeType() const;
+
+        /**
+         * @brief Sets terrain metadata fields on the mesh so they are
+         *        serialized alongside the mesh data in .world files.
+         */
+        void setTerrainData(int gridX, int gridZ, float worldSize, int heightRes,
+                            const kString &heightFile, const kString &splatFile);
 
         /** @brief Propagates a local position change to this mesh and its children. */
         void setPosition(kVec3 newPosition);
@@ -165,6 +182,12 @@ namespace kemena
         std::vector<kVec3> getVertices();
 
         /**
+         * @brief Returns a mutable reference to the vertex position buffer.
+         * @return Mutable reference to the internal vertex vector.
+         */
+        std::vector<kVec3> &getVerticesRef();
+
+        /**
          * @brief Appends a UV coordinate.
          * @param uv Texture coordinate (U, V).
          */
@@ -199,6 +222,12 @@ namespace kemena
          * @return Vector of normals.
          */
         std::vector<kVec3> getNormals();
+
+        /**
+         * @brief Returns a mutable reference to the normal buffer.
+         * @return Mutable reference to the internal normals vector.
+         */
+        std::vector<kVec3> &getNormalsRef();
 
         /**
          * @brief Appends a vertex tangent.
@@ -363,6 +392,29 @@ namespace kemena
         void generateTangents();
 
         /**
+         * @brief Overwrites GPU position VBO with current CPU vertex data via glBufferSubData.
+         *
+         * The vertex buffer must already have been uploaded via generateVbo().
+         * Faster than a full rebuild — skips VAO/IBO/UV/material reconstruction.
+         */
+        void updatePositions();
+
+        /**
+         * @brief Overwrites GPU normal VBO with current CPU normal data via glBufferSubData.
+         *
+         * The normal buffer must already have been uploaded via generateVbo().
+         */
+        void updateNormals();
+
+        /**
+         * @brief Recomputes tangents/bitangents and overwrites both GPU VBOs via glBufferSubData.
+         *
+         * Calls generateTangents() internally, then sub-updates both tangent
+         * and bitangent VBOs. The buffers must already exist from generateVbo().
+         */
+        void updateTangents();
+
+        /**
          * @brief Recomputes the normal matrix from the current world transform.
          */
         void calculateNormalMatrix();
@@ -458,40 +510,47 @@ namespace kemena
 
         kString fileName;
         kString refName;
-        kString primitiveType; ///< Empty unless created by kMeshGenerator.
+        kString primitiveType;   ///< Empty unless created by kMeshGenerator.
+        kString m_serializeType; ///< Override for serialized type (e.g. "terrain").
+        int m_terrainGridX = 0;
+        int m_terrainGridZ = 0;
+        float m_terrainWorldSize = 0.0f;
+        int m_terrainHeightRes = 0;
+        kString m_terrainHeightFile;
+        kString m_terrainSplatFile;
 
-        std::vector<kVec3>     vertices;
+        std::vector<kVec3> vertices;
         std::vector<uint32_t> indices;
-        std::vector<kVec2>     uvs;
-        std::vector<kVec3>     vertexColors;
-        std::vector<kVec3>     normals;
-        std::vector<kVec3>     tangents;
-        std::vector<kVec3>     bitangents;
-        std::vector<kIvec4>    boneIDs;
-        std::vector<kVec4>     weights;
+        std::vector<kVec2> uvs;
+        std::vector<kVec3> vertexColors;
+        std::vector<kVec3> normals;
+        std::vector<kVec3> tangents;
+        std::vector<kVec3> bitangents;
+        std::vector<kIvec4> boneIDs;
+        std::vector<kVec4> weights;
 
-        uint32_t vao         = 0; ///< Vertex Array Object handle.
-        uint32_t indicesEbo  = 0; ///< Element Buffer Object handle.
+        uint32_t vao = 0;        ///< Vertex Array Object handle.
+        uint32_t indicesEbo = 0; ///< Element Buffer Object handle.
 
-        uint32_t vertexBuffer      = 0; ///< Position VBO.
+        uint32_t vertexBuffer = 0;      ///< Position VBO.
         uint32_t vertexColorBuffer = 0; ///< Vertex-colour VBO.
-        uint32_t uvBuffer          = 0; ///< UV coordinate VBO.
-        uint32_t normalBuffer      = 0; ///< Normal VBO.
-        uint32_t tangentBuffer     = 0; ///< Tangent VBO.
-        uint32_t bitangentBuffer   = 0; ///< Bitangent VBO.
-        uint32_t boneIDBuffer      = 0; ///< Bone-index VBO.
-        uint32_t weightBuffer      = 0; ///< Bone-weight VBO.
+        uint32_t uvBuffer = 0;          ///< UV coordinate VBO.
+        uint32_t normalBuffer = 0;      ///< Normal VBO.
+        uint32_t tangentBuffer = 0;     ///< Tangent VBO.
+        uint32_t bitangentBuffer = 0;   ///< Bitangent VBO.
+        uint32_t boneIDBuffer = 0;      ///< Bone-index VBO.
+        uint32_t weightBuffer = 0;      ///< Bone-weight VBO.
 
         kMat3 normalMatrix; ///< Inverse-transpose of the model matrix (upper 3x3).
 
         kAABB localAABB; ///< Bounding box in object (local) space.
 
-        bool isVisible       = true;  ///< Render visibility flag.
-        bool isCastShadow    = true;  ///< Shadow-cast flag.
-        bool isReceiveShadow = true;  ///< Shadow-receive flag.
+        bool isVisible = true;       ///< Render visibility flag.
+        bool isCastShadow = true;    ///< Shadow-cast flag.
+        bool isReceiveShadow = true; ///< Shadow-receive flag.
 
         std::map<kString, kBoneInfo> boneInfoMap; ///< Bone name → info lookup.
-        int boneCount = 0;                       ///< Total number of bones.
+        int boneCount = 0;                        ///< Total number of bones.
 
         kAnimator *animator = nullptr; ///< Optional skeletal animator.
         bool isSkinned = false;        ///< Skeletal skinning enabled flag.
