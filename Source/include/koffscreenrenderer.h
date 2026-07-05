@@ -41,6 +41,8 @@ namespace kemena
      *   offscreen.saveToFile("thumbnail.png");
      * @endcode
      */
+    class kAssetManager;
+
     class KEMENA3D_API kOffscreenRenderer
     {
     public:
@@ -51,6 +53,17 @@ namespace kemena
          * @param height Output texture height in pixels.
          */
         kOffscreenRenderer(int width = 256, int height = 256);
+
+        /**
+         * @brief Set the asset manager used to load built-in shaders from
+         *        embedded resources (SHADER_OFFSCREEN_PREVIEW etc.).
+         *
+         * Must be called before the first render*.  Without it the renderer
+         * falls back to an internal white shader compiled from inline GLSL.
+         *
+         * @param am Pointer to an initialised kAssetManager.
+         */
+        void setAssetManager(kAssetManager *am);
 
         /**
          * @brief Destroy the renderer and release all GPU resources (FBO, textures, shaders).
@@ -169,6 +182,8 @@ namespace kemena
         int height;
         int ssaaScale = 2; // render at Nx resolution, box-filter downsample on save
         kVec4 bgColor = kVec4(0.15f, 0.15f, 0.15f, 1.0f);
+
+        kAssetManager *assetManager = nullptr; ///< Set via setAssetManager(); loads built-in shaders from resources.
 
         kShader *builtinShader = nullptr; ///< Lazy-compiled fallback for meshes with no material.
 
