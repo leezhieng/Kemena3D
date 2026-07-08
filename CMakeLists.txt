@@ -211,12 +211,22 @@ else()
     )
 endif()
 
-# Jolt Physics (always static; output path differs between MSVC multi-config and MinGW single-config)
+# Jolt Physics (always static; output path differs between generators)
+#   MSVC:   build_Debug/Debug/Jolt.lib
+#   Xcode:  build_Debug/Debug/libJolt.a
+#   Unix/Makefiles:  build_Debug/libJolt.a
 if(MSVC)
     target_link_libraries(kemena3d PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/Jolt.lib,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/Jolt.lib
+        >
+    )
+elseif(CMAKE_GENERATOR STREQUAL "Xcode")
+    target_link_libraries(kemena3d PUBLIC
+        $<IF:$<CONFIG:Debug>,
+            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/libJolt.a,
+            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/libJolt.a
         >
     )
 else()
@@ -374,7 +384,10 @@ file(GLOB GLEW_LIBS_RELEASE
 install(FILES ${GLEW_LIBS_DEBUG}   DESTINATION lib CONFIGURATIONS Debug)
 install(FILES ${GLEW_LIBS_RELEASE} DESTINATION lib CONFIGURATIONS Release)
 
-# Jolt Physics — MSVC multi-config puts the .lib one level deeper inside build_<Config>/<Config>/
+# Jolt Physics — output path varies by generator:
+#   MSVC:   build_Debug/Debug/Jolt.lib
+#   Xcode:  build_Debug/Debug/libJolt.a
+#   Unix/Makefiles:  build_Debug/libJolt.a
 if(MSVC)
     install(FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/Jolt.lib"
@@ -382,6 +395,15 @@ if(MSVC)
     )
     install(FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/Jolt.lib"
+        DESTINATION lib CONFIGURATIONS Release
+    )
+elseif(CMAKE_GENERATOR STREQUAL "Xcode")
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/libJolt.a"
+        DESTINATION lib CONFIGURATIONS Debug
+    )
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/libJolt.a"
         DESTINATION lib CONFIGURATIONS Release
     )
 else()

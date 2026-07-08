@@ -175,6 +175,10 @@ def clone_git(name: str, version: str, repo: str, destfolder: Path, revision: st
 def is_msvc(generator: str) -> bool:
     return generator.startswith("Visual Studio")
 
+def is_multi_config(generator: str) -> bool:
+    """Return True for generators that support multiple configurations (VS, Xcode)."""
+    return generator.startswith("Visual Studio") or generator == "Xcode"
+
 def build_with_cmake(name: str, srcdir: Path, build_mode: str, args: str, generator: str):
     cmakelists = srcdir / "CMakeLists.txt"
     if not cmakelists.exists():
@@ -185,10 +189,10 @@ def build_with_cmake(name: str, srcdir: Path, build_mode: str, args: str, genera
     # Configure
     run(f'cmake -G "{generator}" -S . -B "{build_dir}" -DCMAKE_BUILD_TYPE={build_mode} {args}', cwd=srcdir)
     # Build
-    if is_msvc(generator):
+    if is_multi_config(generator):
         run(f'cmake --build "{build_dir}" --config {build_mode}', cwd=srcdir)
     else:
-        # MinGW (single-config); passing --config is harmless but we omit it
+        # Single-config generators (Unix Makefiles, MinGW Makefiles, Ninja)
         run(f'cmake --build "{build_dir}"', cwd=srcdir)
     print(f"[OK] {name} built successfully ({build_mode}).")
 
@@ -513,21 +517,22 @@ def main():
     # --------------------------------------------------------------------
     download_and_extract_zip("GLEW", "v2.2.0", GLEW_SRC_ZIP, ROOT / "glew", flatten=True)
     glew_src = ROOT / "glew" / "build" / "cmake"
+    glew_policy = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     if compiler == "1":
         if linking == "1":
-            build_with_cmake("GLEW", glew_src, "Debug",   "-DBUILD_SHARED_LIBS=OFF", generator)
-            build_with_cmake("GLEW", glew_src, "Release", "-DBUILD_SHARED_LIBS=OFF", generator)
+            build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
+            build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
         else:
-            build_with_cmake("GLEW", glew_src, "Debug",   "-DBUILD_SHARED_LIBS=ON", generator)
-            build_with_cmake("GLEW", glew_src, "Release", "-DBUILD_SHARED_LIBS=ON", generator)
+            build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=ON {glew_policy}", generator)
+            build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=ON {glew_policy}", generator)
     else:
         cc = f'-DCMAKE_C_COMPILER="{GCC_PATH}" -DCMAKE_CXX_COMPILER="{GPP_PATH}"'
         if linking == "1":
-            build_with_cmake("GLEW", glew_src, "Debug",   f"{cc} -DBUILD_SHARED_LIBS=OFF", generator)
-            build_with_cmake("GLEW", glew_src, "Release", f"{cc} -DBUILD_SHARED_LIBS=OFF", generator)
+            build_with_cmake("GLEW", glew_src, "Debug",   f"{cc} -DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
+            build_with_cmake("GLEW", glew_src, "Release", f"{cc} -DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
         else:
-            build_with_cmake("GLEW", glew_src, "Debug",   f"{cc} -DBUILD_SHARED_LIBS=ON", generator)
-            build_with_cmake("GLEW", glew_src, "Release", f"{cc} -DBUILD_SHARED_LIBS=ON", generator)
+            build_with_cmake("GLEW", glew_src, "Debug",   f"{cc} -DBUILD_SHARED_LIBS=ON {glew_policy}", generator)
+            build_with_cmake("GLEW", glew_src, "Release", f"{cc} -DBUILD_SHARED_LIBS=ON {glew_policy}", generator)
 
     # --------------------------------------------------------------------
     # Assimp
@@ -545,6 +550,13 @@ def main():
     if _assimp_patched != _assimp_src:
         _assimp_cmake.write_text(_assimp_patched, encoding="utf-8")
         print("[PATCH] Assimp: removed /D_DEBUG from CMAKE_CXX_FLAGS_DEBUG")
+
+    # Assimp's bundled zlib defines `fdopen` as a macro expanding to NULL when
+    # TARGET_OS_MAC is set (line 147 of contrib/zlib/zutil.h).  On modern Apple
+    # SDKs (macOS 15.5 / Xcode 16.4+) this clashes with the system declaration
+    # of `FILE *fdopen(...)` in <_stdio.h>.  Pre-define `fdopen` as itself so
+    # the `#ifndef fdopen` guard skips the problematic macro.
+    _fdopen_fix = '-DCMAKE_C_FLAGS="-Dfdopen=fdopen"'
 
     if modelformat == "1":
         model_flags = "-DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=ON -DASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT=ON"
@@ -564,28 +576,28 @@ def main():
     if compiler == "1":
         if linking == "1":
             # Force /MD so CRT is consistent across all static dependencies.
-            flags = f"-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL {model_flags}"
+            flags = f"-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL {_fdopen_fix} {model_flags}"
             build_with_cmake("Assimp", ROOT / "assimp", "Debug",  flags, generator)
             build_with_cmake("Assimp", ROOT / "assimp", "Release",flags, generator)
         else:
-            flags = f"-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=ON -DASSIMP_BUILD_TESTS=OFF {model_flags}"
+            flags = f"-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=ON -DASSIMP_BUILD_TESTS=OFF {_fdopen_fix} {model_flags}"
             build_with_cmake("Assimp", ROOT / "assimp", "Debug",  flags, generator)
             build_with_cmake("Assimp", ROOT / "assimp", "Release",flags, generator)
     else:
         cc = f'-DCMAKE_C_COMPILER="{GCC_PATH}" -DCMAKE_CXX_COMPILER="{GPP_PATH}"'
         if linking == "1":
-            flags = f'{cc} -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF {model_flags}'
+            flags = f'{cc} -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF {_fdopen_fix} {model_flags}'
             build_with_cmake("Assimp", ROOT / "assimp", "Debug",  flags, generator)
             flags_rel = (f'{cc} -DCMAKE_CXX_FLAGS_RELEASE="-Wno-array-bounds -Wno-alloc-size-larger-than" '
                          f'-Wno-error=array-compare -Wno-error=class-memaccess '
-                         f'-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF {model_flags}')
+                         f'-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF {_fdopen_fix} {model_flags}')
             build_with_cmake("Assimp", ROOT / "assimp", "Release", flags_rel, generator)
         else:
-            flags = f'{cc} -DBUILD_SHARED_LIBS=ON -DASSIMP_BUILD_TESTS=OFF {model_flags}'
+            flags = f'{cc} -DBUILD_SHARED_LIBS=ON -DASSIMP_BUILD_TESTS=OFF {_fdopen_fix} {model_flags}'
             build_with_cmake("Assimp", ROOT / "assimp", "Debug",  flags, generator)
             flags_rel = (f'{cc} -DCMAKE_CXX_FLAGS_RELEASE="-Wno-array-bounds -Wno-alloc-size-larger-than" '
                          f'-Wno-error=array-compare -Wno-error=class-memaccess '
-                         f'-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=ON -DASSIMP_BUILD_TESTS=OFF {model_flags}')
+                         f'-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=ON -DASSIMP_BUILD_TESTS=OFF {_fdopen_fix} {model_flags}')
             build_with_cmake("Assimp", ROOT / "assimp", "Release", flags_rel, generator)
 
     # --------------------------------------------------------------------
@@ -687,6 +699,8 @@ def main():
         "-DRECASTNAVIGATION_TESTS=OFF "
         "-DRECASTNAVIGATION_EXAMPLES=OFF "
         "-DBUILD_SHARED_LIBS=OFF "
+        # CMake ≥4.0 removed compatibility with cmake_minimum_required < 3.5.
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5 "
         # Force /MD for CRT consistency; CMP0091=NEW enables CMAKE_MSVC_RUNTIME_LIBRARY.
         "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW "
         "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
