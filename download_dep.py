@@ -409,8 +409,8 @@ def main():
     # Select supported model formats
     modelformat = choose(
         "\nPlease choose Assimp setting:",
-        {"1": "All formats (read and write)",
-         "2": "GLTF only (read only)"},
+        {"1": "All formats (read + write) via Assimp",
+         "2": "glTF only (Assimp stub only, glTF loads via tinygltf)"},
         env="KEMENA_ASSIMP"
     )
 
@@ -549,18 +549,16 @@ def main():
     if modelformat == "1":
         model_flags = "-DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=ON -DASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT=ON"
     else:
+        # Minimal assimp: no importers at all — glTF loading is handled by
+        # tinygltf. The assimp library still compiles as a stub so the project
+        # links cleanly.
         model_flags = (
             "-DASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF "
             "-DASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT=OFF "
-            "-DASSIMP_BUILD_GLTF_IMPORTER=ON "
-            "-DASSIMP_BUILD_GLTF_EXPORTER=OFF "
             "-DASSIMP_NO_EXPORT=ON "
             "-DASSIMP_BUILD_ASSIMP_TOOLS=OFF "
             "-DASSIMP_BUILD_TESTS=OFF "
             "-DASSIMP_BUILD_SAMPLES=OFF "
-            "-DASSIMP_BUILD_FBX_IMPORTER=OFF "
-            "-DASSIMP_BUILD_OBJ_IMPORTER=OFF "
-            "-DASSIMP_BUILD_COLLADA_IMPORTER=OFF"
         )
 
     if compiler == "1":

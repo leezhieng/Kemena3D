@@ -207,8 +207,11 @@ void main()
             {
                 shader->setValue("lightSpaceMatrix", lightSpace);
                 shader->setValue("modelMatrix",      mesh->getModelMatrixWorld());
-                // Identity bones — offscreen preview doesn't animate.
+                // Bone transforms: identity by default; populated from animator
+                // when the mesh is skinned (mirrors kRenderer::renderSceneGraphShadow).
                 std::vector<kMat4> bones(128, kMat4(1.0f));
+                if (mesh->getSkinned() && mesh->getAnimator() != nullptr)
+                    bones = mesh->getAnimator()->getFinalBoneMatrices();
                 shader->setValue("finalBonesMatrices", bones);
                 mesh->draw();
             }
@@ -652,8 +655,11 @@ void main()
         shader->setValue("material.metallic",  mesh->getMaterial()->getMetallic());
         shader->setValue("material.roughness", mesh->getMaterial()->getRoughness());
 
-        // Identity bone transforms (no skinning for thumbnails)
+        // Bone transforms: identity by default; populated from animator when
+        // the mesh is skinned (mirrors kRenderer::renderSceneGraph pattern).
         std::vector<kMat4> bones(128, kMat4(1.0f));
+        if (mesh->getSkinned() && mesh->getAnimator() != nullptr)
+            bones = mesh->getAnimator()->getFinalBoneMatrices();
         shader->setValue("finalBonesMatrices", bones);
 
         // Reset texture-presence flags so a previous draw whose material had
