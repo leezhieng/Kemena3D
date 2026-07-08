@@ -17,7 +17,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-#include <fstream> // [TEMP DIAGNOSTIC] skybox trace logging
+#include <fstream>
 #include <vector>
 #include <cstring>
 #include <cstdint>
@@ -93,31 +93,61 @@ namespace kemena
             return filePath.substr(0, filePath.find_last_of("/\\"));
         return "";
     }
-	
-	unsigned char* kAssetManager::loadImageFromResource(const char* resourceName, int& width, int& height, int& channels)
-	{
-		// Find the resource
-		HRSRC hRes = FindResource(NULL, resourceName, RT_RCDATA);
-		if (!hRes) return nullptr;
 
-		// Load the resource
-		HGLOBAL hData = LoadResource(NULL, hRes);
-		if (!hData) return nullptr;
+// -----------------------------------------------------------------------
+// Portable resource file helper — loads a file from the Resources/
+// directory next to the executable (macOS) or from the executable's
+// base path (all platforms).  Returns nullptr on failure.
+// -----------------------------------------------------------------------
+static kString resourcePath(const kString &resourceName)
+{
+    const char *base = SDL_GetBasePath();
+    if (!base) return kString();
+    kString path = kString(base) + "Resources/" + resourceName;
+    SDL_free(const_cast<char *>(base));
+    return path;
+}
 
-		// Get size and pointer
-		DWORD size = SizeofResource(NULL, hRes);
-		void* pData = LockResource(hData);
+static bool readResourceFile(const kString &resourceName, std::vector<char> &out)
+{
+    kString path = resourcePath(resourceName);
+    if (path.empty()) return false;
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    std::streamsize sz = f.tellg();
+    f.seekg(0);
+    out.resize(static_cast<size_t>(sz));
+    f.read(out.data(), sz);
+    return f.good();
+}
 
-		// Let stb_image decode from memory
-		unsigned char* data = stbi_load_from_memory(
-			reinterpret_cast<unsigned char*>(pData),
-			size,
-			&width, &height, &channels,
-			0
-		);
+// -----------------------------------------------------------------------
+// Resource-loading implementations
+// -----------------------------------------------------------------------
 
-		return data;
-	}
+ unsigned char* kAssetManager::loadImageFromResource(const char* resourceName, int& width, int& height, int& channels)
+ {
+#ifdef _WIN32
+  // Find the resource
+  HRSRC hRes = FindResource(NULL, resourceName, RT_RCDATA);
+  if (!hRes) return nullptr;
+  HGLOBAL hData = LoadResource(NULL, hRes);
+  if (!hData) return nullptr;
+  DWORD size = SizeofResource(NULL, hRes);
+  void* pData = LockResource(hData);
+  unsigned char* data = stbi_load_from_memory(
+   reinterpret_cast<unsigned char*>(pData), size,
+   &width, &height, &channels, 0);
+  return data;
+#else
+  std::vector<char> buf;
+  if (!readResourceFile(resourceName, buf)) return nullptr;
+  return stbi_load_from_memory(
+   reinterpret_cast<unsigned char*>(buf.data()),
+   static_cast<int>(buf.size()),
+   &width, &height, &channels, 0);
+#endif
+ }
 
     kTexture2D *kAssetManager::loadTexture2D(const kString fileName, const kString textureName, const kTextureFormat format, const bool flipVertical, const bool keepData)
     {
@@ -725,48 +755,49 @@ namespace kemena
 	
 	kMesh* kAssetManager::loadMeshResourceAssimp(const kString resourceName, const kString extention)
 	{
-		kMesh *rootMesh;
+		kMesh *rootMesh = nullptr;
 
 		unsigned int assimpReadFlag = aiProcess_Triangulate |
-                                      aiProcess_FlipUVs |
-                                      aiProcess_GenSmoothNormals |
-                                      aiProcess_CalcTangentSpace |
-                                      aiProcess_JoinIdenticalVertices |
-                                      aiProcess_LimitBoneWeights |
-                                      aiProcess_ImproveCacheLocality |
-                                      aiProcess_RemoveRedundantMaterials |
-                                      aiProcess_FixInfacingNormals |
-                                      aiProcess_TransformUVCoords |
-                                      aiProcess_SortByPType;
+	                                     aiProcess_FlipUVs |
+	                                     aiProcess_GenSmoothNormals |
+	                                     aiProcess_CalcTangentSpace |
+	                                     aiProcess_JoinIdenticalVertices |
+	                                     aiProcess_LimitBoneWeights |
+	                                     aiProcess_ImproveCacheLocality |
+	                                     aiProcess_RemoveRedundantMaterials |
+	                                     aiProcess_FixInfacingNormals |
+	                                     aiProcess_TransformUVCoords |
+	                                     aiProcess_SortByPType;
 
-		// Find and load resource
+		void *pResData = nullptr;
+		size_t dataSize = 0;
+		std::vector<char> fileBuf;
+
+#ifdef _WIN32
+		// Windows: load from embedded resource
 		HRSRC hRes = FindResource(NULL, resourceName.c_str(), RT_RCDATA);
-		if (!hRes)
-		{
-			std::cerr << "Failed to find resource " << resourceName << std::endl;
-			return nullptr;
-		}
-
+		if (!hRes) { std::cerr << "Failed to find resource " << resourceName << std::endl; return nullptr; }
 		HGLOBAL hResData = LoadResource(NULL, hRes);
-		DWORD size = SizeofResource(NULL, hRes);
-		void* pResData = LockResource(hResData);
-
-		if (!pResData || size == 0)
+		dataSize = SizeofResource(NULL, hRes);
+		pResData = LockResource(hResData);
+#else
+		// macOS / Linux: load from Resources/ directory
+		if (!readResourceFile(resourceName, fileBuf)) return nullptr;
+		pResData = fileBuf.data();
+		dataSize = fileBuf.size();
+#endif
+		if (!pResData || dataSize == 0)
 		{
 			std::cerr << "Failed to load resource " << resourceName << std::endl;
 			return nullptr;
 		}
 		
-		std::cout << "Loaded resource: " << resourceName << " (size=" << size << " bytes)" << std::endl;
-
-		//kString objData((const char*)pResData, size);
-		//std::cout << "Mesh content:\n" << objData << std::endl;
+		std::cout << "Loaded resource: " << resourceName << " (size=" << dataSize << " bytes)" << std::endl;
 
 		Assimp::Importer import;
 		import.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
 
-		// Use ReadFileFromMemory instead of ReadFile
-		const aiScene* scene = import.ReadFileFromMemory(pResData, size, assimpReadFlag, extention.c_str());
+		const aiScene* scene = import.ReadFileFromMemory(pResData, dataSize, assimpReadFlag, extention.c_str());
 		if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 		{
 			std::cout << "ERROR::ASSIMP::" << import.GetErrorString() << std::endl;
@@ -1087,60 +1118,65 @@ namespace kemena
 	
 	kShader *kAssetManager::loadShaderFromResource(kString vertexShaderName, kString fragmentShaderName)
 	{
-		// --- Vertex shader ---
-		HRSRC vRes = FindResource(NULL, vertexShaderName.c_str(), RT_RCDATA);
-		if (!vRes) return nullptr;
+		kString vertexCode, fragmentCode;
 
+#ifdef _WIN32
+		// --- Vertex shader ---
+		{ HRSRC vRes = FindResource(NULL, vertexShaderName.c_str(), RT_RCDATA);
+		if (!vRes) return nullptr;
 		HGLOBAL vhData = LoadResource(NULL, vRes);
 		if (!vhData) return nullptr;
-
 		DWORD vsize = SizeofResource(NULL, vRes);
 		void* vpData = LockResource(vhData);
-
-		// Copy into kString to ensure null-terminated
-		kString vertexShaderCode(reinterpret_cast<const char*>(vpData), vsize);
+		vertexCode = kString(reinterpret_cast<const char*>(vpData), vsize); }
 
 		// --- Fragment shader ---
-		HRSRC fRes = FindResource(NULL, fragmentShaderName.c_str(), RT_RCDATA);
+		{ HRSRC fRes = FindResource(NULL, fragmentShaderName.c_str(), RT_RCDATA);
 		if (!fRes) return nullptr;
-
 		HGLOBAL fhData = LoadResource(NULL, fRes);
 		if (!fhData) return nullptr;
-
 		DWORD fsize = SizeofResource(NULL, fRes);
 		void* fpData = LockResource(fhData);
+		fragmentCode = kString(reinterpret_cast<const char*>(fpData), fsize); }
+#else
+		std::vector<char> buf;
+		if (readResourceFile(vertexShaderName, buf))
+			vertexCode = kString(buf.data(), buf.size());
+		if (readResourceFile(fragmentShaderName, buf))
+			fragmentCode = kString(buf.data(), buf.size());
+		if (vertexCode.empty() || fragmentCode.empty()) return nullptr;
+#endif
 
-		kString fragmentShaderCode(reinterpret_cast<const char*>(fpData), fsize);
-
-		// --- Build shader ---
 		kShader *shader = new kShader();
-		shader->loadShadersCode(vertexShaderCode.c_str(), fragmentShaderCode.c_str());
-
+		shader->loadShadersCode(vertexCode.c_str(), fragmentCode.c_str());
 		shaders.push_back(shader);
-
 		return shader;
 	}
 
-    kShader *kAssetManager::loadGlslFromResource(kString resourceName)
-    {
-        HRSRC hRes = FindResource(NULL, resourceName.c_str(), RT_RCDATA);
-        if (!hRes) return nullptr;
+	   kShader *kAssetManager::loadGlslFromResource(kString resourceName)
+	   {
+	       kString src;
 
-        HGLOBAL hData = LoadResource(NULL, hRes);
-        if (!hData) return nullptr;
+#ifdef _WIN32
+	       HRSRC hRes = FindResource(NULL, resourceName.c_str(), RT_RCDATA);
+	       if (!hRes) return nullptr;
+	       HGLOBAL hData = LoadResource(NULL, hRes);
+	       if (!hData) return nullptr;
+	       DWORD  size = SizeofResource(NULL, hRes);
+	       void  *data = LockResource(hData);
+	       if (!data || size == 0) return nullptr;
+	       src = kString(reinterpret_cast<const char *>(data), static_cast<size_t>(size));
+#else
+	       std::vector<char> buf;
+	       if (!readResourceFile(resourceName, buf)) return nullptr;
+	       src = kString(buf.data(), buf.size());
+#endif
 
-        DWORD  size = SizeofResource(NULL, hRes);
-        void  *data = LockResource(hData);
-        if (!data || size == 0) return nullptr;
-
-        kString src(reinterpret_cast<const char *>(data), static_cast<size_t>(size));
-
-        kShader *shader = new kShader();
-        shader->loadGlslCode(src);
-
-        shaders.push_back(shader);
-        return shader;
-    }
+	       kShader *shader = new kShader();
+	       shader->loadGlslCode(src);
+	       shaders.push_back(shader);
+	       return shader;
+	   }
 
     kMaterial *kAssetManager::createMaterial(kShader *shader)
     {

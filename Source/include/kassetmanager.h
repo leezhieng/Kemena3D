@@ -38,7 +38,9 @@ struct aiTexture;
 #endif
 
 // Windows only
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 namespace kemena
 {

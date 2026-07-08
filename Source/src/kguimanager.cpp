@@ -1,5 +1,8 @@
 #include "kguimanager.h"
 
+#include <fstream>
+#include <cstdlib>
+
 namespace kemena
 {
 	kGuiManager::kGuiManager()
@@ -58,26 +61,42 @@ namespace kemena
 
 	void kGuiManager::loadDefaultFontFromResource(kString resourceName)
 	{
+		void* fontData = nullptr;
+		size_t dataSize = 0;
+
+#ifdef _WIN32
 		HRSRC hRes = FindResource(NULL, resourceName.c_str(), RT_RCDATA);
 		if (!hRes) return;
-
 		HGLOBAL hData = LoadResource(NULL, hRes);
 		if (!hData) return;
-
+		dataSize = SizeofResource(NULL, hRes);
 		void* pData = LockResource(hData);
-		DWORD size = SizeofResource(NULL, hRes);
-
-		if (pData && size > 0)
+		if (pData && dataSize > 0)
 		{
-			// Safer: copy into your own buffer because ImGui may rebuild fonts later
-			void* fontData = malloc(size);
-			memcpy(fontData, pData, size);
+			fontData = malloc(dataSize);
+			memcpy(fontData, pData, dataSize);
+		}
+#else
+		// Read from Resources/ directory next to the executable
+		const char *base = SDL_GetBasePath();
+		if (!base) return;
+		kString path = kString(base) + "Resources/" + resourceName;
+		SDL_free(const_cast<char *>(base));
 
+		std::ifstream f(path, std::ios::binary | std::ios::ate);
+		if (!f) return;
+		dataSize = static_cast<size_t>(f.tellg());
+		f.seekg(0);
+		fontData = malloc(dataSize);
+		f.read(static_cast<char*>(fontData), dataSize);
+		if (!f.good()) { free(fontData); return; }
+#endif
+
+		if (fontData && dataSize > 0)
+		{
 			ImGuiIO& io = ImGui::GetIO();
-			io.Fonts->AddFontFromMemoryTTF(fontData, size, 16.0f);
-
-			// You must keep fontData alive as long as ImGui needs it
-			// Free after ImGui::DestroyContext()
+			io.Fonts->AddFontFromMemoryTTF(fontData, dataSize, 16.0f);
+			// fontData must remain alive until ImGui::DestroyContext()
 		}
 	}
 
@@ -538,7 +557,8 @@ namespace kemena
 	bool kGuiManager::inputText(kString label, kString &value, size_t maxLength, ImGuiInputTextFlags flags)
 	{
 		std::vector<char> buf(maxLength + 1, 0);
-		strncpy_s(buf.data(), maxLength + 1, value.c_str(), _TRUNCATE);
+		strncpy(buf.data(), value.c_str(), maxLength);
+		buf[maxLength] = '\0';
 		if (ImGui::InputText(label.c_str(), buf.data(), maxLength + 1, flags))
 		{
 			value = buf.data();
@@ -550,7 +570,8 @@ namespace kemena
 	bool kGuiManager::inputTextMultiline(kString label, kString &value, size_t maxLength, kVec2 size, ImGuiInputTextFlags flags)
 	{
 		std::vector<char> buf(maxLength + 1, 0);
-		strncpy_s(buf.data(), maxLength + 1, value.c_str(), _TRUNCATE);
+		strncpy(buf.data(), value.c_str(), maxLength);
+		buf[maxLength] = '\0';
 		if (ImGui::InputTextMultiline(label.c_str(), buf.data(), maxLength + 1, ImVec2(size.x, size.y), flags))
 		{
 			value = buf.data();
@@ -562,7 +583,8 @@ namespace kemena
 	bool kGuiManager::inputTextWithHint(kString label, kString hint, kString &value, size_t maxLength, ImGuiInputTextFlags flags)
 	{
 		std::vector<char> buf(maxLength + 1, 0);
-		strncpy_s(buf.data(), maxLength + 1, value.c_str(), _TRUNCATE);
+		strncpy(buf.data(), value.c_str(), maxLength);
+		buf[maxLength] = '\0';
 		if (ImGui::InputTextWithHint(label.c_str(), hint.c_str(), buf.data(), maxLength + 1, flags))
 		{
 			value = buf.data();
