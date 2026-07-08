@@ -5,6 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Resolve project root from script location so the script works
+# regardless of which directory the user runs it from.
+ROOT = Path(__file__).resolve().parent
+
 MINGW_SEARCH_PATHS = [
     r"C:\mingw64\bin",
     r"C:\mingw32\bin",
@@ -67,24 +71,24 @@ def choose(prompt, options: dict, env=None):
     return choice
 
 def build_with_cmake(generator, build_mode, args, make_program=None):
-    build_dir = f"build_{build_mode}"
-    install_prefix = os.path.join(os.getcwd(), f"Output/{build_mode}")
+    build_dir = ROOT / f"build_{build_mode}"
+    install_prefix = ROOT / f"Output/{build_mode}"
 
     make_arg = f'-DCMAKE_MAKE_PROGRAM="{make_program}" ' if make_program else ""
 
     # Configure
     run_cmd(
-        f'cmake -S . -B {build_dir} -G "{generator}" '
+        f'cmake -S "{ROOT}" -B "{build_dir}" -G "{generator}" '
         f'{make_arg}'
         f'-DCMAKE_INSTALL_PREFIX="{install_prefix}" '
         f'-DCMAKE_BUILD_TYPE={build_mode} {args}'
     )
 
     # Build
-    run_cmd(f'cmake --build {build_dir} --config {build_mode} --parallel')
+    run_cmd(f'cmake --build "{build_dir}" --config {build_mode} --parallel')
 
     # Install
-    run_cmd(f'cmake --install {build_dir} --config {build_mode}')
+    run_cmd(f'cmake --install "{build_dir}" --config {build_mode}')
 
     print("[SUCCESS] Kemena3D SDK built and installed successfully.")
 
