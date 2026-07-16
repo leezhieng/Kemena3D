@@ -457,6 +457,11 @@ namespace kemena
                                stride, reinterpret_cast<const void *>(offset));
     }
 
+    void kOpenGLDriver::setVertexAttribDivisor(int location, int divisor)
+    {
+        glVertexAttribDivisor(static_cast<GLuint>(location), static_cast<GLuint>(divisor));
+    }
+
     // -------------------------------------------------------------------------
     // Draw calls
     // -------------------------------------------------------------------------
@@ -468,10 +473,26 @@ namespace kemena
         glBindVertexArray(0);
     }
 
+    void kOpenGLDriver::drawIndexedInstanced(uint32_t vaoId, int indexCount, int instanceCount)
+    {
+        glBindVertexArray(static_cast<GLuint>(vaoId));
+        glDrawElementsInstanced(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, nullptr,
+                                static_cast<GLsizei>(instanceCount));
+        glBindVertexArray(0);
+    }
+
     void kOpenGLDriver::drawArrays(uint32_t vaoId, kPrimitiveType type, int vertexCount)
     {
         glBindVertexArray(static_cast<GLuint>(vaoId));
         glDrawArrays(toGLPrimitiveType(type), 0, vertexCount);
+        glBindVertexArray(0);
+    }
+
+    void kOpenGLDriver::drawArraysInstanced(uint32_t vaoId, kPrimitiveType type, int vertexCount, int instanceCount)
+    {
+        glBindVertexArray(static_cast<GLuint>(vaoId));
+        glDrawArraysInstanced(toGLPrimitiveType(type), 0, vertexCount,
+                              static_cast<GLsizei>(instanceCount));
         glBindVertexArray(0);
     }
 

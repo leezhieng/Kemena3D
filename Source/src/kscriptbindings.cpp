@@ -95,6 +95,16 @@ namespace kemena
     {
         printf("[Script] %s\n", msg.c_str());
     }
+    static bool particleGetActive(kObject *o)
+    {
+        auto &parts = o->getParticles();
+        return !parts.empty() && parts[0].isActive;
+    }
+    static void particleSetActive(kObject *o, bool a)
+    {
+        auto &parts = o->getParticles();
+        if (!parts.empty()) parts[0].isActive = a;
+    }
 
     // -----------------------------------------------------------------------
     // Registration
@@ -162,6 +172,8 @@ namespace kemena
         r = e->RegisterObjectMethod("kVec3", "kVec3 cross(const kVec3 &in) const",
                                     asFUNCTION(vec3Cross), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
+
+
         // --- kObject ---------------------------------------------------------
         // Engine-owned: no reference counting — AngelScript only holds handles.
         r = e->RegisterObjectType("kObject", 0, asOBJ_REF | asOBJ_NOCOUNT);
@@ -209,6 +221,14 @@ namespace kemena
                                     asFUNCTION(objSetActive), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kObject", "kObject@ getParent() const",
                                     asFUNCTION(objGetParent), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+
+        // --- Particle system access on kObject --------------------------------
+        // Expose the first active particle system's isActive toggle so scripts
+        // can turn their own particles on/off at runtime.
+        r = e->RegisterObjectMethod("kObject", "bool getParticleActive() const",
+                                    asFUNCTION(particleGetActive), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kObject", "void setParticleActive(bool)",
+                                    asFUNCTION(particleSetActive), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
         // --- Global functions ------------------------------------------------
         r = e->RegisterGlobalFunction("kObject@ getSelf()",

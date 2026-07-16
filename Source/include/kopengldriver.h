@@ -264,6 +264,13 @@ namespace kemena
          */
         void setVertexAttribInt(int location, int components, int stride, size_t offset) override;
 
+        /**
+         * @brief Sets the instance divisor for a vertex attribute on the currently-bound VAO.
+         * @param location Attribute location index.
+         * @param divisor  Number of instances that share the same attribute value (0 = per-vertex).
+         */
+        void setVertexAttribDivisor(int location, int divisor) override;
+
         // --- Draw calls ------------------------------------------------------
 
         /**
@@ -274,12 +281,29 @@ namespace kemena
         void drawIndexed(uint32_t vaoId, int indexCount) override;
 
         /**
+         * @brief Issues an indexed, instanced draw call for the given VAO.
+         * @param vaoId         GL VAO id to bind.
+         * @param indexCount    Number of indices per instance.
+         * @param instanceCount Number of instances to draw.
+         */
+        void drawIndexedInstanced(uint32_t vaoId, int indexCount, int instanceCount) override;
+
+        /**
          * @brief Issues a non-indexed draw call for the given VAO.
          * @param vaoId       GL VAO id to bind.
          * @param type        Primitive topology to assemble.
          * @param vertexCount Number of vertices to draw.
          */
         void drawArrays(uint32_t vaoId, kPrimitiveType type, int vertexCount) override;
+
+        /**
+         * @brief Issues a non-indexed, instanced draw call for the given VAO.
+         * @param vaoId         GL VAO id to bind.
+         * @param type          Primitive topology to assemble.
+         * @param vertexCount   Number of vertices per instance.
+         * @param instanceCount Number of instances to draw.
+         */
+        void drawArraysInstanced(uint32_t vaoId, kPrimitiveType type, int vertexCount, int instanceCount) override;
 
         // --- Texture sampling ------------------------------------------------
 

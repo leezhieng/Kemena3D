@@ -15,6 +15,7 @@
 #include "kscene.h"
 #include "kcamera.h"
 #include "kscriptmanager.h"
+#include "kparticle.h"
 
 // Export macro
 #ifdef _WIN32
@@ -212,6 +213,32 @@ namespace kemena
         /** @brief Returns true between startPhysics() and stopPhysics(). */
         bool getPhysicsRunning() const { return physicsRunning; }
 
+        // --- Particle system lifecycle (standalone runtime) ------------------
+
+        /**
+         * @brief Returns the particle manager owned by this world.
+         *
+         * Created automatically; call init() on it after a driver is current
+         * before calling startParticles().
+         */
+        kParticleManager *getParticleManager();
+
+        /**
+         * @brief Registers every particle descriptor from scene objects with
+         *        the particle manager and begins simulation. Call once when
+         *        gameplay begins, after the particle manager is initialised.
+         */
+        void startParticles();
+
+        /** @brief Steps the particle simulation by @p deltaTime seconds. */
+        void updateParticles(float deltaTime);
+
+        /** @brief Stops simulation and clears all live particles. */
+        void stopParticles();
+
+        /** @brief Returns true between startParticles() and stopParticles(). */
+        bool getParticlesRunning() const { return particlesRunning; }
+
         /**
          * @brief Serialises the world to JSON.
          * @param startScene Index of the first scene to include (default 0).
@@ -263,6 +290,9 @@ namespace kemena
         bool                   physicsRunning  = false;   ///< True while physics is stepping.
         std::vector<kObject *> physicsBodies;             ///< Nodes with a live rigid body.
         std::vector<kObject *> characterBodies;           ///< Nodes with a live character.
+
+        kParticleManager *particleManager  = nullptr; ///< Particle system manager (world-owned).
+        bool              particlesRunning = false;   ///< True while particles are simulating.
 
         kString uuid; ///< World UUID.
     };

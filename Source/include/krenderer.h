@@ -32,6 +32,7 @@
 #include "kworld.h"
 #include "kscene.h"
 #include "kobject.h"
+#include "kparticle.h"
 #include "koctree.h"
 
 #include <unordered_set>
@@ -449,6 +450,20 @@ namespace kemena
          * @param color    Line colour (RGB).
          */
         void renderDebugLines(kWorld *world, const std::vector<kVec3> &segments, kVec3 color);
+
+        /**
+         * @brief Renders all live particles from the world's particle manager.
+         *
+         * Draws particles as instanced camera-facing billboard quads with
+         * alpha blending. Called automatically from render() after opaque
+         * geometry and before screen-space post-processing.
+         *
+         * Requires the world's particle manager to be initialised and
+         * a valid main camera to be set.
+         *
+         * @param world World whose particle manager is queried.
+         */
+        void renderParticles(kWorld *world);
 
     protected:
     private:

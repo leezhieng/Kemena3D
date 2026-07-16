@@ -349,6 +349,16 @@ namespace kemena
          */
         virtual void setVertexAttribInt(int location, int components, int stride, size_t offset) = 0;
 
+        /**
+         * @brief Sets the instance divisor for a vertex attribute on the currently-bound VAO.
+         *
+         * A divisor of 0 means the attribute advances per vertex (default).
+         * A divisor of 1 means the attribute advances per instance (instanced rendering).
+         * @param location Attribute location index.
+         * @param divisor  Number of instances that share the same attribute value.
+         */
+        virtual void setVertexAttribDivisor(int location, int divisor) = 0;
+
         // --- Draw calls ------------------------------------------------------
 
         /**
@@ -359,12 +369,29 @@ namespace kemena
         virtual void drawIndexed(uint32_t vaoId, int indexCount) = 0;
 
         /**
+         * @brief Draws indexed, instanced triangles from the given VAO.
+         * @param vaoId         VAO handle.
+         * @param indexCount    Number of indices per instance.
+         * @param instanceCount Number of instances to draw.
+         */
+        virtual void drawIndexedInstanced(uint32_t vaoId, int indexCount, int instanceCount) = 0;
+
+        /**
          * @brief Draws non-indexed primitives from the given VAO.
          * @param vaoId       VAO handle.
          * @param type        Primitive topology.
          * @param vertexCount Number of vertices to draw.
          */
         virtual void drawArrays(uint32_t vaoId, kPrimitiveType type, int vertexCount) = 0;
+
+        /**
+         * @brief Draws non-indexed, instanced primitives from the given VAO.
+         * @param vaoId         VAO handle.
+         * @param type          Primitive topology.
+         * @param vertexCount   Number of vertices per instance.
+         * @param instanceCount Number of instances to draw.
+         */
+        virtual void drawArraysInstanced(uint32_t vaoId, kPrimitiveType type, int vertexCount, int instanceCount) = 0;
 
         // --- Texture sampling (bind/unbind for shader use) -------------------
 

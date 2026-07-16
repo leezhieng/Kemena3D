@@ -594,6 +594,36 @@ namespace kemena
             }
         }
 
+        // Particle systems
+        json particlesData = json::array();
+        if (getParticles().size() > 0)
+        {
+            for (size_t j = 0; j < getParticles().size(); ++j)
+            {
+                const kParticle &p = getParticles().at(j);
+                json pj;
+                pj["uuid"]            = p.uuid;
+                pj["name"]            = p.name;
+                pj["active"]          = p.isActive;
+                pj["looping"]         = p.looping;
+                pj["max_particles"]   = p.maxParticles;
+                pj["emission_rate"]   = p.emissionRate;
+                pj["lifetime"]        = p.lifetime;
+                pj["gravity_scale"]   = p.gravityScale;
+                pj["start_velocity"]  = {{"x", p.startVelocity.x}, {"y", p.startVelocity.y}, {"z", p.startVelocity.z}};
+                pj["start_speed"]     = p.startSpeed;
+                pj["velocity_variance"] = {{"x", p.velocityVariance.x}, {"y", p.velocityVariance.y}, {"z", p.velocityVariance.z}};
+                pj["color_start"]     = {{"r", p.colorStart.r}, {"g", p.colorStart.g}, {"b", p.colorStart.b}, {"a", p.colorStart.a}};
+                pj["color_end"]       = {{"r", p.colorEnd.r},   {"g", p.colorEnd.g},   {"b", p.colorEnd.b},   {"a", p.colorEnd.a}};
+                pj["size_start"]      = p.sizeStart;
+                pj["size_end"]        = p.sizeEnd;
+                pj["emission_shape"]  = (int)p.emissionShape;
+                pj["shape_size"]      = {{"x", p.shapeSize.x}, {"y", p.shapeSize.y}, {"z", p.shapeSize.z}};
+                pj["texture_path"]    = p.texturePath;
+                particlesData.push_back(pj);
+            }
+        }
+
         json data =
             {
                 {"type", "object"},
@@ -614,6 +644,7 @@ namespace kemena
                   {"z", getScale().z}}},
                 {"children", childrenData},
                 {"script", scriptsData},
+                {"particle", particlesData},
             };
 
         // Prefab linkage — only emit when set so unrelated objects stay unchanged.

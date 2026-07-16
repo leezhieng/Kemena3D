@@ -16,6 +16,7 @@
 #include <algorithm>
 
 #include "kdatatype.h"
+#include "kfilesystem.h"
 #include "kobject.h"
 #include "kmesh.h"
 #include "kshader.h"

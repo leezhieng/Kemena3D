@@ -4,6 +4,7 @@
 #include "kmesh.h"
 #include "klight.h"
 #include "kcamera.h"
+#include "kfilesystem.h"
 
 #include <algorithm>
 #include <fstream>
@@ -486,6 +487,75 @@ namespace kemena
     }
 
     // -----------------------------------------------------------------------
+    // Particle system lifecycle (standalone runtime)
+    // -----------------------------------------------------------------------
+
+    kParticleManager *kWorld::getParticleManager()
+    {
+        if (!particleManager)
+            particleManager = new kParticleManager();
+        return particleManager;
+    }
+
+    void kWorld::startParticles()
+    {
+        if (particlesRunning)
+            return;
+
+        kParticleManager *pm = getParticleManager();
+        if (!pm->isInitialized())
+        {
+            if (!pm->init())
+            {
+                printf("kWorld::startParticles: particle manager init failed.\n");
+                return;
+            }
+        }
+
+        // Register every particle descriptor from every object in every scene.
+        for (kObject *obj : collectAllObjects())
+        {
+            for (kParticle &pdesc : obj->getParticles())
+            {
+                if (!pdesc.isActive)
+                    continue;
+                pm->addEmitter(pdesc, obj->getGlobalPosition());
+            }
+        }
+
+        particlesRunning = true;
+    }
+
+    void kWorld::updateParticles(float deltaTime)
+    {
+        if (!particlesRunning || !particleManager)
+            return;
+
+        // Update emitter positions from their owning objects before stepping.
+        for (kObject *obj : collectAllObjects())
+        {
+            for (kParticle &pdesc : obj->getParticles())
+            {
+                particleManager->setEmitterPosition(pdesc.uuid, obj->getGlobalPosition());
+            }
+        }
+
+        particleManager->update(deltaTime);
+    }
+
+    void kWorld::stopParticles()
+    {
+        if (!particleManager)
+        {
+            particlesRunning = false;
+            return;
+        }
+
+        particleManager->clear();
+        particlesRunning = false;
+    }
+
+    // -----------------------------------------------------------------------
     // Standalone project loading (built game / runtime)
     // -----------------------------------------------------------------------
 
@@ -718,22 +788,49 @@ namespace kemena
             return false;
         }
 
-        std::ifstream f(path);
-        if (!f.is_open())
-        {
-            printf("kWorld::loadFromFile: cannot open '%s'.\n", path.c_str());
-            return false;
-        }
-
         json data;
-        try { data = json::parse(f); }
-        catch (const std::exception &e)
+
+        // When running from a package, read the world JSON from the VFS.
+        if (kFileSystem::isPackaged())
         {
-            printf("kWorld::loadFromFile: parse error: %s\n", e.what());
-            return false;
+            kString worldJson = kFileSystem::readFileString("scene.world");
+            if (worldJson.empty())
+            {
+                // Try the path as-is (may be a relative path)
+                worldJson = kFileSystem::readFileString(path);
+            }
+            if (worldJson.empty())
+            {
+                printf("kWorld::loadFromFile: cannot read '%s' from package.\n", path.c_str());
+                return false;
+            }
+            try { data = json::parse(worldJson); }
+            catch (const std::exception &e)
+            {
+                printf("kWorld::loadFromFile: parse error: %s\n", e.what());
+                return false;
+            }
+        }
+        else
+        {
+            std::ifstream f(path);
+            if (!f.is_open())
+            {
+                printf("kWorld::loadFromFile: cannot open '%s'.\n", path.c_str());
+                return false;
+            }
+
+            try { data = json::parse(f); }
+            catch (const std::exception &e)
+            {
+                printf("kWorld::loadFromFile: parse error: %s\n", e.what());
+                return false;
+            }
         }
 
-        fs::path dataRoot = fs::path(path).parent_path();
+        fs::path dataRoot = kFileSystem::isPackaged()
+            ? fs::path()
+            : fs::path(path).parent_path();
 
         if (!data.contains("scenes") || !data["scenes"].is_array())
             return false;

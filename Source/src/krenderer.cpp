@@ -612,6 +612,14 @@ void main()
                 renderSceneGraph(world, scene, scene->getRootNode(), false, deltaTime);
             }
 
+            // Render particles after opaque geometry so they blend correctly
+            // against the scene, but before screen-space post-processing.
+            if (renderMode == kRenderMode::RENDER_MODE_FULL ||
+                renderMode == kRenderMode::RENDER_MODE_FULL_WIREFRAME)
+            {
+                renderParticles(world);
+            }
+
             if (renderMode != kRenderMode::RENDER_MODE_FULL)
             {
                 kShader *dbgShader = nullptr;
@@ -2711,5 +2719,27 @@ void main() { outColor = vec4(lineColor, 1.0); }
         driver->bindDrawFramebuffer(fbo);
         driver->blitFramebufferColor(0, 0, fboWidth, fboHeight, 0, 0, fboWidth, fboHeight);
         driver->unbindFramebuffer();
+    }
+
+    void kRenderer::renderParticles(kWorld *world)
+    {
+        if (!world || !world->getMainCamera())
+            return;
+
+        kParticleManager *pm = world->getParticleManager();
+        if (!pm || !pm->isInitialized())
+            return;
+
+        kCamera *cam = world->getMainCamera();
+        kMat4 view = cam->getViewMatrix();
+        kMat4 proj = cam->getProjectionMatrix();
+
+        // Camera right/up in world space (for billboarding).
+        // Extract from the view matrix inverse.
+        kMat4 viewInv = glm::inverse(view);
+        kVec3 camRight = kVec3(viewInv[0]);
+        kVec3 camUp    = kVec3(viewInv[1]);
+
+        pm->render(view, proj, camRight, camUp);
     }
 }

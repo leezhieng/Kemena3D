@@ -54,6 +54,13 @@ namespace kemena
 
     bool kAssetManager::fileExists(const kString &fileName)
     {
+        // When running from a package, try the VFS first with a relative path.
+        if (kFileSystem::isPackaged())
+        {
+            if (kFileSystem::fileExists(fileName))
+                return true;
+        }
+
         bool ret;
         FILE *fp = fopen(fileName.c_str(), "rb");
         if (fp)
