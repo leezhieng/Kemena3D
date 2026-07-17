@@ -9,6 +9,7 @@
 #include "kdriver.h"
 #include "kwindow.h"
 
+#ifndef KEMENA_GLES
 #include <GL/glew.h>
 
 #ifdef __APPLE__
@@ -17,6 +18,7 @@
 #else
 #include <GL/gl.h>
 #include <GL/glu.h>
+#endif
 #endif
 
 #define NO_SDL_GLEXT

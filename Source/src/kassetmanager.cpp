@@ -1,4 +1,5 @@
 #include "kassetmanager.h"
+#include "kgl_internal.h"
 
 #ifndef KEMENA_NO_ASSIMP
 // Public header is now Assimp-free; the importer paths below still need

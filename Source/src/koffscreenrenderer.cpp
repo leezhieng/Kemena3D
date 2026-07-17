@@ -1,5 +1,6 @@
 #include "koffscreenrenderer.h"
 #include "kopengldriver.h"
+#include "kgl_internal.h"
 #include "kdriver.h"
 #include "kmesh.h"
 #include "kscene.h"

@@ -1,5 +1,6 @@
 #include "krenderer.h"
 #include "kopengldriver.h"
+#include "kopenglesdriver.h"
 #include "kphysicsobject.h"
 #include <functional>
 #include <fstream>
@@ -20,6 +21,14 @@ namespace kemena
         if (renderType == kRendererType::RENDERER_GL)
         {
             driver = new kOpenGLDriver();
+        }
+        else if (renderType == kRendererType::RENDERER_GLES)
+        {
+            driver = new kOpenGLESDriver();
+        }
+
+        if (driver != nullptr)
+        {
             if (!driver->init(window))
             {
                 delete driver;
@@ -1870,10 +1879,10 @@ void main()
 
             driver->bindFramebuffer(fboMsaa);
             driver->setViewport(0, 0, fboWidth, fboHeight);
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            glDisable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
+            driver->setClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            driver->clear(true, true, false);
+            driver->setDepthTest(false);
+            driver->setDepthWrite(false);
 
             debugPickShader->use();
             driver->bindTexture2D(0, pickFboTex);
@@ -1882,8 +1891,8 @@ void main()
             debugPickShader->unuse();
             driver->unbindTexture2D(0);
 
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
+            driver->setDepthTest(true);
+            driver->setDepthWrite(true);
             driver->unbindFramebuffer();
 
             driver->bindReadFramebuffer(fboMsaa);
@@ -1985,17 +1994,24 @@ void main()
 
                 if (wireframe)
                 {
+                    // glPolygonMode is not available in OpenGL ES.
+                    // Wireframe debug modes are silently ignored on GLES;
+                    // the mesh draws with solid fill instead.
+#ifndef KEMENA_GLES
                     glEnable(GL_POLYGON_OFFSET_LINE);
                     glPolygonOffset(-1.0f, -1.0f);
                     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+#endif
                 }
 
                 mesh->draw();
 
                 if (wireframe)
                 {
+#ifndef KEMENA_GLES
                     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                     glDisable(GL_POLYGON_OFFSET_LINE);
+#endif
                 }
 
                 if (hasTex)
@@ -2122,20 +2138,29 @@ void main() { outColor = vec4(lineColor, 1.0); }
         outlineShader->setValue("outlineColor", color);
         outlineShader->setValue("outlinePixels", (int)std::max(1.0f, thickness));
 
-        GLint idLoc = glGetUniformLocation(static_cast<GLuint>(outlineShader->getShaderProgram()), "selectedIds");
-        if (idLoc >= 0)
-            glUniform1iv(idLoc, (GLsizei)selectedIds.size(), selectedIds.data());
+        driver->setUniformInt(outlineShader->getShaderProgram(), "selectedIds[0]", selectedIds.empty() ? 0 : selectedIds[0]);
+        // Upload selected IDs as individual ints (max 256).
+        // GLES does not have glUniform1iv easily exposed through the driver
+        // interface, so we set them individually up to 256.
+        {
+            int count = std::min((int)selectedIds.size(), 256);
+            for (int i = 0; i < count; ++i)
+            {
+                kString name = "selectedIds[" + std::to_string(i) + "]";
+                driver->setUniformInt(outlineShader->getShaderProgram(), name, selectedIds[i]);
+            }
+        }
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
+        driver->setBlend(true);
+        driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+        driver->setDepthTest(false);
+        driver->setDepthWrite(false);
 
         driver->drawIndexed(quadVao, 6);
 
-        glDisable(GL_BLEND);
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
+        driver->setBlend(false);
+        driver->setDepthTest(true);
+        driver->setDepthWrite(true);
 
         outlineShader->unuse();
         driver->unbindTexture2D(0);

@@ -13,16 +13,6 @@
 #include <vector>
 
 #include "glm/glm.hpp"
-#include <GL/glew.h>
-
-#ifdef __APPLE__
-#include <OpenGL/gl.h>
-#include <OpenGL/glu.h>
-#else
-#include <GL/gl.h>
-#include <GL/glu.h>
-#endif
-
 #include "kdatatype.h"
 
 namespace kemena
@@ -30,8 +20,9 @@ namespace kemena
     /**
      * @brief Base GPU texture abstraction shared by kTexture2D and kTextureCube.
      *
-     * Stores the API texture handle, a name used to bind the texture to shader
-     * uniforms, and the texture type (2D or cube map).
+     * Stores the API-agnostic texture handle (uint32_t), a name used to bind
+     * the texture to shader uniforms, and the texture type (2D or cube map).
+     * No GL headers are included — all GPU operations go through kDriver.
      */
     class KEMENA3D_API kTexture
     {
@@ -57,13 +48,13 @@ namespace kemena
          * @brief Sets the GPU texture handle.
          * @param newTextureID Handle returned by the texture loading API.
          */
-        void setTextureID(GLuint newTextureID);
+        void setTextureID(uint32_t newTextureID);
 
         /**
          * @brief Returns the GPU texture handle.
          * @return Opaque texture handle (0 if not yet loaded).
          */
-        GLuint getTextureID();
+        uint32_t getTextureID();
 
         /**
          * @brief Sets the GLSL sampler uniform name for this texture.
@@ -91,7 +82,7 @@ namespace kemena
 
     protected:
     private:
-        GLuint textureID;           ///< GPU texture handle.
+        uint32_t textureID = 0;     ///< GPU texture handle (backend-agnostic).
         kString textureName;         ///< GLSL sampler uniform name.
         kTextureType type = kTextureType::TEX_TYPE_2D; ///< Texture dimensionality.
     };

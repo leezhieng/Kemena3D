@@ -21,12 +21,12 @@ namespace kemena
         return newTexture;
     }
 
-    void kTexture::setTextureID(GLuint newTextureID)
+    void kTexture::setTextureID(uint32_t newTextureID)
     {
         textureID = newTextureID;
     }
 
-    GLuint kTexture::getTextureID()
+    uint32_t kTexture::getTextureID()
     {
         return textureID;
     }

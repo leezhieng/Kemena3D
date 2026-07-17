@@ -85,9 +85,6 @@ namespace kemena
         int height;   ///< Texture height in pixels.
         int channels; ///< Number of colour channels.
 
-        GLuint textureID;   ///< (Inherited from kTexture; duplicated for legacy reasons.)
-        kString textureName; ///< (Inherited from kTexture; duplicated for legacy reasons.)
-
         unsigned char *data; ///< Optional CPU-side pixel buffer.
     };
 }

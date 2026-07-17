@@ -8,7 +8,7 @@
  */
 
 #include "kterrain.h"
-#include <GL/glew.h>
+#include "kgl_internal.h"
 #include "kscene.h"
 #include "kmesh.h"
 #include "kmaterial.h"

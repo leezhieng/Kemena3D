@@ -52,7 +52,8 @@ namespace kemena
      */
     enum kRendererType
     {
-        RENDERER_GL ///< OpenGL renderer.
+        RENDERER_GL,  ///< OpenGL 3.3+ renderer (desktop).
+        RENDERER_GLES ///< OpenGL ES 3.0 renderer (Android / mobile).
     };
 
     /**

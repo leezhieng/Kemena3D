@@ -147,6 +147,31 @@ if(KEMENA_OPENGL_45)
     target_compile_definitions(kemena3d PUBLIC KEMENA_OPENGL_45)
 endif()
 
+# OpenGL ES 3.0 backend for Android / mobile platforms.
+# When enabled the engine uses #include <GLES3/gl3.h> instead of GLEW,
+# requests an ES 3.0 context via SDL, and disables desktop-only features
+# (glPolygonMode, GL_FRAMEBUFFER_SRGB toggle, etc.).
+option(KEMENA_GLES "Build with OpenGL ES 3.0 backend (Android / mobile)" OFF)
+if(KEMENA_GLES)
+    target_compile_definitions(kemena3d PUBLIC KEMENA_GLES)
+    # On Android, GLES3 is provided by the NDK; on desktop we need to link
+    # against a GLES emulation library (e.g. ANGLE, PowerVR SDK, or Mesa).
+    if(ANDROID)
+        target_link_libraries(kemena3d PUBLIC GLESv3 EGL)
+    elseif(WIN32)
+        # When testing GLES on Windows via ANGLE, link libGLESv2 instead of opengl32.
+        # Standard desktop GL can also serve GLES through the compatibility profile.
+        message(STATUS "KEMENA_GLES on Win32: using desktop GL as GLES fallback")
+    elseif(APPLE)
+        message(STATUS "KEMENA_GLES on Apple: using OpenGL.framework (ES via compat profile)")
+    elseif(UNIX)
+        target_link_libraries(kemena3d PUBLIC GLESv2 EGL)
+    endif()
+
+    # GLEW is not used in GLES mode — ImGui's OpenGL3 backend needs a different loader.
+    target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+endif()
+
 # Platform specific
 if (WIN32)
 	target_link_libraries(kemena3d PUBLIC opengl32)
