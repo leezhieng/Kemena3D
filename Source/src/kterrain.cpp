@@ -185,16 +185,14 @@ namespace kemena
         if (m_splatTexture != 0)
             return;
 
-        glGenTextures(1, &m_splatTexture);
-        glBindTexture(GL_TEXTURE_2D, m_splatTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-                     m_heightRes, m_heightRes, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, m_splatData.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        kDriver *driver = kDriver::getCurrent();
+        m_splatTexture = driver->createTexture2D(m_heightRes, m_heightRes,
+                                                  kTextureFormat::TEX_FORMAT_RGBA,
+                                                  m_splatData.data(),
+                                                  kTextureWrap::CLAMP_TO_EDGE,
+                                                  kTextureFilter::LINEAR,
+                                                  kTextureFilter::LINEAR,
+                                                  false);
     }
 
     void kTerrain::updateSplatTexture()
@@ -205,11 +203,11 @@ namespace kemena
             return;
         }
 
-        glBindTexture(GL_TEXTURE_2D, m_splatTexture);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
-                        m_heightRes, m_heightRes,
-                        GL_RGBA, GL_UNSIGNED_BYTE, m_splatData.data());
-        glBindTexture(GL_TEXTURE_2D, 0);
+        kDriver *driver = kDriver::getCurrent();
+        driver->uploadTexture2DSub(m_splatTexture, 0, 0, 0,
+                                   m_heightRes, m_heightRes,
+                                   kTextureFormat::TEX_FORMAT_RGBA,
+                                   m_splatData.data());
     }
 
     // ============================================================================
@@ -611,7 +609,7 @@ namespace kemena
         // Create splat texture on GPU
         if (m_splatTexture != 0)
         {
-            glDeleteTextures(1, &m_splatTexture);
+            kDriver::getCurrent()->deleteTexture(m_splatTexture);
             m_splatTexture = 0;
         }
         createSplatTexture();
@@ -801,7 +799,7 @@ namespace kemena
     {
         if (m_splatTexture != 0)
         {
-            glDeleteTextures(1, &m_splatTexture);
+            kDriver::getCurrent()->deleteTexture(m_splatTexture);
             m_splatTexture = 0;
         }
 

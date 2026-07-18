@@ -18,6 +18,9 @@
 #include "imgui_internal.h"
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_opengl3.h"
+#ifdef KEMENA_D3D11
+#include "backends/imgui_impl_dx11.h"
+#endif
 
 namespace kemena
 {
@@ -756,7 +759,7 @@ namespace kemena
          * @param uv0       Top-left UV coordinate.
          * @param uv1       Bottom-right UV coordinate.
          */
-        void image(GLuint textureId, kVec2 size, kVec2 uv0 = kVec2(0, 0), kVec2 uv1 = kVec2(1, 1));
+        void image(uint32_t textureId, kVec2 size, kVec2 uv0 = kVec2(0, 0), kVec2 uv1 = kVec2(1, 1));
 
         /**
          * @brief Renders a GPU texture as a clickable image button.
@@ -768,7 +771,7 @@ namespace kemena
          * @param tint      Tint color multiplied over the image (default white = no tint).
          * @return true if the button was clicked.
          */
-        bool imageButton(kString id, GLuint textureId, kVec2 size, kVec2 uv0 = kVec2(0, 0), kVec2 uv1 = kVec2(1, 1), kVec4 tint = kVec4(1, 1, 1, 1));
+        bool imageButton(kString id, uint32_t textureId, kVec2 size, kVec2 uv0 = kVec2(0, 0), kVec2 uv1 = kVec2(1, 1), kVec4 tint = kVec4(1, 1, 1, 1));
 
         // ---- Progress ----
 
@@ -1075,7 +1078,7 @@ namespace kemena
          * @param uvMax     Bottom-right UV coordinate.
          * @param tint      Tint color (default white = no tint).
          */
-        void drawListAddImage(GLuint textureId, kVec2 pMin, kVec2 pMax, kVec2 uvMin = kVec2(0, 0), kVec2 uvMax = kVec2(1, 1), kVec4 tint = kVec4(1, 1, 1, 1));
+        void drawListAddImage(uint32_t textureId, kVec2 pMin, kVec2 pMax, kVec2 uvMin = kVec2(0, 0), kVec2 uvMax = kVec2(1, 1), kVec4 tint = kVec4(1, 1, 1, 1));
 
         /** @brief Returns the height of a single text line in pixels. */
         float getTextLineHeight();
@@ -1125,6 +1128,7 @@ namespace kemena
     private:
         float      mainScale; ///< UI scale factor applied at initialisation.
         kRenderer *renderer;  ///< Owning renderer (provides window and driver context).
+        bool       isD3D11 = false; ///< True when the D3D11 backend is active.
     };
 }
 

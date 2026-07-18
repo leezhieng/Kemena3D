@@ -208,6 +208,20 @@ namespace kemena
          */
         virtual void setSampleAlphaToCoverage(bool enable) = 0;
 
+        /**
+         * @brief Enables or disables wireframe rendering.
+         *
+         * When enabled, filled primitives are rendered as lines (wireframe).
+         * The driver automatically applies polygon offset to prevent z-fighting
+         * between the wireframe and the underlying filled geometry.
+         *
+         * On backends that don't support @c glPolygonMode (GLES), this is a
+         * no-op and wireframe debug modes are silently ignored.
+         *
+         * @param enable true to render wireframe, false for solid fill.
+         */
+        virtual void setWireframe(bool enable) = 0;
+
         // --- Shader programs -------------------------------------------------
 
         /**
@@ -392,6 +406,115 @@ namespace kemena
          * @param instanceCount Number of instances to draw.
          */
         virtual void drawArraysInstanced(uint32_t vaoId, kPrimitiveType type, int vertexCount, int instanceCount) = 0;
+
+        // --- Texture creation (for asset loading) ----------------------------
+
+        /**
+         * @brief Creates a 2D texture and uploads pixel data at mip level 0.
+         *
+         * Automatically generates a full mipmap chain after upload when
+         * @p generateMips is true.  The texture is created with the given wrap
+         * and filter parameters.
+         *
+         * @param width        Texture width in pixels.
+         * @param height       Texture height in pixels.
+         * @param format       Pixel format (RGB, RGBA, sRGB variants).
+         * @param data         Raw pixel bytes; must match the chosen format.
+         * @param wrap         UV wrap mode for both S and T axes.
+         * @param minFilter    Minification filter.
+         * @param magFilter    Magnification filter.
+         * @param generateMips If true, a full mipmap chain is generated.
+         * @return Opaque texture handle (0 on failure).
+         */
+        virtual uint32_t createTexture2D(int width, int height, kTextureFormat format,
+                                         const void *data,
+                                         kTextureWrap wrap = kTextureWrap::REPEAT,
+                                         kTextureFilter minFilter = kTextureFilter::LINEAR_MIPMAP_LINEAR,
+                                         kTextureFilter magFilter = kTextureFilter::LINEAR,
+                                         bool generateMips = true) = 0;
+
+        /**
+         * @brief Creates a cube-map texture from six face images.
+         *
+         * @param width        Per-face width in pixels.
+         * @param height       Per-face height in pixels.
+         * @param faceData     Array of 6 raw pixel buffers (one per face in the
+         *                     order +X, -X, +Y, -Y, +Z, -Z).
+         * @param generateMips If true, a full mipmap chain is generated.
+         * @return Opaque texture handle (0 on failure).
+         */
+        virtual uint32_t createTextureCube(int width, int height,
+                                           const void *faceData[6],
+                                           bool generateMips = true) = 0;
+
+        /**
+         * @brief Uploads pixel data to a specific mip level of a 2D texture.
+         *
+         * Used for DDS / manual mip-chain loading.  The texture must already
+         * exist (created via createTexture2D with generateMips=false, or via
+         * the FBO texture helpers).
+         *
+         * @param id     Texture handle.
+         * @param level  Mip level (0 = base).
+         * @param width  Width of this mip level in pixels.
+         * @param height Height of this mip level in pixels.
+         * @param format Pixel format.
+         * @param data   Raw pixel bytes.
+         */
+        virtual void uploadTexture2D(uint32_t id, int level, int width, int height,
+                                     kTextureFormat format, const void *data) = 0;
+
+        /**
+         * @brief Uploads a sub-region of a 2D texture (for partial updates).
+         *
+         * @param id     Texture handle.
+         * @param level  Mip level.
+         * @param x,y    Pixel offset within the texture.
+         * @param width  Sub-region width in pixels.
+         * @param height Sub-region height in pixels.
+         * @param format Pixel format.
+         * @param data   Raw pixel bytes for the sub-region.
+         */
+        virtual void uploadTexture2DSub(uint32_t id, int level, int x, int y,
+                                        int width, int height,
+                                        kTextureFormat format, const void *data) = 0;
+
+        /**
+         * @brief Uploads compressed (DXT/BCn) data to a mip level of a 2D texture.
+         *
+         * @param id       Texture handle.
+         * @param level    Mip level.
+         * @param width    Width of this mip level in pixels.
+         * @param height   Height of this mip level in pixels.
+         * @param format   Compression format hint (used to derive block size).
+         * @param data     Compressed data.
+         * @param dataSize Size of @p data in bytes.
+         */
+        virtual void uploadCompressedTexture2D(uint32_t id, int level,
+                                               int width, int height,
+                                               kTextureFormat format,
+                                               const void *data, size_t dataSize) = 0;
+
+        /**
+         * @brief Uploads pixel data to a single face of a cube-map texture.
+         *
+         * @param id     Cube-map texture handle.
+         * @param face   Face index (0 = +X, 1 = -X, 2 = +Y, 3 = -Y, 4 = +Z, 5 = -Z).
+         * @param width  Face width in pixels.
+         * @param height Face height in pixels.
+         * @param data   Raw pixel bytes (RGB or RGBA depending on format).
+         */
+        virtual void uploadTextureCubeFace(uint32_t id, int face, int width, int height,
+                                           const void *data) = 0;
+
+        /**
+         * @brief Deletes a texture created by createTexture2D / createTextureCube.
+         *
+         * Distinct from deleteFBOTexture() so the driver can track which pool
+         * the texture belongs to.
+         * @param id Texture handle.
+         */
+        virtual void deleteTexture(uint32_t id) = 0;
 
         // --- Texture sampling (bind/unbind for shader use) -------------------
 
@@ -635,6 +758,30 @@ namespace kemena
          * @param driver Driver to make current.
          */
         static void setCurrent(kDriver *driver) { s_current = driver; }
+
+        // --- ImGui texture helper ---------------------------------------------
+
+        /**
+         * @brief Returns a native texture pointer suitable for use as ImTextureID.
+         *
+         * OpenGL drivers return the integer handle cast to @c void*;
+         * D3D11 drivers return the @c ID3D11ShaderResourceView* pointer.
+         *
+         * @param id Texture handle from createTexture2D / createFBOColorTexture / etc.
+         * @return Opaque pointer for ImGui::Image().
+         */
+        virtual void *getImTextureID(uint32_t id) { return reinterpret_cast<void *>(static_cast<intptr_t>(id)); }
+
+        // --- Swap buffers ----------------------------------------------------
+
+        /**
+         * @brief Presents the rendered frame to the screen.
+         *
+         * Default implementation is a no-op; backends that manage their own
+         * swap chain (DirectX, Vulkan) override this.  OpenGL backends rely on
+         * the window's SDL_GL_SwapWindow instead.
+         */
+        virtual void swapBuffers() {}
 
     private:
         static kDriver *s_current; ///< Globally active driver instance.

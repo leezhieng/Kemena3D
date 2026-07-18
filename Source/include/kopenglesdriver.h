@@ -99,6 +99,7 @@ namespace kemena
         void setMultisample(bool enable) override;
         void setSRGBEncoding(bool enable) override;
         void setSampleAlphaToCoverage(bool enable) override;
+        void setWireframe(bool enable) override;
 
         // --- Shader programs -------------------------------------------------
 
@@ -156,6 +157,30 @@ namespace kemena
         void drawIndexedInstanced(uint32_t vaoId, int indexCount, int instanceCount) override;
         void drawArrays(uint32_t vaoId, kPrimitiveType type, int vertexCount) override;
         void drawArraysInstanced(uint32_t vaoId, kPrimitiveType type, int vertexCount, int instanceCount) override;
+
+        // --- Texture creation (for asset loading) ----------------------------
+
+        uint32_t createTexture2D(int width, int height, kTextureFormat format,
+                                 const void *data,
+                                 kTextureWrap wrap = kTextureWrap::REPEAT,
+                                 kTextureFilter minFilter = kTextureFilter::LINEAR_MIPMAP_LINEAR,
+                                 kTextureFilter magFilter = kTextureFilter::LINEAR,
+                                 bool generateMips = true) override;
+        uint32_t createTextureCube(int width, int height,
+                                   const void *faceData[6],
+                                   bool generateMips = true) override;
+        void uploadTexture2D(uint32_t id, int level, int width, int height,
+                             kTextureFormat format, const void *data) override;
+        void uploadTexture2DSub(uint32_t id, int level, int x, int y,
+                                int width, int height,
+                                kTextureFormat format, const void *data) override;
+        void uploadCompressedTexture2D(uint32_t id, int level,
+                                       int width, int height,
+                                       kTextureFormat format,
+                                       const void *data, size_t dataSize) override;
+        void uploadTextureCubeFace(uint32_t id, int face, int width, int height,
+                                   const void *data) override;
+        void deleteTexture(uint32_t id) override;
 
         // --- Texture sampling ------------------------------------------------
 

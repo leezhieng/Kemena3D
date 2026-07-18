@@ -23,7 +23,9 @@ namespace kemena
             return false;
         }
 
-        int flags = SDL_WINDOW_OPENGL;
+        int flags = 0;
+        if (useOpenGL)
+            flags |= SDL_WINDOW_OPENGL;
 
         if (type == kWindowType::WINDOW_BORDERLESS)
         {
@@ -70,7 +72,8 @@ namespace kemena
 
     void kWindow::swap()
     {
-        SDL_GL_SwapWindow(getSdlWindow());
+        if (useOpenGL)
+            SDL_GL_SwapWindow(getSdlWindow());
     }
 
     int kWindow::getWindowWidth()

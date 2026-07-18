@@ -4,6 +4,15 @@ Kemena3D is an open-source, cross-platform 3D rendering engine developed in C++.
 
 If you're looking for the game engine with complete editor - Kemena3D Studio, please visit the following page instead: https://github.com/leezhieng/kemena3d-studio
 
+## Platforms & Renderers
+
+| Platform | Renderers |
+|----------|-----------|
+| Windows | OpenGL 3.3/4.5, **DirectX 11** |
+| Linux | OpenGL 3.3/4.5 |
+| macOS | OpenGL 3.3/4.5 |
+| Android | OpenGL ES 3.0 |
+
 ## Website
 
 You can find the latest release, tutorials and additional information at: https://kemena3d.com
@@ -57,3 +66,29 @@ kFileSystem::shutdown();
 ```
 
 See the [architecture documentation](.architecture.md#asset-packaging-system) for full details.
+
+## Building
+
+### Desktop (Windows/Linux/macOS)
+
+```powershell
+# 1. Download dependencies
+python download_dep.py
+
+# 2. Build SDK (interactive — select compiler, renderers, etc.)
+python build_sdk.py
+```
+
+The script asks which renderers to include. On Windows you can choose OpenGL only or OpenGL + DirectX 11.
+
+### Android (from Windows/Linux)
+
+```powershell
+# 1. Download & cross-compile dependencies for ARM64
+python download_dep_android.py --ndk-path C:/android-ndk-r27 --abi arm64-v8a
+
+# 2. Build SDK
+python build_sdk_android.py --ndk-path C:/android-ndk-r27 --abi arm64-v8a
+```
+
+See [`.architecture.md`](.architecture.md) for more details on the project structure and build system.

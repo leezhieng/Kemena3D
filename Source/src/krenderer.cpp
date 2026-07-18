@@ -1,6 +1,9 @@
 #include "krenderer.h"
 #include "kopengldriver.h"
 #include "kopenglesdriver.h"
+#ifdef KEMENA_D3D11
+#include "kdx11driver.h"
+#endif
 #include "kphysicsobject.h"
 #include <functional>
 #include <fstream>
@@ -26,6 +29,12 @@ namespace kemena
         {
             driver = new kOpenGLESDriver();
         }
+#ifdef KEMENA_D3D11
+        else if (renderType == kRendererType::RENDERER_D3D11)
+        {
+            driver = new kDX11Driver();
+        }
+#endif
 
         if (driver != nullptr)
         {
@@ -739,7 +748,16 @@ void main()
         driver->unbindVertexArray();
 
         if (autoClearSwapWindow && appWindow != nullptr)
+        {
+#ifdef KEMENA_D3D11
+            if (renderType == kRendererType::RENDERER_D3D11)
+                driver->swapBuffers();
+            else
+                appWindow->swap();
+#else
             appWindow->swap();
+#endif
+        }
     }
 
     void kRenderer::renderSceneGraph(kWorld *world, kScene *scene, kObject *currentNode, bool transparent, float deltaTime)
@@ -1993,26 +2011,12 @@ void main()
                 driver->setCullFace(false);
 
                 if (wireframe)
-                {
-                    // glPolygonMode is not available in OpenGL ES.
-                    // Wireframe debug modes are silently ignored on GLES;
-                    // the mesh draws with solid fill instead.
-#ifndef KEMENA_GLES
-                    glEnable(GL_POLYGON_OFFSET_LINE);
-                    glPolygonOffset(-1.0f, -1.0f);
-                    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-#endif
-                }
+                    driver->setWireframe(true);
 
                 mesh->draw();
 
                 if (wireframe)
-                {
-#ifndef KEMENA_GLES
-                    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-                    glDisable(GL_POLYGON_OFFSET_LINE);
-#endif
-                }
+                    driver->setWireframe(false);
 
                 if (hasTex)
                     driver->unbindTexture2D(0);

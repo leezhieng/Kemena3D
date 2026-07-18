@@ -49,9 +49,14 @@ file(GLOB_RECURSE ANGELSCRIPT_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/a
 file(GLOB IMGUI_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui/*.cpp)
 file(GLOB IMGUI_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui/*.h)
 file(GLOB IMGUI_BACKENDS
-    ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui/backends/imgui_impl_sdl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui/backends/imgui_impl_sdl3.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui/backends/imgui_impl_opengl3.cpp
 )
+if(KEMENA_D3D11)
+    list(APPEND IMGUI_BACKENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui/backends/imgui_impl_dx11.cpp
+    )
+endif()
 
 # ImGuizmo sources
 file(GLOB IMGUIZMO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.cpp)
@@ -147,6 +152,21 @@ if(KEMENA_OPENGL_45)
     target_compile_definitions(kemena3d PUBLIC KEMENA_OPENGL_45)
 endif()
 
+# DirectX 11 backend for Windows desktop.
+# When enabled the engine links against d3d11, dxgi, and d3dcompiler,
+# and the kDX11Driver class becomes available.  The OpenGL backend
+# remains compiled alongside it; the renderer type is chosen at runtime.
+option(KEMENA_D3D11 "Build with DirectX 11 backend (Windows only)" OFF)
+if(KEMENA_D3D11)
+    if(WIN32)
+        target_compile_definitions(kemena3d PUBLIC KEMENA_D3D11)
+        message(STATUS "Kemena3D SDK: DirectX 11 backend enabled")
+    else()
+        message(WARNING "KEMENA_D3D11 is only supported on Windows — disabling")
+        set(KEMENA_D3D11 OFF)
+    endif()
+endif()
+
 # OpenGL ES 3.0 backend for Android / mobile platforms.
 # When enabled the engine uses #include <GLES3/gl3.h> instead of GLEW,
 # requests an ES 3.0 context via SDL, and disables desktop-only features
@@ -175,7 +195,10 @@ endif()
 # Platform specific
 if (WIN32)
 	target_link_libraries(kemena3d PUBLIC opengl32)
-    target_compile_definitions(kemena3d PRIVATE _WINDOWS NOMINMAX)
+	   if(KEMENA_D3D11)
+	       target_link_libraries(kemena3d PUBLIC d3d11 dxgi d3dcompiler)
+	   endif()
+	   target_compile_definitions(kemena3d PRIVATE _WINDOWS NOMINMAX)
 	if (NOT BUILD_SHARED_LIBS)
 		target_compile_definitions(kemena3d PUBLIC KEMENA3D_STATIC)
 	endif()

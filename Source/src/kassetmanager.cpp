@@ -177,31 +177,15 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
                            format == kTextureFormat::TEX_FORMAT_SRGB) ? 3 : 4;
         unsigned char *data = stbi_load(fileName.c_str(), &width, &height, &channels, reqChannels);
 
-        GLuint textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
+        kDriver *driver = kDriver::getCurrent();
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
+        uint32_t textureID = 0;
         if (data)
         {
-            // Tightly-packed rows (handles widths whose byte length isn't a
-            // multiple of 4, e.g. odd-width 3-channel images).
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-            if (format == kTextureFormat::TEX_FORMAT_RGB)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_RGBA)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_SRGB)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_SRGBA)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-            glGenerateMipmap(GL_TEXTURE_2D);
+            textureID = driver->createTexture2D(width, height, format, data,
+                                                kTextureWrap::REPEAT,
+                                                kTextureFilter::LINEAR_MIPMAP_LINEAR,
+                                                kTextureFilter::LINEAR, true);
         }
         else
         {
@@ -222,8 +206,6 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             texture->setData(data);
         else
             stbi_image_free(data);
-
-        glBindTexture(GL_TEXTURE_2D, 0);
 
         return texture;
     }
@@ -267,29 +249,22 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             return nullptr;
         }
 
-        GLenum internalFmt = compressed
-            ? (sRGB ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
-            : (sRGB ? GL_SRGB8_ALPHA8                        : GL_RGBA8);
+        kDriver *driver = kDriver::getCurrent();
 
-        GLuint textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-
-        GLint wrap = (wrapMode == 1) ? GL_CLAMP_TO_EDGE
-                   : (wrapMode == 2) ? GL_MIRRORED_REPEAT
-                                     : GL_REPEAT;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+        kTextureWrap kwrap = (wrapMode == 1) ? kTextureWrap::CLAMP_TO_EDGE
+                           : (wrapMode == 2) ? kTextureWrap::MIRRORED_REPEAT
+                                             : kTextureWrap::REPEAT;
 
         const bool hasMips = levels > 1;
-        GLint magFilter = (filterMode == 0) ? GL_NEAREST : GL_LINEAR;
-        GLint minFilter;
-        if (filterMode == 0) minFilter = hasMips ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST;
-        else if (filterMode == 2) minFilter = hasMips ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR;
-        else /* bilinear */       minFilter = hasMips ? GL_LINEAR_MIPMAP_NEAREST : GL_LINEAR;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        kTextureFilter magFil = (filterMode == 0) ? kTextureFilter::NEAREST : kTextureFilter::LINEAR;
+        kTextureFilter minFil;
+        if (filterMode == 0)       minFil = hasMips ? kTextureFilter::NEAREST_MIPMAP_NEAREST : kTextureFilter::NEAREST;
+        else if (filterMode == 2)  minFil = hasMips ? kTextureFilter::LINEAR_MIPMAP_LINEAR  : kTextureFilter::LINEAR;
+        else /* bilinear */        minFil = hasMips ? kTextureFilter::LINEAR_MIPMAP_NEAREST : kTextureFilter::LINEAR;
+
+        kTextureFormat texFmt = sRGB ? kTextureFormat::TEX_FORMAT_SRGBA : kTextureFormat::TEX_FORMAT_RGBA;
+        uint32_t textureID = driver->createTexture2D(width, height, texFmt, nullptr,
+                                                      kwrap, minFil, magFil, false);
 
         const unsigned char *p = buf.data() + 128;
         size_t remaining = buf.size() - 128;
@@ -300,12 +275,12 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             size_t levelSize = compressed
                 ? (size_t)((w + 3) / 4) * ((h + 3) / 4) * 16
                 : (size_t)w * h * 4;
-            if (levelSize == 0 || levelSize > remaining) break; // truncated / safety
+            if (levelSize == 0 || levelSize > remaining) break;
 
             if (compressed)
-                glCompressedTexImage2D(GL_TEXTURE_2D, level, internalFmt, w, h, 0, (GLsizei)levelSize, p);
+                driver->uploadCompressedTexture2D(textureID, level, w, h, texFmt, p, levelSize);
             else
-                glTexImage2D(GL_TEXTURE_2D, level, internalFmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, p);
+                driver->uploadTexture2D(textureID, level, w, h, texFmt, p);
 
             p += levelSize;
             remaining -= levelSize;
@@ -317,11 +292,9 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
         if (uploaded == 0)
         {
             std::cout << "DDS had no usable levels: " << fileName << std::endl;
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glDeleteTextures(1, &textureID);
+            driver->deleteTexture(textureID);
             return nullptr;
         }
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, uploaded - 1);
 
         kTexture2D *texture = new kTexture2D();
         texture->setType(TEX_TYPE_2D);
@@ -331,7 +304,6 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
         texture->setChannels(4);
         texture->setTextureName(textureName);
 
-        glBindTexture(GL_TEXTURE_2D, 0);
         return texture;
     }
 
@@ -356,27 +328,15 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             data = stbi_load_from_memory(reinterpret_cast<unsigned char *>(rawData->pcData), rawData->mWidth * rawData->mHeight, &width, &height, &channels, 0);
         }
 
-        GLuint textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
+        kDriver *driver = kDriver::getCurrent();
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
+        uint32_t textureID = 0;
         if (data)
         {
-            if (format == kTextureFormat::TEX_FORMAT_RGB)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_RGBA)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_SRGB)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_SRGBA)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-            glGenerateMipmap(GL_TEXTURE_2D);
+            textureID = driver->createTexture2D(width, height, format, data,
+                                                kTextureWrap::REPEAT,
+                                                kTextureFilter::LINEAR_MIPMAP_LINEAR,
+                                                kTextureFilter::LINEAR, true);
         }
         else
         {
@@ -396,8 +356,6 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             texture->setData(data);
         else
             stbi_image_free(data);
-
-        glBindTexture(GL_TEXTURE_2D, 0);
 
         return texture;
     }
@@ -414,27 +372,15 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
 		
 		unsigned char* data = loadImageFromResource(resourceName.c_str(), width, height, channels);
 
-        GLuint textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
+        kDriver *driver = kDriver::getCurrent();
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
+        uint32_t textureID = 0;
         if (data)
         {
-            if (format == kTextureFormat::TEX_FORMAT_RGB)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_RGBA)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_SRGB)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            else if (format == kTextureFormat::TEX_FORMAT_SRGBA)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-            glGenerateMipmap(GL_TEXTURE_2D);
+            textureID = driver->createTexture2D(width, height, format, data,
+                                                kTextureWrap::REPEAT,
+                                                kTextureFilter::LINEAR_MIPMAP_LINEAR,
+                                                kTextureFilter::LINEAR, true);
         }
         else
         {
@@ -454,8 +400,6 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             texture->setData(data);
         else
             stbi_image_free(data);
-
-        glBindTexture(GL_TEXTURE_2D, 0);
 
         return texture;
     }
@@ -494,33 +438,30 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
         faces.push_back(fileNameFront);
         faces.push_back(fileNameBack);
 
-        unsigned int textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+        kDriver *driver = kDriver::getCurrent();
 
-        int width, height, nrChannels;
+        // Load all 6 faces into memory first
+        int width = 0, height = 0, nrChannels = 0;
+        const void *faceData[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
         for (unsigned int i = 0; i < faces.size(); i++)
         {
             unsigned char *data = stbi_load(faces[i].c_str(), &width, &height, &nrChannels, 0);
             if (data)
             {
-                // glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_SRGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-                stbi_image_free(data);
+                faceData[i] = data;
             }
             else
             {
                 std::cout << "Cubemap tex failed to load at path: " << faces[i] << std::endl;
-                stbi_image_free(data);
             }
         }
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
-        glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+        unsigned int textureID = driver->createTextureCube(width, height, faceData, true);
+
+        // Free face data
+        for (int i = 0; i < 6; ++i)
+            if (faceData[i])
+                stbi_image_free((unsigned char *)faceData[i]);
 
         kTextureCube *newTexture = new kTextureCube();
         newTexture->setType(kTextureType::TEX_TYPE_CUBE);
@@ -540,51 +481,30 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
 		faces.push_back(resFront);
 		faces.push_back(resBack);
 
-		unsigned int textureID;
-		glGenTextures(1, &textureID);
-		glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
+		kDriver *driver = kDriver::getCurrent();
 
-		// [TEMP DIAGNOSTIC] Trace the skybox cubemap upload to find the
-		// intermittent blank-on-launch. Remove once the cause is identified.
-		std::ofstream sbLog("d:/Projects/Kemena3D/skybox_debug.log", std::ios::app);
-		sbLog << "=== loadTextureCubeFromResource id=" << textureID << " ===\n";
-		while (glGetError() != GL_NO_ERROR) {}
-
-		int width, height, nrChannels;
+		int width = 0, height = 0, nrChannels = 0;
+		const void *faceData[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 		for (unsigned int i = 0; i < faces.size(); i++)
 		{
 			width = height = nrChannels = -1;
 			unsigned char* data = loadImageFromResource(faces[i].c_str(), width, height, nrChannels);
 			if (data)
 			{
-				glTexImage2D(
-					GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
-					0, GL_SRGB8,
-					width, height,
-					0, GL_RGB, GL_UNSIGNED_BYTE,
-					data
-				);
-				GLenum e = glGetError();
-				sbLog << "  face[" << i << "] " << faces[i]
-				      << " data=OK w=" << width << " h=" << height
-				      << " ch=" << nrChannels << " uploadErr=0x" << std::hex << e << std::dec << "\n";
-				stbi_image_free(data);
+				faceData[i] = data;
 			}
 			else
 			{
-				sbLog << "  face[" << i << "] " << faces[i] << " data=NULL (load failed)\n";
 				std::cout << "Cubemap tex failed to load from resource: " << faces[i] << std::endl;
 			}
 		}
 
-		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+		unsigned int textureID = driver->createTextureCube(width, height, faceData, true);
 
-		glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-		sbLog << "  genMipmapErr=0x" << std::hex << glGetError() << std::dec << "\n";
+		// Free face data
+		for (int i = 0; i < 6; ++i)
+			if (faceData[i])
+				stbi_image_free((unsigned char *)faceData[i]);
 
 		kTextureCube* newTexture = new kTextureCube();
 		newTexture->setType(kTextureType::TEX_TYPE_CUBE);

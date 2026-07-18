@@ -181,6 +181,12 @@ namespace kemena
         (void)enable;
     }
 
+    void kOpenGLESDriver::setWireframe(bool enable)
+    {
+        // glPolygonMode is not available in OpenGL ES 3.0.
+        (void)enable;
+    }
+
     // -------------------------------------------------------------------------
     // Shader source adaptation (GLSL 330 → GLSL ES 300)
     // -------------------------------------------------------------------------
@@ -596,6 +602,186 @@ namespace kemena
         g = pixel[1];
         b = pixel[2];
         a = pixel[3];
+    }
+
+    // -------------------------------------------------------------------------
+    // Texture creation (for asset loading)
+    // -------------------------------------------------------------------------
+
+    static GLint toGLESWrap(kTextureWrap w)
+    {
+        switch (w)
+        {
+        case kTextureWrap::REPEAT:          return GL_REPEAT;
+        case kTextureWrap::CLAMP_TO_EDGE:   return GL_CLAMP_TO_EDGE;
+        case kTextureWrap::CLAMP_TO_BORDER: return GL_CLAMP_TO_EDGE;
+        case kTextureWrap::MIRRORED_REPEAT: return GL_MIRRORED_REPEAT;
+        default: return GL_REPEAT;
+        }
+    }
+
+    static GLint toGLESMinFilter(kTextureFilter f, bool hasMips)
+    {
+        if (!hasMips)
+        {
+            switch (f)
+            {
+            case kTextureFilter::NEAREST: return GL_NEAREST;
+            default:                      return GL_LINEAR;
+            }
+        }
+        switch (f)
+        {
+        case kTextureFilter::NEAREST:                return GL_NEAREST_MIPMAP_NEAREST;
+        case kTextureFilter::LINEAR:                 return GL_LINEAR_MIPMAP_NEAREST;
+        case kTextureFilter::NEAREST_MIPMAP_NEAREST: return GL_NEAREST_MIPMAP_NEAREST;
+        case kTextureFilter::LINEAR_MIPMAP_NEAREST:  return GL_LINEAR_MIPMAP_NEAREST;
+        case kTextureFilter::NEAREST_MIPMAP_LINEAR:  return GL_NEAREST_MIPMAP_LINEAR;
+        case kTextureFilter::LINEAR_MIPMAP_LINEAR:   return GL_LINEAR_MIPMAP_LINEAR;
+        default: return GL_LINEAR_MIPMAP_LINEAR;
+        }
+    }
+
+    static GLint toGLESMagFilter(kTextureFilter f)
+    {
+        switch (f)
+        {
+        case kTextureFilter::NEAREST: return GL_NEAREST;
+        default:                      return GL_LINEAR;
+        }
+    }
+
+    static GLint toGLESInternalFormat(kTextureFormat format)
+    {
+        switch (format)
+        {
+        case kTextureFormat::TEX_FORMAT_RGB:   return GL_RGB8;
+        case kTextureFormat::TEX_FORMAT_RGBA:  return GL_RGBA8;
+        case kTextureFormat::TEX_FORMAT_SRGB:  return GL_SRGB8;
+        case kTextureFormat::TEX_FORMAT_SRGBA: return GL_SRGB8_ALPHA8;
+        default: return GL_RGBA8;
+        }
+    }
+
+    static GLenum toGLESBaseFormat(kTextureFormat format)
+    {
+        switch (format)
+        {
+        case kTextureFormat::TEX_FORMAT_RGB:
+        case kTextureFormat::TEX_FORMAT_SRGB:  return GL_RGB;
+        case kTextureFormat::TEX_FORMAT_RGBA:
+        case kTextureFormat::TEX_FORMAT_SRGBA: return GL_RGBA;
+        default: return GL_RGBA;
+        }
+    }
+
+    uint32_t kOpenGLESDriver::createTexture2D(int width, int height, kTextureFormat format,
+                                               const void *data,
+                                               kTextureWrap wrap,
+                                               kTextureFilter minFilter,
+                                               kTextureFilter magFilter,
+                                               bool generateMips)
+    {
+        GLuint id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D, id);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, toGLESWrap(wrap));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, toGLESWrap(wrap));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, toGLESMinFilter(minFilter, generateMips));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, toGLESMagFilter(magFilter));
+
+        if (data)
+        {
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, toGLESInternalFormat(format),
+                         width, height, 0, toGLESBaseFormat(format), GL_UNSIGNED_BYTE, data);
+            if (generateMips)
+                glGenerateMipmap(GL_TEXTURE_2D);
+        }
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return static_cast<uint32_t>(id);
+    }
+
+    uint32_t kOpenGLESDriver::createTextureCube(int width, int height,
+                                                 const void *faceData[6],
+                                                 bool generateMips)
+    {
+        GLuint id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, id);
+
+        for (int i = 0; i < 6; ++i)
+        {
+            if (faceData[i])
+            {
+                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_SRGB8,
+                             width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, faceData[i]);
+            }
+        }
+
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
+                        generateMips ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+        if (generateMips)
+            glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+        return static_cast<uint32_t>(id);
+    }
+
+    void kOpenGLESDriver::uploadTexture2D(uint32_t id, int level, int width, int height,
+                                           kTextureFormat format, const void *data)
+    {
+        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(id));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, level, toGLESInternalFormat(format),
+                     width, height, 0, toGLESBaseFormat(format), GL_UNSIGNED_BYTE, data);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    void kOpenGLESDriver::uploadTexture2DSub(uint32_t id, int level, int x, int y,
+                                              int width, int height,
+                                              kTextureFormat format, const void *data)
+    {
+        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(id));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage2D(GL_TEXTURE_2D, level, x, y, width, height,
+                        toGLESBaseFormat(format), GL_UNSIGNED_BYTE, data);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    void kOpenGLESDriver::uploadCompressedTexture2D(uint32_t id, int level,
+                                                     int width, int height,
+                                                     kTextureFormat format,
+                                                     const void *data, size_t dataSize)
+    {
+        (void)format;
+        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(id));
+        glCompressedTexImage2D(GL_TEXTURE_2D, level, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,
+                               width, height, 0, (GLsizei)dataSize, data);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    void kOpenGLESDriver::uploadTextureCubeFace(uint32_t id, int face, int width, int height,
+                                                 const void *data)
+    {
+        glBindTexture(GL_TEXTURE_CUBE_MAP, static_cast<GLuint>(id));
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_SRGB8,
+                     width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    }
+
+    void kOpenGLESDriver::deleteTexture(uint32_t id)
+    {
+        GLuint glId = static_cast<GLuint>(id);
+        if (glId)
+            glDeleteTextures(1, &glId);
     }
 
     // -------------------------------------------------------------------------

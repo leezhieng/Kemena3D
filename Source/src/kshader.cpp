@@ -183,12 +183,28 @@ namespace kemena
 
     void kShader::loadHlslFileDX11(const kString& path)
     {
-        std::cout << "[kShader] DirectX 11 backend not implemented." << std::endl;
+        kString src = readFile(path);
+        if (src.empty())
+        {
+            std::cout << "[kShader] loadHlslFileDX11: could not read '" << path << "'." << std::endl;
+            return;
+        }
+        loadHlslCodeDX11(src);
     }
 
     void kShader::loadHlslCodeDX11(const kString& src)
     {
-        std::cout << "[kShader] DirectX 11 backend not implemented." << std::endl;
+        // Split the combined HLSL source using the same markers as GLSL
+        kShaderSource s = splitSource(src);
+
+        // For HLSL, the "vertex" section contains the VS entry (VSMain),
+        // and "fragment" section contains the PS entry (PSMain).
+        // The source is passed directly to the driver's compileShaderProgram,
+        // which for D3D11 will compile as HLSL with vs_5_0 / ps_5_0 targets
+        // and VSMain / PSMain entry points.
+        shaderProgram = kDriver::getCurrent()->compileShaderProgram(
+            s.vertex.empty()   ? nullptr : s.vertex.c_str(),
+            s.fragment.empty() ? nullptr : s.fragment.c_str());
     }
 
     // --- DirectX 12 ----------------------------------------------------------

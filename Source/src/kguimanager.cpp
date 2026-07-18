@@ -1,4 +1,7 @@
 #include "kguimanager.h"
+#ifdef KEMENA_D3D11
+#include "kdx11driver.h"
+#endif
 
 #include <fstream>
 #include <cstdlib>
@@ -49,9 +52,23 @@ namespace kemena
 		style.FontScaleDpi = mainScale; // Set initial font scale. (using io.ConfigDpiScaleFonts=true makes this unnecessary. We leave both here for documentation purpose)
 
 		// Setup Platform/Renderer backends
-		ImGui_ImplSDL3_InitForOpenGL(renderer->getWindow()->getSdlWindow(), (SDL_GLContext)renderer->getDriver()->getNativeContext());
-		const char *glsl_version = "#version 150";
-		ImGui_ImplOpenGL3_Init(glsl_version);
+#ifdef KEMENA_D3D11
+		kDX11Driver *dx11 = dynamic_cast<kDX11Driver *>(renderer->getDriver());
+		if (dx11)
+		{
+			isD3D11 = true;
+			ImGui_ImplSDL3_InitForD3D(renderer->getWindow()->getSdlWindow());
+			ImGui_ImplDX11_Init(static_cast<ID3D11Device *>(dx11->getNativeContext()),
+			                    dx11->getDeviceContext());
+		}
+#endif
+		if (!isD3D11)
+		{
+			ImGui_ImplSDL3_InitForOpenGL(renderer->getWindow()->getSdlWindow(),
+			                             (SDL_GLContext)renderer->getDriver()->getNativeContext());
+			const char *glsl_version = "#version 150";
+			ImGui_ImplOpenGL3_Init(glsl_version);
+		}
 	}
 
 	void kGuiManager::processEvent(kSystemEvent event)
@@ -106,7 +123,14 @@ namespace kemena
 		renderer->getDriver()->setCullFace(false);
 
 		// Start the Dear ImGui frame
+#ifdef KEMENA_D3D11
+		if (isD3D11)
+			ImGui_ImplDX11_NewFrame();
+		else
+			ImGui_ImplOpenGL3_NewFrame();
+#else
 		ImGui_ImplOpenGL3_NewFrame();
+#endif
 		ImGui_ImplSDL3_NewFrame();
 		ImGui::NewFrame();
 	}
@@ -114,19 +138,37 @@ namespace kemena
 	void kGuiManager::canvasEnd()
 	{
 		ImGui::Render();
-		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#ifdef KEMENA_D3D11
+		if (isD3D11)
+		{
+			ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+		}
+		else
+#endif
+		{
+			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+		}
 
 		// IMPORTANT: multi-viewport handling
 		ImGuiIO &io = ImGui::GetIO();
 		(void)io;
 		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
 		{
-			SDL_Window *backup_current_window = SDL_GL_GetCurrentWindow();
-			SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
-			ImGui::UpdatePlatformWindows();
-			ImGui::RenderPlatformWindowsDefault();
-
-			SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+#ifdef KEMENA_D3D11
+			if (isD3D11)
+			{
+				ImGui::UpdatePlatformWindows();
+				ImGui::RenderPlatformWindowsDefault();
+			}
+			else
+#endif
+			{
+				SDL_Window *backup_current_window = SDL_GL_GetCurrentWindow();
+				SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
+				ImGui::UpdatePlatformWindows();
+				ImGui::RenderPlatformWindowsDefault();
+				SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+			}
 		}
 	}
 
@@ -842,14 +884,16 @@ namespace kemena
 
 	// ---- Image ----
 
-	void kGuiManager::image(GLuint textureId, kVec2 size, kVec2 uv0, kVec2 uv1)
+	void kGuiManager::image(uint32_t textureId, kVec2 size, kVec2 uv0, kVec2 uv1)
 	{
-		ImGui::Image((ImTextureID)(intptr_t)textureId, ImVec2(size.x, size.y), ImVec2(uv0.x, uv0.y), ImVec2(uv1.x, uv1.y));
+		void *texId = renderer->getDriver()->getImTextureID(textureId);
+		ImGui::Image((ImTextureID)texId, ImVec2(size.x, size.y), ImVec2(uv0.x, uv0.y), ImVec2(uv1.x, uv1.y));
 	}
 
-	bool kGuiManager::imageButton(kString id, GLuint textureId, kVec2 size, kVec2 uv0, kVec2 uv1, kVec4 tint)
+	bool kGuiManager::imageButton(kString id, uint32_t textureId, kVec2 size, kVec2 uv0, kVec2 uv1, kVec4 tint)
 	{
-		return ImGui::ImageButton(id.c_str(), (ImTextureID)(intptr_t)textureId, ImVec2(size.x, size.y), ImVec2(uv0.x, uv0.y), ImVec2(uv1.x, uv1.y), ImVec4(0, 0, 0, 0), ImVec4(tint.x, tint.y, tint.z, tint.w));
+		void *texId = renderer->getDriver()->getImTextureID(textureId);
+		return ImGui::ImageButton(id.c_str(), (ImTextureID)texId, ImVec2(size.x, size.y), ImVec2(uv0.x, uv0.y), ImVec2(uv1.x, uv1.y), ImVec4(0, 0, 0, 0), ImVec4(tint.x, tint.y, tint.z, tint.w));
 	}
 
 	// ---- Progress ----
@@ -1288,11 +1332,12 @@ namespace kemena
 
 	// ---- Draw ----
 
-	void kGuiManager::drawListAddImage(GLuint textureId, kVec2 pMin, kVec2 pMax, kVec2 uvMin, kVec2 uvMax, kVec4 tint)
+	void kGuiManager::drawListAddImage(uint32_t textureId, kVec2 pMin, kVec2 pMax, kVec2 uvMin, kVec2 uvMax, kVec4 tint)
 	{
 		ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(tint.x, tint.y, tint.z, tint.w));
+		void *texId = renderer->getDriver()->getImTextureID(textureId);
 		ImGui::GetWindowDrawList()->AddImage(
-			(ImTextureID)(intptr_t)textureId,
+			(ImTextureID)texId,
 			ImVec2(pMin.x, pMin.y), ImVec2(pMax.x, pMax.y),
 			ImVec2(uvMin.x, uvMin.y), ImVec2(uvMax.x, uvMax.y),
 			col);
@@ -1337,7 +1382,14 @@ namespace kemena
 
 	void kGuiManager::destroy()
 	{
+#ifdef KEMENA_D3D11
+		if (isD3D11)
+			ImGui_ImplDX11_Shutdown();
+		else
+			ImGui_ImplOpenGL3_Shutdown();
+#else
 		ImGui_ImplOpenGL3_Shutdown();
+#endif
 		ImGui_ImplSDL3_Shutdown();
 		ImGui::DestroyContext();
 	}

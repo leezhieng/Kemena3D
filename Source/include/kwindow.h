@@ -95,9 +95,23 @@ namespace kemena
          */
         kTimer *getTimer();
 
+        /**
+         * @brief Sets whether the window should request an OpenGL context.
+         *
+         * Default is true (for OpenGL/GLES backends). Set to false when using
+         * DirectX or Vulkan backends that don't need an SDL GL context.
+         * Must be called before init().
+         * @param useGL true to request an OpenGL-capable window.
+         */
+        void setUseOpenGL(bool useGL) { useOpenGL = useGL; }
+
+        /** @brief Returns whether the window was created for OpenGL. */
+        bool getUseOpenGL() const { return useOpenGL; }
+
     protected:
     private:
         SDL_Window *sdlWindow = NULL; ///< Underlying SDL window handle.
+        bool useOpenGL = true;        ///< If true, window is created with SDL_WINDOW_OPENGL flag.
 
         kString windowTitle;  ///< Current window title.
         int windowWidth;     ///< Current client-area width in pixels.

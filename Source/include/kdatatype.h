@@ -52,8 +52,9 @@ namespace kemena
      */
     enum kRendererType
     {
-        RENDERER_GL,  ///< OpenGL 3.3+ renderer (desktop).
-        RENDERER_GLES ///< OpenGL ES 3.0 renderer (Android / mobile).
+        RENDERER_GL,   ///< OpenGL 3.3+ renderer (desktop).
+        RENDERER_GLES, ///< OpenGL ES 3.0 renderer (Android / mobile).
+        RENDERER_D3D11 ///< DirectX 11 renderer (Windows desktop).
     };
 
     /**
@@ -139,6 +140,30 @@ namespace kemena
     {
         TEX_TYPE_2D,  ///< Standard 2-dimensional texture.
         TEX_TYPE_CUBE ///< Cube-map texture (six faces).
+    };
+
+    /**
+     * @brief Texture wrap mode for UV coordinates.
+     */
+    enum class kTextureWrap
+    {
+        REPEAT,          ///< Repeat the texture (tiling).
+        CLAMP_TO_EDGE,   ///< Clamp UV to edge texel colour.
+        CLAMP_TO_BORDER, ///< Clamp UV to a solid border colour.
+        MIRRORED_REPEAT  ///< Repeat with mirroring each tile.
+    };
+
+    /**
+     * @brief Texture minification / magnification filter.
+     */
+    enum class kTextureFilter
+    {
+        NEAREST,                ///< Nearest-neighbour sampling.
+        LINEAR,                 ///< Bilinear interpolation.
+        NEAREST_MIPMAP_NEAREST, ///< Nearest mip level, nearest sampling.
+        LINEAR_MIPMAP_NEAREST,  ///< Nearest mip level, bilinear sampling.
+        NEAREST_MIPMAP_LINEAR,  ///< Linear mip blend, nearest sampling.
+        LINEAR_MIPMAP_LINEAR,   ///< Trilinear filtering (linear mip blend, bilinear).
     };
 
 /// @name Event type constants (mirror SDL3 values)

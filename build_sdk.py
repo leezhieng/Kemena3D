@@ -143,6 +143,29 @@ def main():
     )
     use_assimp_flag = "ON" if assimp == "1" else "OFF"
 
+    # Renderer selection — platform-dependent
+    use_d3d11_flag = "OFF"
+    use_gles_flag = "OFF"
+    use_gl45_flag = "OFF"
+
+    if system == "Windows":
+        renderer = choose(
+            "\nSelect graphics renderers to include:",
+            {
+                "1": "OpenGL 3.3 only (default, always available)",
+                "2": "OpenGL 3.3 + DirectX 11 (Windows desktop)"
+            },
+            env="KEMENA_RENDERER"
+        )
+        if renderer == "2":
+            use_d3d11_flag = "ON"
+    elif system in ("Linux", "FreeBSD"):
+        print("\nLinux/FreeBSD detected → OpenGL 3.3 renderer (default).")
+    elif system == "Darwin":
+        print("\nmacOS detected → OpenGL 3.3 renderer (default).")
+    else:
+        print(f"\n{system} detected → OpenGL 3.3 renderer (default).")
+
     # Build configuration selection
     config = choose(
         "\nPlease choose a build configuration:",
@@ -192,6 +215,9 @@ def main():
         raise RuntimeError(f"No build args defined for {system}")
 
     args += f" -DKEMENA_USE_ASSIMP={use_assimp_flag}"
+    args += f" -DKEMENA_D3D11={use_d3d11_flag}"
+    args += f" -DKEMENA_GLES={use_gles_flag}"
+    args += f" -DKEMENA_OPENGL_45={use_gl45_flag}"
 
     configs = []
     if config == "1":
