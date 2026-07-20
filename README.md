@@ -8,10 +8,12 @@ If you're looking for the game engine with complete editor - Kemena3D Studio, pl
 
 | Platform | Renderers |
 |----------|-----------|
-| Windows | OpenGL 3.3/4.5, **DirectX 11** |
+| Windows | OpenGL 3.3/4.5, **DirectX 11*** |
 | Linux | OpenGL 3.3/4.5 |
 | macOS | OpenGL 3.3/4.5 |
-| Android | OpenGL ES 3.0 |
+| Android | **OpenGL ES 3.0*** |
+
+*Experimental feature
 
 ## Website
 
