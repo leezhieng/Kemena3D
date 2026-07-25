@@ -714,35 +714,40 @@ void main()
             driver->bindDrawFramebuffer(fbo);
             driver->blitFramebufferColor(0, 0, fboWidth, fboHeight, 0, 0, fboWidth, fboHeight);
 
-            // Render resolve texture to screen quad
-            driver->unbindFramebuffer();
-            driver->setDepthTest(false);
-            driver->setClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            driver->clear(true, false, false);
-
-            getScreenShader()->use();
-            driver->bindTexture2D(0, fboTexColor);
-
-            if (enableAutoExposure)
+            // Render resolve texture to screen quad — skip when the output is
+            // consumed as an ImGui image (e.g. editor viewports) rather than
+            // drawn directly to the window.
+            if (!skipScreenQuad)
             {
-                driver->generateMipmaps2D(fboTexColor);
-                int mipLevel = (int)std::floor(std::log2(std::max(width, height)));
-                driver->readTexture2DRGB(fboTexColor, mipLevel, averageLuminanceColor);
-                averageLuminance = 0.2126f * averageLuminanceColor[0] + 0.7152f * averageLuminanceColor[1] + 0.0722f * averageLuminanceColor[2];
-                float targetExposure = exposureKey / (averageLuminance + 0.001f);
-                exposure = glm::mix(exposure, targetExposure, deltaTime * exposureAdaptationRate);
-            }
+                driver->unbindFramebuffer();
+                driver->setDepthTest(false);
+                driver->setClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                driver->clear(true, false, false);
 
-            if (screenShader != nullptr)
-            {
-                screenShader->setValue("enable_autoExposure", enableAutoExposure);
-                screenShader->setValue("exposure", exposure * 3.0f);
-                screenShader->setValue("contrast", 1.01f);
-                screenShader->setValue("gamma", 2.2f);
-            }
+                getScreenShader()->use();
+                driver->bindTexture2D(0, fboTexColor);
 
-            driver->drawIndexed(quadVao, 6);
-            getScreenShader()->unuse();
+                if (enableAutoExposure)
+                {
+                    driver->generateMipmaps2D(fboTexColor);
+                    int mipLevel = (int)std::floor(std::log2(std::max(width, height)));
+                    driver->readTexture2DRGB(fboTexColor, mipLevel, averageLuminanceColor);
+                    averageLuminance = 0.2126f * averageLuminanceColor[0] + 0.7152f * averageLuminanceColor[1] + 0.0722f * averageLuminanceColor[2];
+                    float targetExposure = exposureKey / (averageLuminance + 0.001f);
+                    exposure = glm::mix(exposure, targetExposure, deltaTime * exposureAdaptationRate);
+                }
+
+                if (screenShader != nullptr)
+                {
+                    screenShader->setValue("enable_autoExposure", enableAutoExposure);
+                    screenShader->setValue("exposure", exposure * 3.0f);
+                    screenShader->setValue("contrast", 1.01f);
+                    screenShader->setValue("gamma", 2.2f);
+                }
+
+                driver->drawIndexed(quadVao, 6);
+                getScreenShader()->unuse();
+            }
         }
 
         driver->unbindVertexArray();

@@ -153,6 +153,7 @@ namespace kemena
         // --- Lifecycle -------------------------------------------------------
         bool init(kWindow *window) override;
         void destroy() override;
+        void makeCurrent(kWindow *window) override;  ///< No-op: D3D11 immediate context is always current.
         void *getNativeContext() override;
         kString getApiVersion() override;
         kString getShaderVersion() override;

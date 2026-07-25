@@ -72,6 +72,9 @@ namespace kemena
         /** @brief Destroys the SDL GL context. */
         void destroy() override;
 
+        /** @brief Makes this driver's GL context current on the given window via SDL_GL_MakeCurrent. */
+        void makeCurrent(kWindow *window) override;
+
         /** @brief Returns the raw SDL_GLContext handle. */
         void *getNativeContext() override;
 

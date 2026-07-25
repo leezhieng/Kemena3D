@@ -100,6 +100,18 @@ namespace kemena
         virtual void destroy() = 0;
 
         /**
+         * @brief Makes this driver's graphics context current on the given window.
+         *
+         * Must be called before issuing any draw calls through this driver when
+         * multiple drivers (and therefore multiple GL/D3D contexts) are in use.
+         * OpenGL backends call SDL_GL_MakeCurrent; D3D11 backends are a no-op
+         * (the immediate context is always current).
+         *
+         * @param window The window to bind the context to.
+         */
+        virtual void makeCurrent(kWindow *window) = 0;
+
+        /**
          * @brief Returns the native context handle (e.g. SDL_GLContext for OpenGL).
          * @return Opaque pointer; cast to the appropriate type for your backend.
          */

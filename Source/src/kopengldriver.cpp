@@ -16,6 +16,14 @@ namespace kemena
         if (window == nullptr)
             return false;
 
+        // If another GL context already exists, share resources with it so
+        // textures/FBOs created in one context are visible in the other.
+        // This is required when the editor creates multiple kRenderer
+        // instances (world panel, prefab panel) on the same window.
+        SDL_GLContext existing = SDL_GL_GetCurrentContext();
+        if (existing != nullptr)
+            SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+
 #ifdef KEMENA_OPENGL_46
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 6);
@@ -59,6 +67,12 @@ namespace kemena
             SDL_GL_DestroyContext(glContext);
             glContext = nullptr;
         }
+    }
+
+    void kOpenGLDriver::makeCurrent(kWindow *window)
+    {
+        if (glContext && window && window->getSdlWindow())
+            SDL_GL_MakeCurrent(window->getSdlWindow(), glContext);
     }
 
     void *kOpenGLDriver::getNativeContext()
