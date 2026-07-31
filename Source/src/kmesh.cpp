@@ -97,6 +97,24 @@ namespace kemena
         calculateNormalMatrix();
     }
 
+    void kMesh::setPositionForced(kVec3 newPosition)
+    {
+        kObject::setPositionForced(newPosition);
+        calculateNormalMatrix();
+    }
+
+    void kMesh::setRotationForced(kQuat newRotation)
+    {
+        kObject::setRotationForced(newRotation);
+        calculateNormalMatrix();
+    }
+
+    void kMesh::setScaleForced(kVec3 newScale)
+    {
+        kObject::setScaleForced(newScale);
+        calculateNormalMatrix();
+    }
+
     void kMesh::reserveBoneData(size_t vertexCount)
     {
         // Reserve space for bone IDs and weights

@@ -321,9 +321,21 @@ namespace kemena
 
         /**
          * @brief Sets the local position.
+         *
+         * No-op when the object is marked as static. Use setPositionForced() to
+         * bypass the static guard (e.g. during deserialization or editor authoring).
          * @param newPosition Position in parent space.
          */
         virtual void setPosition(kVec3 newPosition);
+
+        /**
+         * @brief Sets the local position, bypassing the static guard.
+         *
+         * Intended for deserialization and editor authoring where the initial
+         * transform must be applied regardless of the static flag.
+         * @param newPosition Position in parent space.
+         */
+        virtual void setPositionForced(kVec3 newPosition);
 
         /**
          * @brief Returns the local rotation as a quaternion.
@@ -339,9 +351,21 @@ namespace kemena
 
         /**
          * @brief Sets the local rotation from a quaternion.
+         *
+         * No-op when the object is marked as static. Use setRotationForced() to
+         * bypass the static guard (e.g. during deserialization or editor authoring).
          * @param newRotation Unit quaternion.
          */
         virtual void setRotation(kQuat newRotation);
+
+        /**
+         * @brief Sets the local rotation from a quaternion, bypassing the static guard.
+         *
+         * Intended for deserialization and editor authoring where the initial
+         * transform must be applied regardless of the static flag.
+         * @param newRotation Unit quaternion.
+         */
+        virtual void setRotationForced(kQuat newRotation);
 
         /**
          * @brief Returns the local scale.
@@ -351,9 +375,21 @@ namespace kemena
 
         /**
          * @brief Sets the local scale.
+         *
+         * No-op when the object is marked as static. Use setScaleForced() to
+         * bypass the static guard (e.g. during deserialization or editor authoring).
          * @param newScale Per-axis scale factors.
          */
         virtual void setScale(kVec3 newScale);
+
+        /**
+         * @brief Sets the local scale, bypassing the static guard.
+         *
+         * Intended for deserialization and editor authoring where the initial
+         * transform must be applied regardless of the static flag.
+         * @param newScale Per-axis scale factors.
+         */
+        virtual void setScaleForced(kVec3 newScale);
 
         /**
          * @brief Computes the local right (+X) direction in world space.

@@ -115,11 +115,18 @@ namespace kemena
                             const kString &heightFile, const kString &splatFile);
 
         /** @brief Propagates a local position change to this mesh and its children. */
-        void setPosition(kVec3 newPosition);
+        void setPosition(kVec3 newPosition) override;
         /** @brief Propagates a local rotation change to this mesh and its children. */
-        void setRotation(kQuat newRotation);
+        void setRotation(kQuat newRotation) override;
         /** @brief Propagates a local scale change to this mesh and its children. */
-        void setScale(kVec3 newScale);
+        void setScale(kVec3 newScale) override;
+
+        /** @brief Force-sets the local position, bypassing the static guard (editor/deserialization). */
+        void setPositionForced(kVec3 newPosition) override;
+        /** @brief Force-sets the local rotation, bypassing the static guard (editor/deserialization). */
+        void setRotationForced(kQuat newRotation) override;
+        /** @brief Force-sets the local scale, bypassing the static guard (editor/deserialization). */
+        void setScaleForced(kVec3 newScale) override;
 
         /**
          * @brief Pre-allocates bone ID and weight arrays for a given vertex count.

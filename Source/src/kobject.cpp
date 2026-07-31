@@ -323,6 +323,13 @@ namespace kemena
 
     void kObject::setPosition(kVec3 newPosition)
     {
+        if (isStatic)
+            return;
+        position = newPosition;
+    }
+
+    void kObject::setPositionForced(kVec3 newPosition)
+    {
         position = newPosition;
     }
 
@@ -341,6 +348,13 @@ namespace kemena
 
     void kObject::setRotation(kQuat newRotation)
     {
+        if (isStatic)
+            return;
+        rotation = glm::normalize(newRotation);
+    }
+
+    void kObject::setRotationForced(kQuat newRotation)
+    {
         rotation = glm::normalize(newRotation);
     }
 
@@ -350,6 +364,13 @@ namespace kemena
     }
 
     void kObject::setScale(kVec3 newScale)
+    {
+        if (isStatic)
+            return;
+        scale = newScale;
+    }
+
+    void kObject::setScaleForced(kVec3 newScale)
     {
         scale = newScale;
     }
@@ -378,21 +399,8 @@ namespace kemena
 
     void kObject::rotate(kVec3 rotationAxis, float angularSpeed)
     {
-        /*
-        // Convert Euler angles from degrees to radians
-        kVec3 eulerAnglesRadians = glm::radians(eulerAnglesDegrees);
-
-        // Create a quaternion from the Euler angles
-        kQuat newRotation(eulerAnglesRadians);
-
-        if (newRotation.w < 0)
-        {
-            newRotation = -newRotation; // Ensure positive w component
-        }
-
-        // Combine the new rotation with the current rotation
-        rotation = newRotation * getRotation(); // Apply new rotation relative to current rotation
-        */
+        if (isStatic)
+            return;
 
         // Compute the amount of rotation in radians
         float angle = angularSpeed;
@@ -630,6 +638,7 @@ namespace kemena
                 {"uuid", getUuid()},
                 {"name", getName()},
                 {"active", getActive()},
+                {"static", getStatic()},
                 {"position",
                  {{"x", getPosition().x},
                   {"y", getPosition().y},
@@ -750,7 +759,7 @@ namespace kemena
 
     void kObject::syncFromPhysics()
     {
-        if (!physicsObject) return;
+        if (!physicsObject || isStatic) return;
 
         position = physicsObject->getPosition();
         rotation = physicsObject->getRotation();
@@ -775,7 +784,7 @@ namespace kemena
 
     void kObject::syncFromCharacter()
     {
-        if (!characterController) return;
+        if (!characterController || isStatic) return;
 
         position = characterController->getPosition();
         rotation = characterController->getRotation();
