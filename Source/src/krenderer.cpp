@@ -1167,6 +1167,59 @@ void main()
                 }
             }
         }
+        else if (currentNode->getType() == kNodeType::NODE_TYPE_AUDIO)
+        {
+            kObject *audioObj = currentNode;
+
+            if (world->getMainCamera() != nullptr && audioObj->getMaterial() != nullptr)
+            {
+                kMat4 view = lookAt(world->getMainCamera()->getPosition(),
+                                    world->getMainCamera()->getLookAt(),
+                                    world->getMainCamera()->calculateUp());
+                kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
+                                                    world->getMainCamera()->getAspectRatio(),
+                                                    world->getMainCamera()->getNearClip(),
+                                                    world->getMainCamera()->getFarClip());
+
+                if (audioObj->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
+                {
+                    driver->setBlend(true);
+                    driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+                }
+                else
+                {
+                    driver->setBlend(false);
+                }
+
+                if (audioObj->getMaterial()->getShader() != nullptr)
+                {
+                    kShader *shader = audioObj->getMaterial()->getShader();
+                    shader->use();
+
+                    shader->setValue("viewProjection", projection * view);
+                    shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
+                    shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+                    shader->setValue("billboardPosition", audioObj->getPosition());
+                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
+
+                    for (size_t l = 0; l < audioObj->getMaterial()->getTextures().size(); l++)
+                    {
+                        kTexture *tex = audioObj->getMaterial()->getTexture(l);
+                        if (tex != nullptr && tex->getType() == kTextureType::TEX_TYPE_2D)
+                        {
+                            driver->bindTexture2D((int)l, tex->getTextureID());
+                            driver->setUniformInt(shader->getShaderProgram(), "albedoMap", (int)l);
+                        }
+                    }
+
+                    audioObj->draw();
+
+                    driver->unbindTexture2D(0);
+                    shader->unuse();
+                }
+            }
+        }
         else if (currentNode->getType() == kNodeType::NODE_TYPE_OBJECT)
         {
             kObject *currentObject = currentNode;

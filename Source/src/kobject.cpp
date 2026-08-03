@@ -602,6 +602,43 @@ namespace kemena
             }
         }
 
+        // Audio sources
+        json audioSourcesData = json::array();
+        if (getAudioSources().size() > 0)
+        {
+            for (size_t j = 0; j < getAudioSources().size(); ++j)
+            {
+                const kAudioSource &as = getAudioSources().at(j);
+                audioSourcesData.push_back({
+                    {"uuid",          as.uuid},
+                    {"name",          as.name},
+                    {"audio_file",    as.audioFile},
+                    {"active",        as.isActive},
+                    {"play_on_awake", as.playOnAwake},
+                    {"loop",          as.loop},
+                    {"volume",        as.volume},
+                    {"pitch",         as.pitch},
+                    {"spatialize",    as.spatialize},
+                    {"min_distance",  as.minDistance},
+                    {"max_distance",  as.maxDistance},
+                });
+            }
+        }
+
+        // Audio listeners
+        json audioListenersData = json::array();
+        if (getAudioListeners().size() > 0)
+        {
+            for (size_t j = 0; j < getAudioListeners().size(); ++j)
+            {
+                const kAudioListener &al = getAudioListeners().at(j);
+                audioListenersData.push_back({
+                    {"uuid",   al.uuid},
+                    {"active", al.isActive},
+                });
+            }
+        }
+
         // Particle systems
         json particlesData = json::array();
         if (getParticles().size() > 0)
@@ -632,9 +669,18 @@ namespace kemena
             }
         }
 
+        // Emit the correct type string based on node type so loadObjectFromJson
+        // can route to the right deserialization branch (audio, etc.).
+        std::string typeStr = "object";
+        switch (getType())
+        {
+        case kNodeType::NODE_TYPE_AUDIO:  typeStr = "audio";  break;
+        default:                          typeStr = "object"; break;
+        }
+
         json data =
             {
-                {"type", "object"},
+                {"type", typeStr},
                 {"uuid", getUuid()},
                 {"name", getName()},
                 {"active", getActive()},
@@ -653,6 +699,8 @@ namespace kemena
                   {"z", getScale().z}}},
                 {"children", childrenData},
                 {"script", scriptsData},
+                {"audio_sources", audioSourcesData},
+                {"audio_listeners", audioListenersData},
                 {"particle", particlesData},
             };
 
