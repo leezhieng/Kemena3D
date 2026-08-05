@@ -5,6 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Map compiler choice → CMake generator name
+COMPILER_GENERATOR = {
+    "1": "Visual Studio 18 2026",
+    "2": "Visual Studio 17 2022",
+    "3": "MinGW Makefiles",
+}
+
 # Resolve project root from script location so the script works
 # regardless of which directory the user runs it from.
 ROOT = Path(__file__).resolve().parent
@@ -102,7 +109,8 @@ def main():
             "\nPlease choose a compiler:",
             {
                 "1": "Build with Visual Studio 2026 (Community Edition)",
-                "2": "Build with MinGW (GCC 14 or above)"
+                "2": "Build with Visual Studio 2022 (Community Edition)",
+                "3": "Build with MinGW (GCC 14 or above)"
             },
             env="KEMENA_COMPILER"
         )
@@ -180,9 +188,9 @@ def main():
     # CMake generator setup
     make_program = None
     if system == "Windows":
-        if compiler == "1":
-            generator = "Visual Studio 18 2026"
-        elif compiler == "2":
+        if compiler in ("1", "2"):
+            generator = COMPILER_GENERATOR.get(compiler, "Visual Studio 18 2026")
+        elif compiler == "3":
             generator = "MinGW Makefiles"
             make_program = find_mingw_make()
             print(f"[INFO] Using make program: {make_program}")
@@ -195,7 +203,7 @@ def main():
 
     # Build args
     if system == "Windows":
-        if compiler == "1":  # Visual Studio
+        if compiler in ("1", "2"):  # Visual Studio
             if linking == "1":
                 args = "-DBUILD_SHARED_LIBS=OFF -DUSE_MINGW=OFF"
             else:

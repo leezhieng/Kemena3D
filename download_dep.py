@@ -19,6 +19,13 @@ system = platform.system()
 ROOT = Path(__file__).resolve().parent / "Dependencies"
 TEMP = ROOT / "temp"
 
+# Map compiler choice → CMake generator name
+COMPILER_GENERATOR = {
+    "1": "Visual Studio 18 2026",
+    "2": "Visual Studio 17 2022",
+    "3": "MinGW Makefiles",
+}
+
 # VS and MinGW defaults (edit if your paths differ)
 VS2026_VCVARS = Path(os.environ.get("ProgramFiles", "")) / "Microsoft Visual Studio" / "18" / "Community" / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
 
@@ -375,7 +382,8 @@ def main():
             "Please choose a compiler:",
             {
                 "1": "Build with Visual Studio 2026 (Community Edition)",
-                "2": "Build with MinGW (GCC 14 or above)"
+                "2": "Build with Visual Studio 2022 (Community Edition)",
+                "3": "Build with MinGW (GCC 14 or above)"
             },
             env="KEMENA_COMPILER"
         )
@@ -420,10 +428,7 @@ def main():
 
     # Select generator and common flags
     if system == "Windows":
-        if compiler == "1":
-            generator = "Visual Studio 18 2026"
-        elif compiler == "2":
-            generator = "MinGW Makefiles"
+        generator = COMPILER_GENERATOR.get(compiler, "Visual Studio 18 2026")
 
     elif system in ("Linux", "FreeBSD"):
         generator = "Unix Makefiles"
@@ -447,7 +452,7 @@ def main():
     # Force /MD for all configs so CRT is consistent across all static dependencies.
     # CMP0091=NEW is required for CMAKE_MSVC_RUNTIME_LIBRARY to take effect on older cmake_minimum_required.
     _md = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
-    if compiler == "1":
+    if compiler in ("1", "2"):
         # VS
         if linking == "1":
             build_with_cmake("AngelScript", as_src, "Debug",  f"-DBUILD_SHARED_LIBS=OFF {_md}", generator)
@@ -468,7 +473,7 @@ def main():
     # SDL
     # --------------------------------------------------------------------
     clone_git("SDL", "v3.2.16", SDL_GIT, ROOT / "sdl", branch=SDL_BRANCH)
-    if compiler == "1":
+    if compiler in ("1", "2"):
         if linking == "1":
             build_with_cmake("SDL", ROOT / "sdl", "Debug",  "-DSDL_STATIC=ON -DSDL_SHARED=OFF", generator)
             build_with_cmake("SDL", ROOT / "sdl", "Release","-DSDL_STATIC=ON -DSDL_SHARED=OFF", generator)
@@ -492,7 +497,7 @@ def main():
     sdl_include = ROOT / "sdl" / "include"
     sdl_include_arg = f'-DSDL3_INCLUDE_DIR="{sdl_include}"'
     _md_imgui = f"-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL {sdl_include_arg}"
-    if compiler == "1":
+    if compiler in ("1", "2"):
         if linking == "1":
             build_with_cmake("imgui", ROOT / "imgui", "Debug",  f"-DBUILD_SHARED_LIBS=OFF {_md_imgui}", generator)
             build_with_cmake("imgui", ROOT / "imgui", "Release",f"-DBUILD_SHARED_LIBS=OFF {_md_imgui}", generator)
@@ -518,7 +523,7 @@ def main():
     download_and_extract_zip("GLEW", "v2.2.0", GLEW_SRC_ZIP, ROOT / "glew", flatten=True)
     glew_src = ROOT / "glew" / "build" / "cmake"
     glew_policy = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-    if compiler == "1":
+    if compiler in ("1", "2"):
         if linking == "1":
             build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
             build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
@@ -573,7 +578,7 @@ def main():
             "-DASSIMP_BUILD_SAMPLES=OFF "
         )
 
-    if compiler == "1":
+    if compiler in ("1", "2"):
         if linking == "1":
             # Force /MD so CRT is consistent across all static dependencies.
             flags = f"-DASSIMP_BUILD_ZLIB=ON -DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL {_fdopen_fix} {model_flags}"
@@ -633,7 +638,7 @@ def main():
     patch_imguizmo(ROOT / "imguizmo")
     write_imguizmo_cmakelists(ROOT / "imguizmo", ROOT / "imgui", linking)
     _md_gizmo = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
-    if compiler == "1":
+    if compiler in ("1", "2"):
         if linking == "1":
             build_with_cmake("imGuizmo", ROOT / "imguizmo", "Debug",  f"-DBUILD_SHARED_LIBS=OFF {_md_gizmo}", generator)
             build_with_cmake("imGuizmo", ROOT / "imguizmo", "Release",f"-DBUILD_SHARED_LIBS=OFF {_md_gizmo}", generator)
@@ -678,7 +683,7 @@ def main():
         "-DENABLE_ALL_WARNINGS=OFF"
     )
     jolt_src = ROOT / "jolt" / "Build"
-    if compiler == "1":
+    if compiler in ("1", "2"):
         # Force /MD (MultiThreadedDLL) so CRT is consistent across all static dependencies.
         # USE_STATIC_MSVC_RUNTIME_LIBRARY defaults ON in Jolt's CMakeLists and overrides to /MT;
         # set it OFF so our CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL is respected.
@@ -708,7 +713,7 @@ def main():
     )
     for cfg in ("Debug", "Release"):
         install_prefix = f'-DCMAKE_INSTALL_PREFIX="{recast_src / "dist"}"'
-        if compiler == "1":
+        if compiler in ("1", "2"):
             build_with_cmake("Recast Navigation", recast_src, cfg,
                              f"{recast_flags} {install_prefix}", generator)
             run(f'cmake --install "{recast_src / f"build_{cfg}"}" --config {cfg}',
@@ -732,7 +737,7 @@ def main():
     # miniaudio
     # --------------------------------------------------------------------
     clone_git("miniaudio", "0.11.25", MINIAUDIO_GIT, ROOT / "miniaudio", revision=MINIAUDIO_TAG)
-    if compiler == "1":
+    if compiler in ("1", "2"):
         if linking == "1":
             build_with_cmake("miniaudio", ROOT / "miniaudio", "Debug",  f"-DBUILD_SHARED_LIBS=OFF", generator)
             build_with_cmake("miniaudio", ROOT / "miniaudio", "Release",f"-DBUILD_SHARED_LIBS=OFF", generator)
