@@ -674,7 +674,8 @@ def main():
         "-DTARGET_SAMPLES=OFF "
         "-DTARGET_VIEWER=OFF "
         "-DTARGET_PERFORMANCE_TEST=OFF "
-        "-DBUILD_SHARED_LIBS=OFF"
+        "-DBUILD_SHARED_LIBS=OFF "
+        "-DENABLE_ALL_WARNINGS=OFF"
     )
     jolt_src = ROOT / "jolt" / "Build"
     if compiler == "1":

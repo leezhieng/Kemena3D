@@ -179,7 +179,7 @@ def build_jolt(args):
     download_and_extract_zip("Jolt Physics", JOLT_ZIP, dest)
     build_dir = dest / "Build" / f"build_{args.abi}"
     cmake_android(dest, build_dir, args.abi, args.ndk_path,
-                  extra_args="-DCMAKE_BUILD_TYPE=Release")
+                  extra_args="-DCMAKE_BUILD_TYPE=Release -DENABLE_ALL_WARNINGS=OFF")
 
 def build_recast(args):
     dest = DEPS / "recast"
