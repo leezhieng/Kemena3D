@@ -101,7 +101,7 @@ def main():
         compiler = choose(
             "\nPlease choose a compiler:",
             {
-                "1": "Build with Visual Studio 2022 (Community Edition)",
+                "1": "Build with Visual Studio 2026 (Community Edition)",
                 "2": "Build with MinGW (GCC 14 or above)"
             },
             env="KEMENA_COMPILER"
@@ -181,7 +181,7 @@ def main():
     make_program = None
     if system == "Windows":
         if compiler == "1":
-            generator = "Visual Studio 17 2022"
+            generator = "Visual Studio 18 2026"
         elif compiler == "2":
             generator = "MinGW Makefiles"
             make_program = find_mingw_make()

@@ -49,8 +49,8 @@ if(WIN32)
 
         # Third-party static libraries (MSVC names; Debug variants use a suffix)
         SDL3-static
-        $<$<CONFIG:Debug>:assimp-vc143-mtd>
-        $<$<CONFIG:Release>:assimp-vc143-mt>
+        $<$<CONFIG:Debug>:assimp-vc144-mtd>
+        $<$<CONFIG:Release>:assimp-vc144-mt>
         $<$<CONFIG:Debug>:angelscriptd>
         $<$<CONFIG:Release>:angelscript>
         imgui

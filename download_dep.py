@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent / "Dependencies"
 TEMP = ROOT / "temp"
 
 # VS and MinGW defaults (edit if your paths differ)
-VS2022_VCVARS = Path(os.environ.get("ProgramFiles", "")) / "Microsoft Visual Studio" / "2022" / "Community" / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+VS2026_VCVARS = Path(os.environ.get("ProgramFiles", "")) / "Microsoft Visual Studio" / "18" / "Community" / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
 
 if system == "Windows":
     GCC_PATH = Path(r"C:/msys64/mingw64/bin/gcc.exe")
@@ -374,7 +374,7 @@ def main():
         compiler = choose(
             "Please choose a compiler:",
             {
-                "1": "Build with Visual Studio 2022 (Community Edition)",
+                "1": "Build with Visual Studio 2026 (Community Edition)",
                 "2": "Build with MinGW (GCC 14 or above)"
             },
             env="KEMENA_COMPILER"
@@ -421,7 +421,7 @@ def main():
     # Select generator and common flags
     if system == "Windows":
         if compiler == "1":
-            generator = "Visual Studio 17 2022"
+            generator = "Visual Studio 18 2026"
         elif compiler == "2":
             generator = "MinGW Makefiles"
 

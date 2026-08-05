@@ -27,10 +27,10 @@ The model, texture and shader are referenced with **relative paths** (e.g.
 `../diffuse.png`, `../flat.glsl`), so run the executable
 from its build output folder so those paths resolve.
 
-### Windows (Visual Studio 2022)
+### Windows (Visual Studio 2026)
 
 ```bat
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 cmake --build build --config Release
 cd build\bin\Release
 demo.exe

@@ -24,10 +24,10 @@ out-of-source build, then build it. The executable links statically against
 `Output/<Config>/{include,lib}`, so build it in the same configuration you want
 to run.
 
-### Windows (Visual Studio 2022)
+### Windows (Visual Studio 2026)
 
 ```bat
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 cmake --build build --config Release
 ```
 Output: `build\bin\Release\`. Release builds are windowed (no console); Debug
