@@ -674,8 +674,12 @@ namespace kemena
         std::string typeStr = "object";
         switch (getType())
         {
-        case kNodeType::NODE_TYPE_AUDIO:  typeStr = "audio";  break;
-        default:                          typeStr = "object"; break;
+        case kNodeType::NODE_TYPE_MESH:    typeStr = "mesh";    break;
+        case kNodeType::NODE_TYPE_CAMERA:  typeStr = "camera";  break;
+        case kNodeType::NODE_TYPE_LIGHT:   typeStr = "light";   break;
+        case kNodeType::NODE_TYPE_AUDIO:   typeStr = "audio";   break;
+        case kNodeType::NODE_TYPE_TERRAIN: typeStr = "terrain"; break;
+        default:                           typeStr = "object";  break;
         }
 
         json data =
