@@ -264,6 +264,13 @@ namespace kemena
         return d3dDevice;
     }
 
+    void kDX11Driver::makeCurrent(kWindow * /*window*/)
+    {
+        // D3D11 uses an immediate context that is always current on the
+        // device; no explicit context-switching API exists.  This override
+        // satisfies the kDriver pure-virtual interface without side effects.
+    }
+
     kString kDX11Driver::getApiVersion()
     {
         if (!d3dDevice) return "DirectX 11 (no device)";

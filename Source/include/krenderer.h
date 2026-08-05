@@ -156,6 +156,21 @@ namespace kemena
         bool getEnableScreenBuffer();
 
         /**
+         * @brief When true, the fullscreen quad blit that draws the resolved
+         *        FBO to the default framebuffer is skipped.  The FBO texture
+         *        is still populated and can be read via getFboTexture().
+         *
+         * Use this when the rendered output is consumed as an ImGui image
+         * rather than drawn directly to the window (e.g. editor viewports).
+         *
+         * @param skip true to skip the fullscreen quad, false (default) to draw it.
+         */
+        void setSkipScreenQuad(bool skip) { skipScreenQuad = skip; }
+
+        /** @brief Returns whether the fullscreen quad is being skipped. */
+        bool getSkipScreenQuad() const { return skipScreenQuad; }
+
+        /**
          * @brief Sets a custom screen-space shader for post-processing.
          * @param newShader Shader to use; the renderer takes ownership.
          */
@@ -524,6 +539,7 @@ namespace kemena
 
         // Screen FBO
         bool enableScreenBuffer = false; ///< True when off-screen post-process FBO is active.
+        bool skipScreenQuad = false;     ///< When true, skip the fullscreen-quad blit (FBO still populated).
         kShader *screenShader = nullptr; ///< Full-screen post-process shader.
         uint32_t quadVao = 0, quadVbo = 0, quadEbo = 0; ///< GPU buffers for the full-screen quad.
         uint32_t fbo = 0, fboTexColor = 0, rboDepth = 0; ///< Resolved single-sample FBO and its color/depth attachments.

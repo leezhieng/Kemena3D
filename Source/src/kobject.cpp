@@ -323,6 +323,13 @@ namespace kemena
 
     void kObject::setPosition(kVec3 newPosition)
     {
+        if (isStatic)
+            return;
+        position = newPosition;
+    }
+
+    void kObject::setPositionForced(kVec3 newPosition)
+    {
         position = newPosition;
     }
 
@@ -341,6 +348,13 @@ namespace kemena
 
     void kObject::setRotation(kQuat newRotation)
     {
+        if (isStatic)
+            return;
+        rotation = glm::normalize(newRotation);
+    }
+
+    void kObject::setRotationForced(kQuat newRotation)
+    {
         rotation = glm::normalize(newRotation);
     }
 
@@ -350,6 +364,13 @@ namespace kemena
     }
 
     void kObject::setScale(kVec3 newScale)
+    {
+        if (isStatic)
+            return;
+        scale = newScale;
+    }
+
+    void kObject::setScaleForced(kVec3 newScale)
     {
         scale = newScale;
     }
@@ -378,21 +399,8 @@ namespace kemena
 
     void kObject::rotate(kVec3 rotationAxis, float angularSpeed)
     {
-        /*
-        // Convert Euler angles from degrees to radians
-        kVec3 eulerAnglesRadians = glm::radians(eulerAnglesDegrees);
-
-        // Create a quaternion from the Euler angles
-        kQuat newRotation(eulerAnglesRadians);
-
-        if (newRotation.w < 0)
-        {
-            newRotation = -newRotation; // Ensure positive w component
-        }
-
-        // Combine the new rotation with the current rotation
-        rotation = newRotation * getRotation(); // Apply new rotation relative to current rotation
-        */
+        if (isStatic)
+            return;
 
         // Compute the amount of rotation in radians
         float angle = angularSpeed;
@@ -594,6 +602,43 @@ namespace kemena
             }
         }
 
+        // Audio sources
+        json audioSourcesData = json::array();
+        if (getAudioSources().size() > 0)
+        {
+            for (size_t j = 0; j < getAudioSources().size(); ++j)
+            {
+                const kAudioSource &as = getAudioSources().at(j);
+                audioSourcesData.push_back({
+                    {"uuid",          as.uuid},
+                    {"name",          as.name},
+                    {"audio_file",    as.audioFile},
+                    {"active",        as.isActive},
+                    {"play_on_awake", as.playOnAwake},
+                    {"loop",          as.loop},
+                    {"volume",        as.volume},
+                    {"pitch",         as.pitch},
+                    {"spatialize",    as.spatialize},
+                    {"min_distance",  as.minDistance},
+                    {"max_distance",  as.maxDistance},
+                });
+            }
+        }
+
+        // Audio listeners
+        json audioListenersData = json::array();
+        if (getAudioListeners().size() > 0)
+        {
+            for (size_t j = 0; j < getAudioListeners().size(); ++j)
+            {
+                const kAudioListener &al = getAudioListeners().at(j);
+                audioListenersData.push_back({
+                    {"uuid",   al.uuid},
+                    {"active", al.isActive},
+                });
+            }
+        }
+
         // Particle systems
         json particlesData = json::array();
         if (getParticles().size() > 0)
@@ -624,12 +669,26 @@ namespace kemena
             }
         }
 
+        // Emit the correct type string based on node type so loadObjectFromJson
+        // can route to the right deserialization branch (audio, etc.).
+        std::string typeStr = "object";
+        switch (getType())
+        {
+        case kNodeType::NODE_TYPE_MESH:    typeStr = "mesh";    break;
+        case kNodeType::NODE_TYPE_CAMERA:  typeStr = "camera";  break;
+        case kNodeType::NODE_TYPE_LIGHT:   typeStr = "light";   break;
+        case kNodeType::NODE_TYPE_AUDIO:   typeStr = "audio";   break;
+        case kNodeType::NODE_TYPE_TERRAIN: typeStr = "terrain"; break;
+        default:                           typeStr = "object";  break;
+        }
+
         json data =
             {
-                {"type", "object"},
+                {"type", typeStr},
                 {"uuid", getUuid()},
                 {"name", getName()},
                 {"active", getActive()},
+                {"static", getStatic()},
                 {"position",
                  {{"x", getPosition().x},
                   {"y", getPosition().y},
@@ -644,6 +703,8 @@ namespace kemena
                   {"z", getScale().z}}},
                 {"children", childrenData},
                 {"script", scriptsData},
+                {"audio_sources", audioSourcesData},
+                {"audio_listeners", audioListenersData},
                 {"particle", particlesData},
             };
 
@@ -750,7 +811,7 @@ namespace kemena
 
     void kObject::syncFromPhysics()
     {
-        if (!physicsObject) return;
+        if (!physicsObject || isStatic) return;
 
         position = physicsObject->getPosition();
         rotation = physicsObject->getRotation();
@@ -775,7 +836,7 @@ namespace kemena
 
     void kObject::syncFromCharacter()
     {
-        if (!characterController) return;
+        if (!characterController || isStatic) return;
 
         position = characterController->getPosition();
         rotation = characterController->getRotation();

@@ -672,6 +672,16 @@ namespace kemena
             world->addCamera(cam, cam->getUuid());
             result = cam;
         }
+        else if (type == "audio")
+        {
+            kObject *audioObj = new kObject();
+            audioObj->setType(NODE_TYPE_AUDIO);
+            audioObj->setName(name);
+            audioObj->setActive(active);
+            if (topLevel) scene->addObject(audioObj, uuid);
+            else { audioObj->setUuid(uuid.empty() ? generateUuid() : uuid); audioObj->setParent(parent); }
+            result = audioObj;
+        }
         else
         {
             kObject *empty = new kObject();
@@ -767,6 +777,89 @@ namespace kemena
                         sid, "", K_SCRIPT_TEXT, kbc.string());
                 }
                 result->addScript(s);
+            }
+        }
+
+        // Audio sources
+        if (obj.contains("audio_sources") && obj["audio_sources"].is_array())
+        {
+            for (const auto &aj : obj["audio_sources"])
+            {
+                kAudioSource as;
+                as.uuid         = aj.value("uuid", generateUuid());
+                as.name         = aj.value("name", std::string("Audio Source"));
+                as.audioFile    = aj.value("audio_file", std::string(""));
+                as.isActive     = aj.value("active", true);
+                as.playOnAwake  = aj.value("play_on_awake", false);
+                as.loop         = aj.value("loop", false);
+                as.volume       = aj.value("volume", 1.0f);
+                as.pitch        = aj.value("pitch", 1.0f);
+                as.spatialize   = aj.value("spatialize", true);
+                as.minDistance  = aj.value("min_distance", 1.0f);
+                as.maxDistance  = aj.value("max_distance", 100.0f);
+                result->addAudioSource(as);
+            }
+        }
+
+        // Audio listeners
+        if (obj.contains("audio_listeners") && obj["audio_listeners"].is_array())
+        {
+            for (const auto &lj : obj["audio_listeners"])
+            {
+                kAudioListener al;
+                al.uuid    = lj.value("uuid", generateUuid());
+                al.isActive = lj.value("active", true);
+                result->addAudioListener(al);
+            }
+        }
+
+        // Particle systems
+        if (obj.contains("particle") && obj["particle"].is_array())
+        {
+            for (const auto &pj : obj["particle"])
+            {
+                kParticle p;
+                p.uuid           = pj.value("uuid", generateUuid());
+                p.name           = pj.value("name", std::string("Particle System"));
+                p.isActive       = pj.value("active", true);
+                p.looping        = pj.value("looping", true);
+                p.maxParticles   = pj.value("max_particles", 100);
+                p.emissionRate   = pj.value("emission_rate", 10.0f);
+                p.lifetime       = pj.value("lifetime", 2.0f);
+                p.gravityScale   = pj.value("gravity_scale", 1.0f);
+                p.startSpeed     = pj.value("start_speed", 1.0f);
+                p.sizeStart      = pj.value("size_start", 0.1f);
+                p.sizeEnd        = pj.value("size_end", 0.0f);
+                p.emissionShape  = (kParticle::EmissionShape)pj.value("emission_shape", 0);
+                p.texturePath    = pj.value("texture_path", std::string(""));
+
+                if (pj.contains("start_velocity") && pj["start_velocity"].is_object())
+                {
+                    const auto &sv = pj["start_velocity"];
+                    p.startVelocity = kVec3(sv.value("x", 0.0f), sv.value("y", 1.0f), sv.value("z", 0.0f));
+                }
+                if (pj.contains("velocity_variance") && pj["velocity_variance"].is_object())
+                {
+                    const auto &vv = pj["velocity_variance"];
+                    p.velocityVariance = kVec3(vv.value("x", 0.1f), vv.value("y", 0.1f), vv.value("z", 0.1f));
+                }
+                if (pj.contains("color_start") && pj["color_start"].is_object())
+                {
+                    const auto &cs = pj["color_start"];
+                    p.colorStart = kVec4(cs.value("r", 1.0f), cs.value("g", 1.0f), cs.value("b", 1.0f), cs.value("a", 1.0f));
+                }
+                if (pj.contains("color_end") && pj["color_end"].is_object())
+                {
+                    const auto &ce = pj["color_end"];
+                    p.colorEnd = kVec4(ce.value("r", 1.0f), ce.value("g", 1.0f), ce.value("b", 1.0f), ce.value("a", 0.0f));
+                }
+                if (pj.contains("shape_size") && pj["shape_size"].is_object())
+                {
+                    const auto &ss = pj["shape_size"];
+                    p.shapeSize = kVec3(ss.value("x", 0.5f), ss.value("y", 0.5f), ss.value("z", 0.5f));
+                }
+
+                result->addParticle(p);
             }
         }
 

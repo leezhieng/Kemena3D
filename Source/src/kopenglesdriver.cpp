@@ -20,6 +20,11 @@ namespace kemena
         if (window == nullptr)
             return false;
 
+        // If another GL context already exists, share resources with it.
+        SDL_GLContext existing = SDL_GL_GetCurrentContext();
+        if (existing != nullptr)
+            SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+
         // Request an OpenGL ES 3.0 context.
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -69,6 +74,12 @@ namespace kemena
             SDL_GL_DestroyContext(glContext);
             glContext = nullptr;
         }
+    }
+
+    void kOpenGLESDriver::makeCurrent(kWindow *window)
+    {
+        if (glContext && window && window->getSdlWindow())
+            SDL_GL_MakeCurrent(window->getSdlWindow(), glContext);
     }
 
     void *kOpenGLESDriver::getNativeContext()

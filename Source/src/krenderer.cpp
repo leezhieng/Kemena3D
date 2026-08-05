@@ -714,35 +714,40 @@ void main()
             driver->bindDrawFramebuffer(fbo);
             driver->blitFramebufferColor(0, 0, fboWidth, fboHeight, 0, 0, fboWidth, fboHeight);
 
-            // Render resolve texture to screen quad
-            driver->unbindFramebuffer();
-            driver->setDepthTest(false);
-            driver->setClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            driver->clear(true, false, false);
-
-            getScreenShader()->use();
-            driver->bindTexture2D(0, fboTexColor);
-
-            if (enableAutoExposure)
+            // Render resolve texture to screen quad — skip when the output is
+            // consumed as an ImGui image (e.g. editor viewports) rather than
+            // drawn directly to the window.
+            if (!skipScreenQuad)
             {
-                driver->generateMipmaps2D(fboTexColor);
-                int mipLevel = (int)std::floor(std::log2(std::max(width, height)));
-                driver->readTexture2DRGB(fboTexColor, mipLevel, averageLuminanceColor);
-                averageLuminance = 0.2126f * averageLuminanceColor[0] + 0.7152f * averageLuminanceColor[1] + 0.0722f * averageLuminanceColor[2];
-                float targetExposure = exposureKey / (averageLuminance + 0.001f);
-                exposure = glm::mix(exposure, targetExposure, deltaTime * exposureAdaptationRate);
-            }
+                driver->unbindFramebuffer();
+                driver->setDepthTest(false);
+                driver->setClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                driver->clear(true, false, false);
 
-            if (screenShader != nullptr)
-            {
-                screenShader->setValue("enable_autoExposure", enableAutoExposure);
-                screenShader->setValue("exposure", exposure * 3.0f);
-                screenShader->setValue("contrast", 1.01f);
-                screenShader->setValue("gamma", 2.2f);
-            }
+                getScreenShader()->use();
+                driver->bindTexture2D(0, fboTexColor);
 
-            driver->drawIndexed(quadVao, 6);
-            getScreenShader()->unuse();
+                if (enableAutoExposure)
+                {
+                    driver->generateMipmaps2D(fboTexColor);
+                    int mipLevel = (int)std::floor(std::log2(std::max(width, height)));
+                    driver->readTexture2DRGB(fboTexColor, mipLevel, averageLuminanceColor);
+                    averageLuminance = 0.2126f * averageLuminanceColor[0] + 0.7152f * averageLuminanceColor[1] + 0.0722f * averageLuminanceColor[2];
+                    float targetExposure = exposureKey / (averageLuminance + 0.001f);
+                    exposure = glm::mix(exposure, targetExposure, deltaTime * exposureAdaptationRate);
+                }
+
+                if (screenShader != nullptr)
+                {
+                    screenShader->setValue("enable_autoExposure", enableAutoExposure);
+                    screenShader->setValue("exposure", exposure * 3.0f);
+                    screenShader->setValue("contrast", 1.01f);
+                    screenShader->setValue("gamma", 2.2f);
+                }
+
+                driver->drawIndexed(quadVao, 6);
+                getScreenShader()->unuse();
+            }
         }
 
         driver->unbindVertexArray();
@@ -1156,6 +1161,59 @@ void main()
                     }
 
                     currentCamera->draw();
+
+                    driver->unbindTexture2D(0);
+                    shader->unuse();
+                }
+            }
+        }
+        else if (currentNode->getType() == kNodeType::NODE_TYPE_AUDIO)
+        {
+            kObject *audioObj = currentNode;
+
+            if (world->getMainCamera() != nullptr && audioObj->getMaterial() != nullptr)
+            {
+                kMat4 view = lookAt(world->getMainCamera()->getPosition(),
+                                    world->getMainCamera()->getLookAt(),
+                                    world->getMainCamera()->calculateUp());
+                kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
+                                                    world->getMainCamera()->getAspectRatio(),
+                                                    world->getMainCamera()->getNearClip(),
+                                                    world->getMainCamera()->getFarClip());
+
+                if (audioObj->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
+                {
+                    driver->setBlend(true);
+                    driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+                }
+                else
+                {
+                    driver->setBlend(false);
+                }
+
+                if (audioObj->getMaterial()->getShader() != nullptr)
+                {
+                    kShader *shader = audioObj->getMaterial()->getShader();
+                    shader->use();
+
+                    shader->setValue("viewProjection", projection * view);
+                    shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
+                    shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+                    shader->setValue("billboardPosition", audioObj->getPosition());
+                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
+
+                    for (size_t l = 0; l < audioObj->getMaterial()->getTextures().size(); l++)
+                    {
+                        kTexture *tex = audioObj->getMaterial()->getTexture(l);
+                        if (tex != nullptr && tex->getType() == kTextureType::TEX_TYPE_2D)
+                        {
+                            driver->bindTexture2D((int)l, tex->getTextureID());
+                            driver->setUniformInt(shader->getShaderProgram(), "albedoMap", (int)l);
+                        }
+                    }
+
+                    audioObj->draw();
 
                     driver->unbindTexture2D(0);
                     shader->unuse();

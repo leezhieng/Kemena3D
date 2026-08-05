@@ -59,17 +59,20 @@ namespace kemena
         /** @brief Destroys the SDL GL context. */
         void destroy() override;
 
-        /**
-         * @brief Returns the raw SDL_GLContext handle.
-         * @return Opaque pointer; cast to SDL_GLContext when needed.
-         */
-        void *getNativeContext() override;
+        /** @brief Makes this driver's GL context current on the given window via SDL_GL_MakeCurrent. */
+        void makeCurrent(kWindow *window) override;
 
         /** @brief Returns the OpenGL version kString. */
         kString getApiVersion() override;
 
         /** @brief Returns the GLSL version kString. */
         kString getShaderVersion() override;
+
+        /**
+         * @brief Returns the raw SDL_GLContext handle.
+         * @return Opaque pointer; cast to SDL_GLContext when needed.
+         */
+        void *getNativeContext() override;
 
         // --- Frame state -----------------------------------------------------
 
