@@ -1,6 +1,12 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
+// Custom decoding backends — libvorbis and libopus replace the built-in
+// stb_vorbis backend, giving us full Vorbis + Opus support via external
+// libraries linked from Kemena3D/Dependencies/{ogg,vorbis,opus,opusfile}.
+#include "miniaudio_libvorbis.h"
+#include "miniaudio_libopus.h"
+
 #include "kaudiomanager.h"
 
 #include <iostream>
@@ -11,8 +17,9 @@ namespace kemena
 {
     struct kAudioManager::Impl
     {
-        ma_engine              engine      = {};
-        bool                   initialized = false;
+        ma_engine              engine          = {};
+        ma_resource_manager    resourceManager = {};
+        bool                   initialized     = false;
         std::vector<kAudio *>  sounds;
     };
 
@@ -34,12 +41,61 @@ namespace kemena
         if (m_impl->initialized)
             return true;
 
-        ma_result result = ma_engine_init(nullptr, &m_impl->engine);
-        if (result != MA_SUCCESS)
+        // --- Resource manager with custom decoding backends -----------------
+        // libvorbis + libopus replace miniaudio's built-in stb_vorbis backend,
+        // giving us full Vorbis and Opus support via the external libraries
+        // linked from Kemena3D/Dependencies/.
         {
-            std::cout << "[kAudioManager] Failed to initialise audio engine "
-                      << "(ma_result = " << result << ")." << std::endl;
-            return false;
+            ma_decoding_backend_vtable* customBackends[] = {
+                ma_decoding_backend_libvorbis,
+                ma_decoding_backend_libopus,
+            };
+
+            ma_resource_manager_config rmConfig = ma_resource_manager_config_init();
+            rmConfig.ppCustomDecodingBackendVTables = customBackends;
+            rmConfig.customDecodingBackendCount     = sizeof(customBackends) / sizeof(customBackends[0]);
+            rmConfig.decodedFormat                  = ma_format_f32;
+            rmConfig.decodedChannels                = 0;
+            rmConfig.decodedSampleRate              = 0;
+
+            ma_result result = ma_resource_manager_init(&rmConfig, &m_impl->resourceManager);
+            if (result != MA_SUCCESS)
+            {
+                std::cout << "[kAudioManager] Failed to init resource manager "
+                          << "(ma_result = " << result << ")." << std::endl;
+                return false;
+            }
+        }
+
+        // --- Engine ---------------------------------------------------------
+        {
+            ma_engine_config engineConfig = ma_engine_config_init();
+            engineConfig.pResourceManager = &m_impl->resourceManager;
+
+            ma_result result = ma_engine_init(&engineConfig, &m_impl->engine);
+            if (result != MA_SUCCESS)
+            {
+                std::cout << "[kAudioManager] Failed to initialise audio engine "
+                          << "(ma_result = " << result << ")." << std::endl;
+                ma_resource_manager_uninit(&m_impl->resourceManager);
+                return false;
+            }
+        }
+
+        // Log the actual backend that miniaudio selected.  If the backend is
+        // "null" the audio device could not be opened and all playback will
+        // be silent — that's the most common cause of "no audio" on Windows.
+        ma_device *device = ma_engine_get_device(&m_impl->engine);
+        if (device != nullptr && device->pContext != nullptr)
+        {
+            std::cout << "[kAudioManager] Audio engine initialised."
+                      << " backend=" << ma_get_backend_name(device->pContext->backend)
+                      << "." << std::endl;
+        }
+        else
+        {
+            std::cout << "[kAudioManager] Audio engine initialised (no device info)."
+                      << std::endl;
         }
 
         m_impl->initialized = true;
@@ -60,6 +116,7 @@ namespace kemena
         m_impl->sounds.clear();
 
         ma_engine_uninit(&m_impl->engine);
+        ma_resource_manager_uninit(&m_impl->resourceManager);
         m_impl->initialized = false;
     }
 

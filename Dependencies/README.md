@@ -141,3 +141,35 @@ The automated batch script performs its tasks using the configurations below. If
 - **Git Clone**: `https://github.com/mackron/miniaudio.git`
 - **Extract to**: `miniaudio`
 - **Build Required**: ✅ Yes
+
+### Ogg Media Container
+
+- **Website**: [Ogg GitHub](https://github.com/xiph/ogg)
+- **Version**: `1.3.5`
+- **Git Clone**: `https://github.com/xiph/ogg.git`
+- **Extract to**: `ogg`
+- **Build Required**: ✅ Yes
+
+### Ogg Vorbis Audio Format
+
+- **Website**: [Vorbis GitHub](https://github.com/xiph/vorbis)
+- **Version**: `1.3.7`
+- **Git Clone**: `https://github.com/xiph/vorbis.git`
+- **Extract to**: `vorbis`
+- **Build Required**: ✅ Yes
+
+### Opus Audio Format
+
+- **Website**: [Vorbis GitHub](https://github.com/xiph/opus)
+- **Version**: `1.5.2`
+- **Git Clone**: `https://github.com/xiph/opus.git`
+- **Extract to**: `opus`
+- **Build Required**: ✅ Yes
+
+### Decoder for Opus Streams
+
+- **Website**: [Vorbis GitHub](https://github.com/xiph/opusfile)
+- **Version**: `0.12`
+- **Git Clone**: `https://github.com/xiph/opusfile.git`
+- **Extract to**: `opusfile`
+- **Build Required**: ✅ Yes

@@ -31,11 +31,15 @@ namespace kemena
             uninit();
 
         ma_engine *engine = static_cast<ma_engine *>(maEngine);
+
+        // Synchronous decode — avoids the race where ma_sound_start is called
+        // before the async worker has populated the data source, which causes
+        // the sound to immediately hit end-of-stream and never produce audio.
         ma_result result = ma_sound_init_from_file(engine,
-                                                   filePath.c_str(),
-                                                   MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC,
-                                                   nullptr, nullptr,
-                                                   &m_impl->sound);
+                                                    filePath.c_str(),
+                                                    MA_SOUND_FLAG_DECODE,
+                                                    nullptr, nullptr,
+                                                    &m_impl->sound);
         if (result != MA_SUCCESS)
         {
             std::cout << "[kAudio] Failed to load '" << filePath

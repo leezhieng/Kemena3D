@@ -71,6 +71,14 @@ JOLT_ZIP = "https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.3.0.zip"
 RECAST_ZIP = "https://github.com/recastnavigation/recastnavigation/archive/refs/tags/v1.6.0.zip"
 MINIAUDIO_GIT = "https://github.com/mackron/miniaudio.git"
 MINIAUDIO_TAG = "0.11.25"
+OGG_GIT       = "https://github.com/xiph/ogg.git"
+OGG_TAG       = "v1.3.5"
+VORBIS_GIT    = "https://github.com/xiph/vorbis.git"
+VORBIS_TAG    = "v1.3.7"
+OPUS_GIT      = "https://github.com/xiph/opus.git"
+OPUS_TAG      = "v1.5.2"
+OPUSFILE_GIT  = "https://github.com/xiph/opusfile.git"
+OPUSFILE_TAG  = "v0.12"
 
 # ------------------------------------------------------------------------
 # Utilities
@@ -247,6 +255,37 @@ target_include_directories(imguizmo PUBLIC ${{CMAKE_CURRENT_SOURCE_DIR}} {imgui_
 """
     (imguizmo_dir / "CMakeLists.txt").write_text(cmake_txt, encoding="utf-8")
     print(f"[OK] Generated ImGuizmo CMakeLists.txt at '{imguizmo_dir / 'CMakeLists.txt'}'")
+
+def write_opusfile_cmakelists(opusfile_dir: Path, ogg_dir: Path, opus_dir: Path):
+    """Generate a CMakeLists.txt for libopusfile (which uses autotools upstream)."""
+    cmake_txt = f"""cmake_minimum_required(VERSION 3.10)
+project(Opusfile LANGUAGES C)
+set(CMAKE_C_STANDARD 99)
+
+file(GLOB OPUSFILE_SRC src/*.c)
+list(REMOVE_ITEM OPUSFILE_SRC "${{CMAKE_CURRENT_SOURCE_DIR}}/src/http.c")
+list(REMOVE_ITEM OPUSFILE_SRC "${{CMAKE_CURRENT_SOURCE_DIR}}/src/wincerts.c")
+
+add_library(opusfile STATIC ${{OPUSFILE_SRC}})
+target_include_directories(opusfile
+    PUBLIC ${{CMAKE_CURRENT_SOURCE_DIR}}/include
+    PRIVATE ${{CMAKE_CURRENT_SOURCE_DIR}}/src
+)
+target_include_directories(opusfile
+    PUBLIC {ogg_dir.as_posix()}/include
+    PUBLIC {opus_dir.as_posix()}/include
+)
+target_link_libraries(opusfile PUBLIC
+    "$<$<CONFIG:Debug>:{ogg_dir.as_posix()}/build_Debug/Debug/ogg.lib>"
+    "$<$<CONFIG:Release>:{ogg_dir.as_posix()}/build_Release/Release/ogg.lib>"
+    "$<$<CONFIG:Debug>:{opus_dir.as_posix()}/build_Debug/Debug/opus.lib>"
+    "$<$<CONFIG:Release>:{opus_dir.as_posix()}/build_Release/Release/opus.lib>"
+)
+# Disable HTTP support to avoid pulling in TLS (OpenSSL/Schannel) deps.
+target_compile_definitions(opusfile PRIVATE OP_DISABLE_HTTP)
+"""
+    (opusfile_dir / "CMakeLists.txt").write_text(cmake_txt, encoding="utf-8")
+    print(f"[OK] Generated opusfile CMakeLists.txt at '{opusfile_dir / 'CMakeLists.txt'}'")
 
 # ------------------------------------------------------------------------
 # ImGuizmo post-clone source patch
@@ -751,6 +790,74 @@ def main():
         else:
             build_with_cmake("miniaudio", ROOT / "miniaudio", "Debug",  f"-DBUILD_SHARED_LIBS=ON", generator)
             build_with_cmake("miniaudio", ROOT / "miniaudio", "Release",f"-DBUILD_SHARED_LIBS=ON", generator)
+
+    # --------------------------------------------------------------------
+    # libogg (container library — needed by vorbis and opusfile)
+    # --------------------------------------------------------------------
+    clone_git("ogg", OGG_TAG, OGG_GIT, ROOT / "ogg", revision=OGG_TAG)
+    ogg_src  = ROOT / "ogg"
+    ogg_inc  = (ogg_src / "include").as_posix()
+    # Determine ogg library output paths per toolchain / config
+    # Force /MD for MSVC so CRT is consistent across all static dependencies.
+    _audio_md = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+    if compiler in ("1", "2"):  # MSVC
+        ogg_lib_d = (ogg_src / "build_Debug"   / "Debug"   / "ogg.lib").as_posix()
+        ogg_lib_r = (ogg_src / "build_Release" / "Release" / "ogg.lib").as_posix()
+        ogg_flags = f"-DBUILD_SHARED_LIBS=OFF -DINSTALL_CMAKE_PACKAGE_MODULE=OFF {_audio_md}"
+    else:  # MinGW / Unix
+        ogg_lib_d = (ogg_src / "build_Debug"   / "libogg.a").as_posix()
+        ogg_lib_r = (ogg_src / "build_Release" / "libogg.a").as_posix()
+        ogg_flags = "-DBUILD_SHARED_LIBS=OFF -DINSTALL_CMAKE_PACKAGE_MODULE=OFF"
+    build_with_cmake("ogg", ogg_src, "Debug",   ogg_flags, generator)
+    build_with_cmake("ogg", ogg_src, "Release", ogg_flags, generator)
+
+    # --------------------------------------------------------------------
+    # libvorbis + libvorbisfile (Vorbis codec — needs libogg)
+    # --------------------------------------------------------------------
+    clone_git("vorbis", VORBIS_TAG, VORBIS_GIT, ROOT / "vorbis", revision=VORBIS_TAG)
+    vorbis_src = ROOT / "vorbis"
+    vorbis_base = [
+        f"-DOGG_INCLUDE_DIR={ogg_inc}",
+        "-DBUILD_SHARED_LIBS=OFF",
+    ]
+    if compiler in ("1", "2"):
+        vorbis_base.append(_audio_md)
+    build_with_cmake("vorbis", vorbis_src, "Debug",
+        " ".join(vorbis_base + [f"-DOGG_LIBRARY={ogg_lib_d}"]), generator)
+    build_with_cmake("vorbis", vorbis_src, "Release",
+        " ".join(vorbis_base + [f"-DOGG_LIBRARY={ogg_lib_r}"]), generator)
+
+    # --------------------------------------------------------------------
+    # libopus (Opus codec — standalone, no deps)
+    # --------------------------------------------------------------------
+    clone_git("opus", OPUS_TAG, OPUS_GIT, ROOT / "opus", revision=OPUS_TAG)
+    opus_src  = ROOT / "opus"
+    opus_inc  = (opus_src / "include").as_posix()
+    if compiler in ("1", "2"):
+        opus_lib_d = (opus_src / "build_Debug"   / "Debug"   / "opus.lib").as_posix()
+        opus_lib_r = (opus_src / "build_Release" / "Release" / "opus.lib").as_posix()
+    else:
+        opus_lib_d = (opus_src / "build_Debug"   / "libopus.a").as_posix()
+        opus_lib_r = (opus_src / "build_Release" / "libopus.a").as_posix()
+    opus_flags = "-DBUILD_SHARED_LIBS=OFF"
+    if compiler in ("1", "2"):
+        opus_flags += f" {_audio_md}"
+    build_with_cmake("opus", opus_src, "Debug",   opus_flags, generator)
+    build_with_cmake("opus", opus_src, "Release", opus_flags, generator)
+
+    # --------------------------------------------------------------------
+    # libopusfile (Opus file reader — needs libogg + libopus)
+    # --------------------------------------------------------------------
+    clone_git("opusfile", OPUSFILE_TAG, OPUSFILE_GIT, ROOT / "opusfile", revision=OPUSFILE_TAG)
+    opusfile_src = ROOT / "opusfile"
+    # opusfile uses autotools; generate a CMakeLists.txt so it builds with our
+    # standard cmake pipeline (same pattern as ImGui / ImGuizmo).
+    write_opusfile_cmakelists(opusfile_src, ROOT / "ogg", ROOT / "opus")
+    opusfile_flags = "-DBUILD_SHARED_LIBS=OFF"
+    if compiler in ("1", "2"):
+        opusfile_flags += f" {_audio_md}"
+    build_with_cmake("opusfile", opusfile_src, "Debug",   opusfile_flags, generator)
+    build_with_cmake("opusfile", opusfile_src, "Release", opusfile_flags, generator)
 
     print("\n------------------------------------------------------------------------")
     print("All dependencies have been downloaded and compiled successfully.")

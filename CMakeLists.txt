@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(Kemena3dSdk
     VERSION 0.0.1
     DESCRIPTION "Kemena3D SDK"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 # C++ standard
@@ -40,6 +40,12 @@ endif()
 file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_SOURCE_DIR}/Source/src/*.cpp)
 file(GLOB_RECURSE HEADER_FILES ${CMAKE_CURRENT_SOURCE_DIR}/Source/include/*.h)
 
+# Miniaudio custom decoder backends (libvorbis, libopus)
+file(GLOB MINIAUDIO_DECODER_SRC
+    ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libvorbis/miniaudio_libvorbis.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libopus/miniaudio_libopus.c
+)
+
 # Collect AngelScript add_on sources, and remove generateheader.cpp (which defines main)
 file(GLOB_RECURSE ANGELSCRIPT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/angelscript/add_on/*.cpp)
 list(REMOVE_ITEM ANGELSCRIPT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/angelscript/add_on/scriptbuilder/generateheader.cpp")
@@ -63,7 +69,7 @@ file(GLOB IMGUIZMO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.c
 file(GLOB IMGUIZMO_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.h)
 
 # Create library target
-add_library(kemena3d ${SRC_FILES} ${HEADER_FILES} ${ANGELSCRIPT_SRC} ${ANGELSCRIPT_HEADERS} ${IMGUI_SRC} ${IMGUI_HEADERS} ${IMGUI_BACKENDS} ${IMGUIZMO_SRC} ${IMGUIZMO_HEADERS})
+add_library(kemena3d ${SRC_FILES} ${HEADER_FILES} ${ANGELSCRIPT_SRC} ${ANGELSCRIPT_HEADERS} ${IMGUI_SRC} ${IMGUI_HEADERS} ${IMGUI_BACKENDS} ${IMGUIZMO_SRC} ${IMGUIZMO_HEADERS} ${MINIAUDIO_DECODER_SRC})
 
 set_target_properties(kemena3d PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -96,6 +102,12 @@ target_include_directories(kemena3d
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glm
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/stb
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libvorbis
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libopus
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/ogg/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/vorbis/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opus/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opusfile/include
         ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/nlohmann/include
 		${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/portable-file-dialogs
 		${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src
@@ -259,6 +271,66 @@ else()
     )
 endif()
 
+# ---------------------------------------------------------------------------
+# Audio codec libraries (libogg, libvorbis, libvorbisfile, libopus, libopusfile)
+# Built from source by Kemena3D/download_dep.py.
+# ---------------------------------------------------------------------------
+set(OGG_ROOT        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/ogg)
+set(VORBIS_ROOT     ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/vorbis)
+set(OPUS_ROOT       ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opus)
+set(OPUSFILE_ROOT   ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opusfile)
+
+if(MSVC)
+    # MSVC multi-config → libs land in build_<Config>/<Config>/ (ogg, opus, opusfile)
+    # or build_<Config>/lib/<Config>/ (vorbis which sets ARCHIVE_OUTPUT_DIRECTORY).
+    target_link_libraries(kemena3d PUBLIC
+        $<IF:$<CONFIG:Debug>,
+            ${OGG_ROOT}/build_Debug/Debug/ogg.lib,
+            ${OGG_ROOT}/build_Release/Release/ogg.lib
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${VORBIS_ROOT}/build_Debug/lib/Debug/vorbis.lib,
+            ${VORBIS_ROOT}/build_Release/lib/Release/vorbis.lib
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${VORBIS_ROOT}/build_Debug/lib/Debug/vorbisfile.lib,
+            ${VORBIS_ROOT}/build_Release/lib/Release/vorbisfile.lib
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${OPUS_ROOT}/build_Debug/Debug/opus.lib,
+            ${OPUS_ROOT}/build_Release/Release/opus.lib
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${OPUSFILE_ROOT}/build_Debug/Debug/opusfile.lib,
+            ${OPUSFILE_ROOT}/build_Release/Release/opusfile.lib
+        >
+    )
+else()
+    # MinGW / Unix single-config → libs land directly in build_<Config>/
+    target_link_libraries(kemena3d PUBLIC
+        $<IF:$<CONFIG:Debug>,
+            ${OGG_ROOT}/build_Debug/libogg.a,
+            ${OGG_ROOT}/build_Release/libogg.a
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${VORBIS_ROOT}/build_Debug/lib/libvorbis.a,
+            ${VORBIS_ROOT}/build_Release/lib/libvorbis.a
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${VORBIS_ROOT}/build_Debug/lib/libvorbisfile.a,
+            ${VORBIS_ROOT}/build_Release/lib/libvorbisfile.a
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${OPUS_ROOT}/build_Debug/libopus.a,
+            ${OPUS_ROOT}/build_Release/libopus.a
+        >
+        $<IF:$<CONFIG:Debug>,
+            ${OPUSFILE_ROOT}/build_Debug/libopusfile.a,
+            ${OPUSFILE_ROOT}/build_Release/libopusfile.a
+        >
+    )
+endif()
+
 # Jolt Physics (always static; output path differs between generators)
 #   MSVC:   build_Debug/Debug/Jolt.lib
 #   Xcode:  build_Debug/Debug/libJolt.a
@@ -392,6 +464,19 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/slang/build_Release/d
 )
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/miniaudio/
     DESTINATION include FILES_MATCHING PATTERN "*.h*"
+)
+# Audio codec headers (ogg, vorbis, opus, opusfile)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/ogg/include/
+    DESTINATION include/ogg FILES_MATCHING PATTERN "*.h*"
+)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/vorbis/include/
+    DESTINATION include/vorbis FILES_MATCHING PATTERN "*.h*"
+)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opus/include/
+    DESTINATION include/opus FILES_MATCHING PATTERN "*.h*"
+)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opusfile/include/
+    DESTINATION include/opus FILES_MATCHING PATTERN "*.h*"
 )
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Jolt/
     DESTINATION include/Jolt FILES_MATCHING PATTERN "*.h*"
