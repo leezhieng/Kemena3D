@@ -28,6 +28,7 @@ namespace kemena
         float   volume      = 1.0f;  ///< 0 = silent, 1 = full volume.
         float   pitch       = 1.0f;  ///< 1 = normal speed/pitch.
         bool    spatialize  = true;  ///< false = 2-D (no panning/attenuation).
+        int     attenuationModel = 2; ///< 0 = none, 1 = inverse, 2 = linear, 3 = exponential.
         float   minDistance = 1.0f;  ///< Distance at which attenuation begins.
         float   maxDistance = 100.0f;///< Distance beyond which the sound is inaudible.
     };

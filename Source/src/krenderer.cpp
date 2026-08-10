@@ -253,8 +253,8 @@ out vec3 vNormal;
 
 void main()
 {
-    vec4  pos = vec4(vertexPosition, 1.0);
-    vec3  n   = vertexNormal;
+    vec4  pos = vec4(0.0);
+    vec3  n   = vec3(0.0);
     float tw  = 0.0;
 
     for (int i = 0; i < MAX_BONE_INFLUENCE; i++)
@@ -262,7 +262,7 @@ void main()
         int  id = boneIDs[i];
         float w = weights[i];
         if (id < 0 || w <= 0.0) continue;
-        if (id >= MAX_BONES) { pos = vec4(vertexPosition, 1.0); n = vertexNormal; break; }
+        if (id >= MAX_BONES) { pos = vec4(0.0); n = vec3(0.0); break; }
         pos += finalBonesMatrices[id] * vec4(vertexPosition, 1.0) * w;
         n   += mat3(transpose(inverse(finalBonesMatrices[id]))) * vertexNormal * w;
         tw  += w;
@@ -1511,7 +1511,7 @@ uniform mat4 finalBonesMatrices[MAX_BONES];
 
 void main()
 {
-    vec4 totalPosition = vec4(vertexPosition, 1.0);
+    vec4 totalPosition = vec4(0.0);
     float totalWeight = 0.0;
 
     for(int i = 0; i < MAX_BONE_INFLUENCE; i++)
@@ -1519,7 +1519,7 @@ void main()
         int boneID = boneIDs[i];
         float weight = weights[i];
         if(boneID == -1 || weight <= 0.0) continue;
-        if(boneID >= MAX_BONES) { totalPosition = vec4(vertexPosition, 1.0); break; }
+        if(boneID >= MAX_BONES) { totalPosition = vec4(0.0); break; }
         totalPosition += (finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0)) * weight;
         totalWeight += weight;
     }
@@ -1701,7 +1701,7 @@ uniform mat4 finalBonesMatrices[MAX_BONES];
 
 void main()
 {
-    vec4 totalPosition = vec4(vertexPosition, 1.0);
+    vec4 totalPosition = vec4(0.0);
     float totalWeight = 0.0;
 
     for (int i = 0; i < MAX_BONE_INFLUENCE; i++)
@@ -1709,7 +1709,7 @@ void main()
         int boneID = boneIDs[i];
         float weight = weights[i];
         if (boneID == -1 || weight <= 0.0) continue;
-        if (boneID >= MAX_BONES) { totalPosition = vec4(vertexPosition, 1.0); break; }
+        if (boneID >= MAX_BONES) { totalPosition = vec4(0.0); break; }
         totalPosition += (finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0)) * weight;
         totalWeight += weight;
     }
@@ -2443,6 +2443,58 @@ void main() { outColor = vec4(lineColor, 1.0); }
             appendLine(verts, nTR, fTR);
 
             drawLines(verts, kVec3(0.5f, 0.8f, 1.0f)); // light blue
+        }
+
+        // --- Audio sources (spatialized only) ---
+        // Walk the full scene graph so nested objects show their audio radii.
+        {
+            const kVec3 audioMinColor(0.2f, 0.85f, 0.7f); // teal for min distance
+            const kVec3 audioMaxColor(0.4f, 0.6f, 0.9f);  // light blue for max distance
+
+            std::function<void(kObject *)> walkAudio = [&](kObject *node)
+            {
+                if (!node || !node->getActive())
+                    return;
+
+                if (selectedSet.find(node->getUuid()) != selectedSet.end())
+                {
+                    const auto &sources = node->getAudioSources();
+                    if (!sources.empty())
+                    {
+                        node->calculateModelMatrix();
+                        kVec3 pos = node->getGlobalPosition();
+
+                        for (const kAudioSource &src : sources)
+                        {
+                            if (!src.spatialize)
+                                continue;
+
+                            // Min distance — teal rings
+                            {
+                                std::vector<float> verts;
+                                appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 1, 0), src.minDistance);
+                                appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 0, 1), src.minDistance);
+                                appendCircle(verts, pos, kVec3(0, 1, 0), kVec3(0, 0, 1), src.minDistance);
+                                drawLines(verts, audioMinColor);
+                            }
+                            // Max distance — blue rings
+                            {
+                                std::vector<float> verts;
+                                appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 1, 0), src.maxDistance);
+                                appendCircle(verts, pos, kVec3(1, 0, 0), kVec3(0, 0, 1), src.maxDistance);
+                                appendCircle(verts, pos, kVec3(0, 1, 0), kVec3(0, 0, 1), src.maxDistance);
+                                drawLines(verts, audioMaxColor);
+                            }
+                        }
+                    }
+                }
+
+                for (kObject *child : node->getChildren())
+                    walkAudio(child);
+            };
+
+            if (scene->getRootNode())
+                walkAudio(scene->getRootNode());
         }
 
         // --- Physics shapes (green wireframe for any selected object) -----

@@ -192,7 +192,7 @@ namespace kemena
         float fov         = 45.0f;                   ///< Vertical FOV in degrees.
         float nearClip    = 0.1f;                    ///< Near clipping distance.
         float farClip     = 100.0f;                  ///< Far clipping distance.
-        float aspectRatio = 1.0f;                    ///< Viewport aspect ratio.
+        float aspectRatio = 4.0f / 3.0f;             ///< Viewport aspect ratio (4:3 default).
         kString sceneUuid = "";                      ///< Scene UUID this camera renders (empty = default).
     };
 }

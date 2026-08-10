@@ -93,6 +93,30 @@ namespace kemena
          */
         void setSpatialization(bool enable);
 
+        /**
+         * @brief Sets the minimum distance at which attenuation begins (3D spatial only).
+         * @param distance World-space distance below which volume remains at maximum.
+         */
+        void setMinDistance(float distance);
+
+        /**
+         * @brief Sets the maximum distance beyond which the sound is inaudible (3D spatial only).
+         * @param distance World-space distance beyond which volume is zero.
+         */
+        void setMaxDistance(float distance);
+
+        /**
+         * @brief Sets the attenuation model used for 3D spatialization.
+         * @param model 0 = none, 1 = inverse (default), 2 = linear, 3 = exponential.
+         */
+        void setAttenuationModel(int model);
+
+        /**
+         * @brief Sets the rolloff factor for inverse/exponential attenuation models.
+         * @param rolloff Rolloff factor (default 1.0).  Lower = slower falloff.
+         */
+        void setRolloff(float rolloff);
+
         // --- State queries ---------------------------------------------------
 
         /** @brief Returns true if the sound is currently playing. */

@@ -619,6 +619,7 @@ namespace kemena
                     {"volume",        as.volume},
                     {"pitch",         as.pitch},
                     {"spatialize",    as.spatialize},
+                    {"attenuation_model", as.attenuationModel},
                     {"min_distance",  as.minDistance},
                     {"max_distance",  as.maxDistance},
                 });

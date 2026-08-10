@@ -127,6 +127,31 @@ namespace kemena
             ma_sound_set_spatialization_enabled(&m_impl->sound, enable ? MA_TRUE : MA_FALSE);
     }
 
+    void kAudio::setMinDistance(float distance)
+    {
+        if (m_impl->initialized)
+            ma_sound_set_min_distance(&m_impl->sound, distance);
+    }
+
+    void kAudio::setMaxDistance(float distance)
+    {
+        if (m_impl->initialized)
+            ma_sound_set_max_distance(&m_impl->sound, distance);
+    }
+
+    void kAudio::setAttenuationModel(int model)
+    {
+        if (m_impl->initialized)
+            ma_sound_set_attenuation_model(&m_impl->sound,
+                                           static_cast<ma_attenuation_model>(model));
+    }
+
+    void kAudio::setRolloff(float rolloff)
+    {
+        if (m_impl->initialized)
+            ma_sound_set_rolloff(&m_impl->sound, rolloff);
+    }
+
     // --- State queries -------------------------------------------------------
 
     bool kAudio::isPlaying() const

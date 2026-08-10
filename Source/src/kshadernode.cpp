@@ -747,7 +747,7 @@ out vec3 v_N;
 
 void main()
 {
-    vec4  totalPos       = vec4(vertexPosition, 1.0);
+    vec4  totalPos       = vec4(0.0);
     vec3  totalNormal    = vec3(0.0);
     vec3  totalTangent   = vec3(0.0);
     vec3  totalBitangent = vec3(0.0);
@@ -760,10 +760,10 @@ void main()
         if (boneID < 0 || weight <= 0.0) continue;
         if (boneID >= MAX_BONES)
         {
-            totalPos       = vec4(vertexPosition, 1.0);
-            totalNormal    = vertexNormal;
-            totalTangent   = vertexTangent;
-            totalBitangent = vertexBitangent;
+            totalPos       = vec4(0.0);
+            totalNormal    = vec3(0.0);
+            totalTangent   = vec3(0.0);
+            totalBitangent = vec3(0.0);
             break;
         }
         totalPos       += finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0) * weight;

@@ -795,6 +795,7 @@ namespace kemena
                 as.volume       = aj.value("volume", 1.0f);
                 as.pitch        = aj.value("pitch", 1.0f);
                 as.spatialize   = aj.value("spatialize", true);
+                as.attenuationModel = aj.value("attenuation_model", 2);
                 as.minDistance  = aj.value("min_distance", 1.0f);
                 as.maxDistance  = aj.value("max_distance", 100.0f);
                 result->addAudioSource(as);
