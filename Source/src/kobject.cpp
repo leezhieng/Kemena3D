@@ -717,6 +717,9 @@ namespace kemena
         // the material from this UUID on load (see Manager::loadObjectFromJson).
         if (!materialUuid.empty()) data["material_uuid"] = materialUuid;
 
+        // Assigned animator asset — only emit when set.
+        if (!animatorRef.empty())  data["animator_ref"] = animatorRef;
+
         // Per-sub-mesh overrides for import-derived sub-meshes (which are not
         // serialized as children): material plus any changed flag (active,
         // visible, static, shadows). Re-applied on load by index-path. The key

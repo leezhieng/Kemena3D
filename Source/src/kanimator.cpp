@@ -84,7 +84,11 @@ namespace kemena
             {
                 int   index   = it->second.id;
                 kMat4 offset  = it->second.offset;
-                finalBoneMatrices[index] = globalTransformation * offset;
+                // Guard against skeletons larger than MAX_BONES: the renderer
+                // can only upload MAX_BONES matrices, so clamp the write to the
+                // allocated palette instead of indexing out of bounds.
+                if (index >= 0 && index < (int)finalBoneMatrices.size())
+                    finalBoneMatrices[index] = globalTransformation * offset;
             }
         }
 

@@ -231,20 +231,26 @@ namespace kemena
 
         /**
          * @brief Recursively converts an Assimp node into a kMesh hierarchy.
-         * @param node   Assimp node to process.
-         * @param scene  Parent Assimp scene.
-         * @param parent Parent kMesh node (nullptr for root).
+         * @param node          Assimp node to process.
+         * @param scene         Parent Assimp scene.
+         * @param parent        Parent kMesh node (nullptr for root).
+         * @param globalBoneMap Shared bone-name → info map, used to assign
+         *                       globally unique bone palette indices across
+         *                       every submesh in the hierarchy.
          * @return kMesh node corresponding to @p node.
          */
-        kMesh *processNode(aiNode *node, const aiScene *scene, kMesh *parent);
+        kMesh *processNode(aiNode *node, const aiScene *scene, kMesh *parent,
+                           std::map<kString, kBoneInfo> &globalBoneMap);
 
         /**
          * @brief Converts a single Assimp mesh into a kMesh.
-         * @param mesh  Assimp mesh descriptor.
-         * @param scene Parent Assimp scene (for texture lookups).
+         * @param mesh          Assimp mesh descriptor.
+         * @param scene         Parent Assimp scene (for texture lookups).
+         * @param globalBoneMap Shared bone-name → info map (see processNode).
          * @return Heap-allocated kMesh; caller takes ownership.
          */
-        kMesh *processMesh(aiMesh *mesh, const aiScene *scene);
+        kMesh *processMesh(aiMesh *mesh, const aiScene *scene,
+                           std::map<kString, kBoneInfo> &globalBoneMap);
 #endif // KEMENA_NO_ASSIMP
 
         /**
@@ -276,12 +282,14 @@ namespace kemena
 
         /**
          * @brief Reads bone-weight data from an Assimp mesh and populates a kMesh.
-         * @param mesh     Destination kMesh.
-         * @param meshData Source Assimp mesh.
-         * @param scene    Parent Assimp scene.
+         * @param mesh          Destination kMesh.
+         * @param meshData      Source Assimp mesh.
+         * @param scene         Parent Assimp scene.
+         * @param globalBoneMap Shared bone-name → info map for unique palette ids.
          */
 #ifndef KEMENA_NO_ASSIMP
-        void extractBoneWeightForVertices(kMesh *mesh, aiMesh *meshData, const aiScene *scene);
+        void extractBoneWeightForVertices(kMesh *mesh, aiMesh *meshData, const aiScene *scene,
+                                          std::map<kString, kBoneInfo> &globalBoneMap);
 #endif
 
         /**

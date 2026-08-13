@@ -38,48 +38,40 @@ namespace kemena
             }
         }
 
-        // Walks `setMesh` recursively, creating a kBone per channel and
-        // updating the mesh's bone-info map with any joints not yet known.
-        void bindAnimationToMesh(const aiAnimation *animation,
-                                 kMesh *setMesh,
-                                 std::vector<kBone> &bones,
-                                 std::vector<kMesh *> &meshes)
+        // Collects every kMesh node in the hierarchy. The final bone matrices
+        // are written later by matching animation node names against each
+        // mesh's own (already-populated) bone-info map.
+        void collectMeshes(kMesh *setMesh, std::vector<kMesh *> &meshes)
         {
             if (!setMesh) return;
             meshes.push_back(setMesh);
-
-            if (!setMesh->getVertices().empty())
-            {
-                std::map<kString, kBoneInfo> &meshBoneInfoMap = setMesh->getBoneInfoMap();
-                int boneCount = setMesh->getBoneCount();
-
-                for (unsigned int i = 0; i < animation->mNumChannels; ++i)
-                {
-                    auto *channel = animation->mChannels[i];
-                    if (!channel ||
-                        (channel->mNumPositionKeys == 0 &&
-                         channel->mNumRotationKeys == 0 &&
-                         channel->mNumScalingKeys  == 0))
-                    {
-                        std::cerr << "kSkeletalAnimation: invalid channel " << i << "\n";
-                        continue;
-                    }
-
-                    kString boneName = channel->mNodeName.data;
-                    if (meshBoneInfoMap.find(boneName) == meshBoneInfoMap.end())
-                    {
-                        meshBoneInfoMap[boneName].id = boneCount;
-                        ++boneCount;
-                    }
-                    bones.emplace_back(boneName,
-                                       meshBoneInfoMap[boneName].id,
-                                       channel);
-                }
-            }
-
             for (kObject *child : setMesh->getChildren())
                 if (child && child->getType() == NODE_TYPE_MESH)
-                    bindAnimationToMesh(animation, (kMesh *)child, bones, meshes);
+                    collectMeshes(static_cast<kMesh *>(child), meshes);
+        }
+
+        // Creates one kBone per animation channel so the animator can look up
+        // an animated node by name. The bone id stored on kBone is unused —
+        // the animator resolves palette indices by matching node names against
+        // each mesh's bone-info map, so we must NOT insert extra entries here.
+        void bindAnimationToMesh(const aiAnimation *animation,
+                                 std::vector<kBone> &bones)
+        {
+            for (unsigned int i = 0; i < animation->mNumChannels; ++i)
+            {
+                auto *channel = animation->mChannels[i];
+                if (!channel ||
+                    (channel->mNumPositionKeys == 0 &&
+                     channel->mNumRotationKeys == 0 &&
+                     channel->mNumScalingKeys  == 0))
+                {
+                    std::cerr << "kSkeletalAnimation: invalid channel " << i << "\n";
+                    continue;
+                }
+
+                kString boneName = channel->mNodeName.data;
+                bones.emplace_back(boneName, 0, channel);
+            }
         }
     }
 
@@ -92,7 +84,9 @@ namespace kemena
         Assimp::Importer importer;
         const aiScene *scene = importer.ReadFile(
             animationPath, aiProcess_Triangulate | aiProcess_LimitBoneWeights);
-        assert(scene && scene->mRootNode);
+
+        if (!scene || !scene->mRootNode)
+            throw std::runtime_error("kSkeletalAnimation: failed to load " + animationPath);
 
         if (scene->mNumAnimations == 0)
             throw std::runtime_error("kSkeletalAnimation: no animations in " + animationPath);
@@ -102,7 +96,8 @@ namespace kemena
         ticksPerSecond = (int)animation->mTicksPerSecond;
 
         readHierarchyData(rootNode, scene->mRootNode);
-        bindAnimationToMesh(animation, setMesh, bones, meshes);
+        collectMeshes(setMesh, meshes);
+        bindAnimationToMesh(animation, bones);
     }
 #endif // KEMENA_NO_ASSIMP
 

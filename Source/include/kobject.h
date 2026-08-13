@@ -466,6 +466,22 @@ namespace kemena
         kString getMaterialUuid() const              { return materialUuid; }
 
         /**
+         * @brief Sets the source .animator asset UUID assigned to this object.
+         *
+         * Stored alongside the object in the world file. The Game panel runtime
+         * resolves this UUID to load and instantiate the animator controller.
+         *
+         * @param uuid Animator asset UUID, or empty string for none.
+         */
+        void    setAnimatorRef(const kString &uuid) { animatorRef = uuid; }
+
+        /**
+         * @brief Returns the assigned .animator asset UUID.
+         * @return Animator asset UUID, or empty string if none is assigned.
+         */
+        kString getAnimatorRef() const              { return animatorRef; }
+
+        /**
          * @brief Marks this node as an import-derived sub-mesh.
          *
          * Sub-meshes produced when loading a model file are reconstructed from
@@ -604,6 +620,7 @@ namespace kemena
 
         kMaterial       *material      = nullptr;
         kString          materialUuid;  ///< Source .mat asset UUID (for save/load).
+        kString          animatorRef;   ///< Source .animator asset UUID (for save/load).
         bool             importChild   = false; ///< true → import-derived sub-mesh, excluded from serialization.
         kPhysicsObject  *physicsObject = nullptr;
 

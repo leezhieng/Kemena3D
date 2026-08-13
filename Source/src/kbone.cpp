@@ -227,6 +227,9 @@ namespace kemena
         kVec3 finalPosition = glm::mix(positions[p0Index].position, positions[p1Index].position, scaleFactor);
         return glm::translate(kMat4(1.0f), finalPosition);*/
 
+        if (positionCount == 0)
+            return kMat4(1.0f);
+
         if (positionCount == 1)
             return glm::translate(kMat4(1.0f), positions[0].position);
 
@@ -271,6 +274,9 @@ namespace kemena
         kQuat finalRotation = glm::slerp(rotations[p0Index].orientation, rotations[p1Index].orientation, scaleFactor);
         finalRotation = glm::normalize(finalRotation);
         return glm::toMat4(finalRotation);*/
+
+        if (rotationCount == 0)
+            return kMat4(1.0f);
 
         if (rotationCount == 1)
         {
@@ -317,6 +323,9 @@ namespace kemena
         float scaleFactor = getScaleFactor(scales[p0Index].timeStamp, scales[p1Index].timeStamp, animationTime);
         kVec3 finalScale = glm::mix(scales[p0Index].scale, scales[p1Index].scale, scaleFactor);
         return glm::scale(kMat4(1.0f), finalScale);*/
+
+        if (scaleCount == 0)
+            return kMat4(1.0f);
 
         if (scaleCount == 1)
             return glm::scale(kMat4(1.0f), scales[0].scale);

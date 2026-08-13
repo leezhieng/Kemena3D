@@ -610,7 +610,8 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
         directory = fileName.substr(0, fileName.find_last_of('/'));
 
         // kMesh* model = processNode(scene->mRootNode, scene, rootMesh);
-        rootMesh = processNode(scene->mRootNode, scene, nullptr);
+        std::map<kString, kBoneInfo> globalBoneMap;
+        rootMesh = processNode(scene->mRootNode, scene, nullptr, globalBoneMap);
 
         /*std::cout << "Meshes: " << scene->mNumMeshes << std::endl;
         std::cout << "Materials: " << scene->mNumMaterials << std::endl;
@@ -746,14 +747,16 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
 			std::cout << "Scene has no meshes!" << std::endl;
 		}
 
-		rootMesh = processNode(scene->mRootNode, scene, nullptr);
+		std::map<kString, kBoneInfo> globalBoneMap;
+		rootMesh = processNode(scene->mRootNode, scene, nullptr, globalBoneMap);
 		if (rootMesh)
 			rootMesh->setLoaded(true);
 		return rootMesh;
 	}
 
-    kMesh *kAssetManager::processNode(aiNode *node, const aiScene *scene, kMesh *parent)
-    {
+		  kMesh *kAssetManager::processNode(aiNode *node, const aiScene *scene, kMesh *parent,
+		                                    std::map<kString, kBoneInfo> &globalBoneMap)
+		  {
         kMesh *newMesh;
 
         //std::cout << "Mesh count:" << node->mNumMeshes << std::endl;
@@ -765,7 +768,7 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             {
                 aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
 
-                newMesh = processMesh(mesh, scene);
+                newMesh = processMesh(mesh, scene, globalBoneMap);
                 if (newMesh != nullptr && parent != nullptr)
                 {
                     newMesh->setParent(parent);
@@ -784,7 +787,7 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             {
                 if (node->mChildren[i] != nullptr && scene != nullptr && newMesh != nullptr)
                 {
-                    processNode(node->mChildren[i], scene, newMesh);
+                    processNode(node->mChildren[i], scene, newMesh, globalBoneMap);
                 }
             }
         }
@@ -794,7 +797,8 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
         return newMesh;
     }
 
-    kMesh *kAssetManager::processMesh(aiMesh *mesh, const aiScene *scene)
+    kMesh *kAssetManager::processMesh(aiMesh *mesh, const aiScene *scene,
+                                      std::map<kString, kBoneInfo> &globalBoneMap)
     {
         kMesh *newMesh = new kMesh();
         newMesh->setName(kString(mesh->mName.C_Str()));
@@ -856,7 +860,7 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             */
 
             // Extract bone weights for vertices
-            extractBoneWeightForVertices(newMesh, mesh, scene);
+            extractBoneWeightForVertices(newMesh, mesh, scene, globalBoneMap);
 
             // Debug: Print bone data after extraction
             // std::cout << "Bone data after extraction:" << std::endl;
@@ -933,63 +937,42 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
     }
 
 #ifndef KEMENA_NO_ASSIMP
-    void kAssetManager::extractBoneWeightForVertices(kMesh *mesh, aiMesh *meshData, const aiScene *scene)
+    void kAssetManager::extractBoneWeightForVertices(kMesh *mesh, aiMesh *meshData, const aiScene *scene,
+                                                     std::map<kString, kBoneInfo> &globalBoneMap)
     {
         if (meshData->mNumBones > 0)
         {
+            std::map<kString, kBoneInfo> &boneInfoMap = mesh->getBoneInfoMap();
+
             for (unsigned int boneIndex = 0; boneIndex < meshData->mNumBones; ++boneIndex)
             {
-                int boneID = -1;
                 kString boneName = meshData->mBones[boneIndex]->mName.C_Str();
-
-                // Debug: Print bone name and offset matrix
-                // std::cout << "Processing bone: " << boneName << std::endl;
                 kMat4 offset = kAssimpInternal::toMat4(meshData->mBones[boneIndex]->mOffsetMatrix);
-                // std::cout << "Offset matrix: " << glm::to_string(offset) << std::endl;
 
-                std::map<kString, kBoneInfo> &boneInfoMap = mesh->getBoneInfoMap();
-
-                // Check if the bone already exists in the boneInfoMap
-                if (boneInfoMap.find(boneName) == boneInfoMap.end())
+                // Assign one globally unique palette index per bone name across
+                // every submesh.  Without this, each submesh numbers its bones
+                // from 0 again and the shared finalBoneMatrices palette gets
+                // overwritten with the wrong submesh's transforms.
+                int boneID;
+                auto git = globalBoneMap.find(boneName);
+                if (git == globalBoneMap.end())
                 {
-                    // std::cout << "not found" << std::endl;
-
-                    // Add new bone to the boneInfoMap
-                    kBoneInfo newBoneInfo;
-                    newBoneInfo.id = mesh->getBoneCount();
-                    newBoneInfo.offset = offset;
-
-                    boneInfoMap.insert(std::make_pair(boneName, newBoneInfo));
-
-                    boneID = mesh->getBoneCount();
-                    mesh->setBoneCount(mesh->getBoneCount() + 1);
-
-                    // std::cout << mesh->getBoneCount() << std::endl;
-
-                    // Debug: Print new bone info
-                    // std::cout << "New bone added 1: " << boneName << ", ID: " << newBoneInfo.id << ", offset: " << glm::to_string(newBoneInfo.offset) << std::endl;
-                    // std::cout << "New bone added 2: " << boneName << ", ID: " << mesh->getBoneInfoMap()[boneName].id << ", offset: " << glm::to_string(mesh->getBoneInfoMap()[boneName].offset) << std::endl;
+                    kBoneInfo info;
+                    info.id     = (int)globalBoneMap.size();
+                    info.offset = offset;
+                    globalBoneMap[boneName] = info;
+                    boneID = info.id;
                 }
                 else
                 {
-                    // std::cout << "found" << std::endl;
-
-                    kBoneInfo &boneInfo = boneInfoMap[boneName];
-
-                    // Use existing bone ID
-                    boneID = boneInfo.id;
-
-                    // Replace
-                    kBoneInfo newBoneInfo;
-                    newBoneInfo.id = boneID;
-                    newBoneInfo.offset = offset;
-
-                    // std::cout << "Replace: " << glm::to_string(*newBoneInfo.offset) << std::endl;
-
-                    boneInfoMap[boneName] = newBoneInfo;
+                    boneID = git->second.id;
                 }
 
-                assert(boneID != -1);
+                // Store the global id alongside this mesh's own offset matrix.
+                kBoneInfo local;
+                local.id     = boneID;
+                local.offset = offset;
+                boneInfoMap[boneName] = local;
 
                 // Assign bone weights to vertices
                 auto weights = meshData->mBones[boneIndex]->mWeights;
@@ -1000,26 +983,12 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
                     size_t vertexID = weights[weightIndex].mVertexId;
                     float weight = weights[weightIndex].mWeight;
 
-                    // Debug: Print vertex bone data
-                    // std::cout << "Vertex " << vertexID << ": BoneID = " << boneID << ", Weight = " << weight << std::endl;
-
                     // Assign bone ID and weight to the vertex
                     mesh->setVertexBoneData(vertexID, boneID, weight);
                 }
             }
 
-            // After loading bones (in extractBoneWeightForVertices)
-            /*
-            std::cout << "Bone Info Map after loading:" << std::endl;
-            for (const auto& pair : mesh->getBoneInfoMap())
-            {
-                std::cout << "Bone " << pair.first << " Offset: " << glm::to_string(pair.second.offset) << std::endl;
-            }
-            */
-        }
-        else
-        {
-            // std::cout << "No bones found in mesh: " << mesh->getName() << std::endl;
+            mesh->setBoneCount((int)boneInfoMap.size());
         }
     }
 #endif // KEMENA_NO_ASSIMP
