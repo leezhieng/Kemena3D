@@ -77,18 +77,26 @@ def choose(prompt, options: dict, env=None):
         raise ValueError(f"Invalid choice: {choice}")
     return choice
 
+def is_multi_config(generator):
+    """Return True for generators that select the config at build time (VS, Xcode)."""
+    return generator.startswith("Visual Studio") or generator == "Xcode"
+
 def build_with_cmake(generator, build_mode, args, make_program=None):
     build_dir = ROOT / f"build_{build_mode}"
     install_prefix = ROOT / f"Output/{build_mode}"
 
     make_arg = f'-DCMAKE_MAKE_PROGRAM="{make_program}" ' if make_program else ""
 
+    # Only single-config generators (Unix Makefiles, MinGW Makefiles) need
+    # CMAKE_BUILD_TYPE at configure time; multi-config ones use --config at build.
+    build_type_arg = "" if is_multi_config(generator) else f"-DCMAKE_BUILD_TYPE={build_mode} "
+
     # Configure
     run_cmd(
         f'cmake -S "{ROOT}" -B "{build_dir}" -G "{generator}" '
         f'{make_arg}'
         f'-DCMAKE_INSTALL_PREFIX="{install_prefix}" '
-        f'-DCMAKE_BUILD_TYPE={build_mode} {args}'
+        f'{build_type_arg}{args}'
     )
 
     # Build

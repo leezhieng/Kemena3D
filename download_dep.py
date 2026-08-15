@@ -201,8 +201,15 @@ def build_with_cmake(name: str, srcdir: Path, build_mode: str, args: str, genera
     print(f"[CMAKE] Building {name} ({build_mode}) with {generator}")
     build_dir = srcdir / f"build_{build_mode}"
     ensure_dir(build_dir)
-    # Configure
-    run(f'cmake -G "{generator}" -S . -B "{build_dir}" -DCMAKE_BUILD_TYPE={build_mode} {args}', cwd=srcdir)
+    # Configure — only single-config generators need CMAKE_BUILD_TYPE at configure
+    # time; multi-config ones (VS, Xcode) select it via --config at build time.
+    build_type_arg = "" if is_multi_config(generator) else f"-DCMAKE_BUILD_TYPE={build_mode} "
+    # -Wno-deprecated silences CMake's "Compatibility with CMake < 3.x will be
+    # removed" warnings, and -Wno-author silences the "cmake_minimum_required()
+    # should be called prior to project()" warning. Many third-party dependencies
+    # (AngelScript, glew, recast, ogg/vorbis/opus, ...) trigger these on newer
+    # CMake releases; both are suppressed without touching their sources.
+    run(f'cmake -G "{generator}" -S . -B "{build_dir}" -Wno-deprecated -Wno-author {build_type_arg}{args}', cwd=srcdir)
     # Build
     if is_multi_config(generator):
         run(f'cmake --build "{build_dir}" --config {build_mode}', cwd=srcdir)
@@ -491,6 +498,13 @@ def main():
     # Force /MD for all configs so CRT is consistent across all static dependencies.
     # CMP0091=NEW is required for CMAKE_MSVC_RUNTIME_LIBRARY to take effect on older cmake_minimum_required.
     _md = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+    # Reused below: SDL and GLEW must also be forced to /MD, otherwise their Debug
+    # builds default to /MDd (MSVCRTD) and produce LNK4098 at the studio link time.
+    _md_flags = _md
+    # SDL3 declares a recent cmake_minimum_required, so CMP0091 is already NEW and
+    # the CMAKE_POLICY_DEFAULT_CMP0091 override would be flagged as an unused CLI
+    # variable. Only the runtime-library selection is needed there.
+    _md_simple = "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
     if compiler in ("1", "2"):
         # VS
         if linking == "1":
@@ -513,12 +527,14 @@ def main():
     # --------------------------------------------------------------------
     clone_git("SDL", "v3.2.16", SDL_GIT, ROOT / "sdl", branch=SDL_BRANCH)
     if compiler in ("1", "2"):
+        # Force /MD so the static SDL3 lib matches the CRT used by the studio and
+        # all other static dependencies (avoids LNK4098 MSVCRTD/MSVCRT conflict).
         if linking == "1":
-            build_with_cmake("SDL", ROOT / "sdl", "Debug",  "-DSDL_STATIC=ON -DSDL_SHARED=OFF", generator)
-            build_with_cmake("SDL", ROOT / "sdl", "Release","-DSDL_STATIC=ON -DSDL_SHARED=OFF", generator)
+            build_with_cmake("SDL", ROOT / "sdl", "Debug",  f"-DSDL_STATIC=ON -DSDL_SHARED=OFF {_md_simple}", generator)
+            build_with_cmake("SDL", ROOT / "sdl", "Release",f"-DSDL_STATIC=ON -DSDL_SHARED=OFF {_md_simple}", generator)
         else:
-            build_with_cmake("SDL", ROOT / "sdl", "Debug",  "-DSDL_STATIC=OFF -DSDL_SHARED=ON", generator)
-            build_with_cmake("SDL", ROOT / "sdl", "Release","-DSDL_STATIC=OFF -DSDL_SHARED=ON", generator)
+            build_with_cmake("SDL", ROOT / "sdl", "Debug",  f"-DSDL_STATIC=OFF -DSDL_SHARED=ON {_md_simple}", generator)
+            build_with_cmake("SDL", ROOT / "sdl", "Release",f"-DSDL_STATIC=OFF -DSDL_SHARED=ON {_md_simple}", generator)
     else:
         cc = f'-DCMAKE_C_COMPILER="{GCC_PATH}" -DCMAKE_CXX_COMPILER="{GPP_PATH}"'
         if linking == "1":
@@ -562,13 +578,19 @@ def main():
     download_and_extract_zip("GLEW", "v2.2.0", GLEW_SRC_ZIP, ROOT / "glew", flatten=True)
     glew_src = ROOT / "glew" / "build" / "cmake"
     glew_policy = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+    # Force /MD for MSVC so the static GLEW lib matches the CRT used by the studio
+    # and all other static dependencies (avoids LNK4098 MSVCRTD/MSVCRT conflict).
+    # NOTE: GLEW's CMakeLists calls project() BEFORE cmake_minimum_required(2.8.12),
+    # which breaks the CMP0091/CMAKE_MSVC_RUNTIME_LIBRARY mechanism and leaves Debug
+    # on /MDd (MSVCRTD). Override CMAKE_C_FLAGS_DEBUG directly instead.
+    glew_md = f"{glew_policy} {_md_flags} -DCMAKE_C_FLAGS_DEBUG=\"/MD /Zi /Ob0 /Od\""
     if compiler in ("1", "2"):
         if linking == "1":
-            build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
-            build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=OFF {glew_policy}", generator)
+            build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=OFF {glew_md}", generator)
+            build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=OFF {glew_md}", generator)
         else:
-            build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=ON {glew_policy}", generator)
-            build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=ON {glew_policy}", generator)
+            build_with_cmake("GLEW", glew_src, "Debug",   f"-DBUILD_SHARED_LIBS=ON {glew_md}", generator)
+            build_with_cmake("GLEW", glew_src, "Release", f"-DBUILD_SHARED_LIBS=ON {glew_md}", generator)
     else:
         cc = f'-DCMAKE_C_COMPILER="{GCC_PATH}" -DCMAKE_CXX_COMPILER="{GPP_PATH}"'
         if linking == "1":
@@ -798,8 +820,11 @@ def main():
     ogg_src  = ROOT / "ogg"
     ogg_inc  = (ogg_src / "include").as_posix()
     # Determine ogg library output paths per toolchain / config
-    # Force /MD for MSVC so CRT is consistent across all static dependencies.
-    _audio_md = "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
+    # CMake ≥4.0 removed compatibility with cmake_minimum_required < 3.5, and the
+    # audio codecs (libogg/libvorbis/libopus) still declare 2.8-era versions, so
+    # pass the minimum policy version to allow configuring anyway.
+    # Also force /MD for MSVC so CRT is consistent across all static dependencies.
+    _audio_md = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL"
     if compiler in ("1", "2"):  # MSVC
         ogg_lib_d = (ogg_src / "build_Debug"   / "Debug"   / "ogg.lib").as_posix()
         ogg_lib_r = (ogg_src / "build_Release" / "Release" / "ogg.lib").as_posix()
