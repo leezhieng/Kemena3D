@@ -574,7 +574,15 @@ namespace kemena
         data["type"] = m_serializeType.empty() ? "mesh" : m_serializeType;
         data["visible"] = getVisible();
         data["static"] = getStatic();
-        data["file_name"] = getFileName();
+        // Referenced assets are resolved by UUID relative to the project
+        // (Library/ImportedAssets/<uuid>.glb), so never serialize the absolute
+        // machine-specific path for them — it breaks the world file when the
+        // project is cloned to another computer. Only keep file_name for raw,
+        // non-referenced mesh files.
+        if (getRefName().empty())
+            data["file_name"] = getFileName();
+        else
+            data["file_name"] = "";
         data["reference"] = getRefName();
         data["cast_shadow"] = getCastShadow();
         data["receive_shadow"] = getReceiveShadow();
