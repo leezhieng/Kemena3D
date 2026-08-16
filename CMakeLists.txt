@@ -402,6 +402,10 @@ endif()
 # Suppress some noisy warnings
 if (MSVC)
     target_compile_options(kemena3d PRIVATE /wd4996 /FS)
+    # Treat source and execution charsets as UTF-8. Without this MSVC assumes
+    # the active code page (e.g. 936/GBK) and emits C4819 for UTF-8 files
+    # containing non-ASCII characters (e.g. ©, –, emoji in comments).
+    target_compile_options(kemena3d PRIVATE /utf-8)
 else()
     target_compile_options(kemena3d PRIVATE -Wno-deprecated-declarations)
 endif()

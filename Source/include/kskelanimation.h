@@ -68,6 +68,16 @@ namespace kemena
         /** @brief All meshes this animation has been bound to. */
         std::vector<kMesh *> getMeshes();
 
+        /**
+         * @brief Scales the clip's translational animation data by @p scale.
+         *
+         * Scales every node's local translation in the hierarchy and every bone's
+         * position keyframes. Rotations and scales are untouched. This mirrors
+         * the import-time uniform-scale pass and is used by the editor to bind a
+         * clip imported at a different unit scale onto a target mesh.
+         */
+        void applyTranslationScale(float scale);
+
         /** @brief Set the playback speed multiplier (1.0 = normal). */
         void setSpeed(float newSpeed);
 

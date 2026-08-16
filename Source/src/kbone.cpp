@@ -65,6 +65,14 @@ namespace kemena
         localTransform = translation * rotation * scale;
     }
 
+    void kBone::scalePositions(float scale)
+    {
+        if (scale == 1.0f)
+            return;
+        for (auto &p : positions)
+            p.position *= scale;
+    }
+
     const kMat4 kBone::getLocalTransform() const
     {
         return localTransform;

@@ -103,6 +103,24 @@ namespace kemena
 
     kSkeletalAnimation::kSkeletalAnimation() = default;
 
+    static void scaleNodeDataTranslations(kNodeData &node, float scale)
+    {
+        node.transformation[3][0] *= scale;
+        node.transformation[3][1] *= scale;
+        node.transformation[3][2] *= scale;
+        for (auto &child : node.children)
+            scaleNodeDataTranslations(child, scale);
+    }
+
+    void kSkeletalAnimation::applyTranslationScale(float scale)
+    {
+        if (scale == 1.0f)
+            return;
+        scaleNodeDataTranslations(rootNode, scale);
+        for (auto &bone : bones)
+            bone.scalePositions(scale);
+    }
+
     kBone *kSkeletalAnimation::findBone(const kString &name)
     {
         auto it = std::find_if(bones.begin(), bones.end(),

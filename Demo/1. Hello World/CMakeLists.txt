@@ -49,8 +49,8 @@ if(WIN32)
 
         # Third-party static libraries (MSVC names; Debug variants use a suffix)
         SDL3-static
-        $<$<CONFIG:Debug>:assimp-vc143-mtd>
-        $<$<CONFIG:Release>:assimp-vc143-mt>
+        $<$<CONFIG:Debug>:assimp-vc${MSVC_TOOLSET_VERSION}-mtd>
+        $<$<CONFIG:Release>:assimp-vc${MSVC_TOOLSET_VERSION}-mt>
         $<$<CONFIG:Debug>:angelscriptd>
         $<$<CONFIG:Release>:angelscript>
         imgui
@@ -86,7 +86,10 @@ if(WIN32)
     # WIN32_EXECUTABLE uses /SUBSYSTEM:WINDOWS which expects WinMain; SDL is built
     # with SDL_MAIN_HANDLED so the app keeps a standard int main() — point the
     # Release entry at the C runtime startup that calls it.
-    target_link_options(demo PRIVATE $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>)
+    target_link_options(demo PRIVATE
+        /IGNORE:4099
+        $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>
+    )
 
 elseif(APPLE)
     # macOS isn't wired up in the dependency build yet.

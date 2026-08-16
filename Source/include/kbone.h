@@ -62,6 +62,15 @@ namespace kemena
         void update(float animationTime);
 
         /**
+         * @brief Scales all position keyframes by @p scale.
+         *
+         * Used by the editor when a clip is imported at a different unit scale
+         * than the mesh it is bound to — mirrors the import-time uniform-scale
+         * pass so translations land in the target mesh's space.
+         */
+        void scalePositions(float scale);
+
+        /**
          * @brief Returns the interpolated local transform for the current time.
          * @return 4x4 local-space bone transform matrix.
          */
