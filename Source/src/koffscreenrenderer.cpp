@@ -506,8 +506,8 @@ void main()
             autoCamera.setLookAt(center);
             autoCamera.setFOV(fov);
             autoCamera.setAspectRatio((float)width / (float)height);
-            autoCamera.setNearClip(std::max(0.001f, dist - heAlongDir - radius * 0.05f));
-            autoCamera.setFarClip(dist + heAlongDir + radius * 0.05f);
+            autoCamera.setNearClip(std::max(0.0001f, dist - heAlongDir - radius * 0.05f));
+            autoCamera.setFarClip(dist * 1000.0f);
             cam = &autoCamera;
         }
 
@@ -576,8 +576,8 @@ void main()
             autoCamera.setLookAt(center);
             autoCamera.setFOV(fov);
             autoCamera.setAspectRatio((float)width / (float)height);
-            autoCamera.setNearClip(std::max(0.001f, dist - heAlongDir - radius * 0.05f));
-            autoCamera.setFarClip(dist + heAlongDir + radius * 0.05f);
+            autoCamera.setNearClip(std::max(0.0001f, dist - heAlongDir - radius * 0.05f));
+            autoCamera.setFarClip(dist * 1000.0f);
             cam = &autoCamera;
         }
 

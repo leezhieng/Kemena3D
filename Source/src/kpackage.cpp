@@ -71,9 +71,8 @@ typedef NTSTATUS (WINAPI *pRtlDecompressBuffer)(
     PULONG FinalUncompressedSize
 );
 
-#define COMPRESSION_FORMAT_LZNT1 0x0002
-#define COMPRESSION_ENGINE_MAXIMUM 0x0100
-
+// COMPRESSION_FORMAT_LZNT1 and COMPRESSION_ENGINE_MAXIMUM are already
+// defined by <winnt.h> (pulled in via <windows.h> above).
 static pRtlCompressBuffer   s_RtlCompressBuffer   = nullptr;
 static pRtlDecompressBuffer s_RtlDecompressBuffer = nullptr;
 static bool                  s_winApiInitialized   = false;
