@@ -21,6 +21,7 @@ namespace kemena
             case kScriptNodeType::EventOnDestroy:   return "On Destroy";
             case kScriptNodeType::Branch:           return "Branch";
             case kScriptNodeType::Print:            return "Print";
+            case kScriptNodeType::PrintConsole:     return "Print Console";
             case kScriptNodeType::SetPosition:      return "Set Position";
             case kScriptNodeType::SetRotation:      return "Set Rotation";
             case kScriptNodeType::SetScale:         return "Set Scale";
@@ -54,6 +55,36 @@ namespace kemena
             case kScriptNodeType::And:              return "And";
             case kScriptNodeType::Or:               return "Or";
             case kScriptNodeType::Not:              return "Not";
+            case kScriptNodeType::GetAction:         return "Get Action";
+            case kScriptNodeType::GetActionPressed:  return "Get Action Pressed";
+            case kScriptNodeType::GetActionReleased: return "Get Action Released";
+            case kScriptNodeType::GetAxis:           return "Get Axis";
+            case kScriptNodeType::PlaySound:            return "Play Sound";
+            case kScriptNodeType::StopAllSounds:        return "Stop All Sounds";
+            case kScriptNodeType::SetMasterVolume:      return "Set Master Volume";
+            case kScriptNodeType::GetMasterVolume:      return "Get Master Volume";
+            case kScriptNodeType::SetListenerPosition:  return "Set Listener Position";
+            case kScriptNodeType::SetListenerDirection: return "Set Listener Direction";
+            case kScriptNodeType::GetAnimator:          return "Get Animator";
+            case kScriptNodeType::PlayAnimation:        return "Play Animation";
+            case kScriptNodeType::SetAnimatorSpeed:     return "Set Animator Speed";
+            case kScriptNodeType::SetAnimatorTime:      return "Set Animator Time";
+            case kScriptNodeType::GetAnimatorSpeed:     return "Get Animator Speed";
+            case kScriptNodeType::SetAnimatorBool:      return "Set Boolean";
+            case kScriptNodeType::SetAnimatorFloat:     return "Set Float";
+            case kScriptNodeType::SetAnimatorInt:       return "Set Integer";
+            case kScriptNodeType::SetAnimatorTrigger:   return "Set Trigger";
+            case kScriptNodeType::GetPhysicsObject:     return "Get Physics Object";
+            case kScriptNodeType::ApplyForce:           return "Apply Force";
+            case kScriptNodeType::ApplyImpulse:         return "Apply Impulse";
+            case kScriptNodeType::ApplyTorque:          return "Apply Torque";
+            case kScriptNodeType::SetLinearVelocity:    return "Set Linear Velocity";
+            case kScriptNodeType::SetAngularVelocity:   return "Set Angular Velocity";
+            case kScriptNodeType::GetPhysicsVelocity:   return "Get Physics Velocity";
+            case kScriptNodeType::GetPhysicsPosition:   return "Get Physics Position";
+            case kScriptNodeType::SetPhysicsGravity:    return "Set Physics Gravity";
+            case kScriptNodeType::GetPhysicsGravity:    return "Get Physics Gravity";
+            case kScriptNodeType::IsPhysicsActive:      return "Is Physics Active";
             default:                                return "Node";
         }
     }
@@ -150,6 +181,14 @@ namespace kemena
         };
         auto in  = [&](const kString &nm, kScriptPinType t) { add(n.inputs,  nm, t, false); };
         auto out = [&](const kString &nm, kScriptPinType t) { add(n.outputs, nm, t, true); };
+        auto defFloatPin = [&](const kString &nm, float v) {
+            for (auto &p : n.inputs)
+                if (p.name == nm) { p.defFloat = v; return; }
+        };
+        auto defVecPin = [&](const kString &nm, float x, float y, float z) {
+            for (auto &p : n.inputs)
+                if (p.name == nm) { p.defVec[0] = x; p.defVec[1] = y; p.defVec[2] = z; return; }
+        };
 
         switch (type)
         {
@@ -170,6 +209,7 @@ namespace kemena
                 break;
 
             case kScriptNodeType::Print:
+            case kScriptNodeType::PrintConsole:
                 in("", kScriptPinType::Exec);
                 in("Text", kScriptPinType::String);
                 out("", kScriptPinType::Exec);
@@ -298,6 +338,184 @@ namespace kemena
             case kScriptNodeType::Not:
                 in("A", kScriptPinType::Bool);
                 out("Result", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::GetAction:
+            case kScriptNodeType::GetActionPressed:
+            case kScriptNodeType::GetActionReleased:
+                out("Value", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::GetAxis:
+                out("Value", kScriptPinType::Float);
+                break;
+
+            // --- Audio -------------------------------------------------------
+            case kScriptNodeType::PlaySound:
+                in("", kScriptPinType::Exec);
+                in("File", kScriptPinType::String);
+                in("Loop", kScriptPinType::Bool);
+                in("Volume", kScriptPinType::Float);
+                in("Pitch", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                defFloatPin("Volume", 1.0f);
+                defFloatPin("Pitch", 1.0f);
+                break;
+
+            case kScriptNodeType::StopAllSounds:
+                in("", kScriptPinType::Exec);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetMasterVolume:
+                in("", kScriptPinType::Exec);
+                in("Volume", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                defFloatPin("Volume", 1.0f);
+                break;
+
+            case kScriptNodeType::GetMasterVolume:
+                out("Value", kScriptPinType::Float);
+                break;
+
+            case kScriptNodeType::SetListenerPosition:
+                in("", kScriptPinType::Exec);
+                in("Position", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetListenerDirection:
+                in("", kScriptPinType::Exec);
+                in("Forward", kScriptPinType::Vec3);
+                in("Up", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                defVecPin("Forward", 0.0f, 0.0f, -1.0f);
+                defVecPin("Up", 0.0f, 1.0f, 0.0f);
+                break;
+
+            // --- Animation ---------------------------------------------------
+            case kScriptNodeType::GetAnimator:
+                in("Target", kScriptPinType::Object);
+                out("Animator", kScriptPinType::Object);
+                break;
+
+            case kScriptNodeType::PlayAnimation:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Index", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetAnimatorSpeed:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Speed", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                defFloatPin("Speed", 1.0f);
+                break;
+
+            case kScriptNodeType::SetAnimatorTime:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Time", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::GetAnimatorSpeed:
+                in("Animator", kScriptPinType::Object);
+                out("Speed", kScriptPinType::Float);
+                break;
+
+            case kScriptNodeType::SetAnimatorBool:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                in("Value", kScriptPinType::Bool);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetAnimatorFloat:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                in("Value", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetAnimatorInt:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                in("Value", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetAnimatorTrigger:
+                in("", kScriptPinType::Exec);
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                out("", kScriptPinType::Exec);
+                break;
+
+            // --- Physics -----------------------------------------------------
+            case kScriptNodeType::GetPhysicsObject:
+                in("Target", kScriptPinType::Object);
+                out("Physics", kScriptPinType::Object);
+                break;
+
+            case kScriptNodeType::ApplyForce:
+                in("", kScriptPinType::Exec);
+                in("Physics", kScriptPinType::Object);
+                in("Force", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::ApplyImpulse:
+                in("", kScriptPinType::Exec);
+                in("Physics", kScriptPinType::Object);
+                in("Impulse", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::ApplyTorque:
+                in("", kScriptPinType::Exec);
+                in("Physics", kScriptPinType::Object);
+                in("Torque", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::SetLinearVelocity:
+            case kScriptNodeType::SetAngularVelocity:
+                in("", kScriptPinType::Exec);
+                in("Physics", kScriptPinType::Object);
+                in("Velocity", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::GetPhysicsVelocity:
+                in("Physics", kScriptPinType::Object);
+                out("Velocity", kScriptPinType::Vec3);
+                break;
+
+            case kScriptNodeType::GetPhysicsPosition:
+                in("Physics", kScriptPinType::Object);
+                out("Position", kScriptPinType::Vec3);
+                break;
+
+            case kScriptNodeType::SetPhysicsGravity:
+                in("", kScriptPinType::Exec);
+                in("Gravity", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
+                defVecPin("Gravity", 0.0f, -9.81f, 0.0f);
+                break;
+
+            case kScriptNodeType::GetPhysicsGravity:
+                out("Gravity", kScriptPinType::Vec3);
+                break;
+
+            case kScriptNodeType::IsPhysicsActive:
+                in("Physics", kScriptPinType::Object);
+                out("Active", kScriptPinType::Bool);
                 break;
 
             default:
@@ -548,7 +766,14 @@ namespace kemena
             {
                 const kScriptGraphLink *link = g.incomingLink(n.id, pin.id);
                 if (!link)
+                {
+                    if (pin.type == kScriptPinType::Object)
+                    {
+                        if (pin.name == "Animator") return "getAnimator(getSelf())";
+                        if (pin.name == "Physics")  return "getSelf().getPhysicsObject()";
+                    }
                     return pinDefault(pin);
+                }
                 const kScriptGraphNode *src = g.findNode(link->fromNode);
                 if (!src)
                     return pinDefault(pin);
@@ -636,6 +861,34 @@ namespace kemena
                     case kScriptNodeType::Not:
                         return "(!" + emitNamedInput(n, "A") + ")";
 
+                    case kScriptNodeType::GetAction:
+                        return "getAction(\"" + escapeString(n.valueStr) + "\")";
+                    case kScriptNodeType::GetActionPressed:
+                        return "getActionPressed(\"" + escapeString(n.valueStr) + "\")";
+                    case kScriptNodeType::GetActionReleased:
+                        return "getActionReleased(\"" + escapeString(n.valueStr) + "\")";
+                    case kScriptNodeType::GetAxis:
+                        return "getAxis(\"" + escapeString(n.valueStr) + "\")";
+
+                    case kScriptNodeType::GetMasterVolume:
+                        return "getMasterVolume()";
+
+                    case kScriptNodeType::GetAnimator:
+                        return "getAnimator(" + emitNamedInput(n, "Target") + ")";
+                    case kScriptNodeType::GetAnimatorSpeed:
+                        return emitNamedInput(n, "Animator") + ".getSpeed()";
+
+                    case kScriptNodeType::GetPhysicsObject:
+                        return emitNamedInput(n, "Target") + ".getPhysicsObject()";
+                    case kScriptNodeType::GetPhysicsVelocity:
+                        return emitNamedInput(n, "Physics") + ".getLinearVelocity()";
+                    case kScriptNodeType::GetPhysicsPosition:
+                        return emitNamedInput(n, "Physics") + ".getPosition()";
+                    case kScriptNodeType::GetPhysicsGravity:
+                        return "getPhysicsGravity()";
+                    case kScriptNodeType::IsPhysicsActive:
+                        return emitNamedInput(n, "Physics") + ".isActive()";
+
                     default:
                         return "0";
                 }
@@ -648,6 +901,8 @@ namespace kemena
                 {
                     case kScriptNodeType::Print:
                         return "print(" + emitNamedInput(n, "Text") + ");";
+                    case kScriptNodeType::PrintConsole:
+                        return "printConsole(" + emitNamedInput(n, "Text") + ");";
                     case kScriptNodeType::SetPosition:
                         return emitNamedInput(n, "Target") + ".setPosition(" +
                                emitNamedInput(n, "Value") + ");";
@@ -671,6 +926,65 @@ namespace kemena
                         return n.valueStr.empty()
                                    ? kString("// Set Variable: no variable selected")
                                    : n.valueStr + " = " + emitNamedInput(n, "Value") + ";";
+
+                    case kScriptNodeType::PlaySound:
+                        return "playAudio(" + emitNamedInput(n, "File") + ", " +
+                               emitNamedInput(n, "Loop") + ", " +
+                               emitNamedInput(n, "Volume") + ", " +
+                               emitNamedInput(n, "Pitch") + ");";
+                    case kScriptNodeType::StopAllSounds:
+                        return "stopAllAudio();";
+                    case kScriptNodeType::SetMasterVolume:
+                        return "setMasterVolume(" + emitNamedInput(n, "Volume") + ");";
+                    case kScriptNodeType::SetListenerPosition:
+                        return "setListenerPosition(" + emitNamedInput(n, "Position") + ");";
+                    case kScriptNodeType::SetListenerDirection:
+                        return "setListenerDirection(" + emitNamedInput(n, "Forward") + ", " +
+                               emitNamedInput(n, "Up") + ");";
+
+                    case kScriptNodeType::PlayAnimation:
+                        return emitNamedInput(n, "Animator") + ".playAnimation(" +
+                               emitNamedInput(n, "Index") + ");";
+                    case kScriptNodeType::SetAnimatorSpeed:
+                        return emitNamedInput(n, "Animator") + ".setSpeed(" +
+                               emitNamedInput(n, "Speed") + ");";
+                    case kScriptNodeType::SetAnimatorTime:
+                        return emitNamedInput(n, "Animator") + ".setCurrentTime(" +
+                               emitNamedInput(n, "Time") + ");";
+                    case kScriptNodeType::SetAnimatorBool:
+                        return emitNamedInput(n, "Animator") + ".setBool(" +
+                               emitNamedInput(n, "Name") + ", " +
+                               emitNamedInput(n, "Value") + ");";
+                    case kScriptNodeType::SetAnimatorFloat:
+                        return emitNamedInput(n, "Animator") + ".setFloat(" +
+                               emitNamedInput(n, "Name") + ", " +
+                               emitNamedInput(n, "Value") + ");";
+                    case kScriptNodeType::SetAnimatorInt:
+                        return emitNamedInput(n, "Animator") + ".setInt(" +
+                               emitNamedInput(n, "Name") + ", " +
+                               emitNamedInput(n, "Value") + ");";
+                    case kScriptNodeType::SetAnimatorTrigger:
+                        return emitNamedInput(n, "Animator") + ".setTrigger(" +
+                               emitNamedInput(n, "Name") + ");";
+
+                    case kScriptNodeType::ApplyForce:
+                        return emitNamedInput(n, "Physics") + ".applyForce(" +
+                               emitNamedInput(n, "Force") + ");";
+                    case kScriptNodeType::ApplyImpulse:
+                        return emitNamedInput(n, "Physics") + ".applyImpulse(" +
+                               emitNamedInput(n, "Impulse") + ");";
+                    case kScriptNodeType::ApplyTorque:
+                        return emitNamedInput(n, "Physics") + ".applyTorque(" +
+                               emitNamedInput(n, "Torque") + ");";
+                    case kScriptNodeType::SetLinearVelocity:
+                        return emitNamedInput(n, "Physics") + ".setLinearVelocity(" +
+                               emitNamedInput(n, "Velocity") + ");";
+                    case kScriptNodeType::SetAngularVelocity:
+                        return emitNamedInput(n, "Physics") + ".setAngularVelocity(" +
+                               emitNamedInput(n, "Velocity") + ");";
+                    case kScriptNodeType::SetPhysicsGravity:
+                        return "setPhysicsGravity(" + emitNamedInput(n, "Gravity") + ");";
+
                     default:
                         return "";
                 }

@@ -13,6 +13,7 @@
 #include "kmesh.h"
 
 #include <glm/gtx/string_cast.hpp>
+#include <unordered_map>
 
 namespace kemena
 {
@@ -57,6 +58,51 @@ namespace kemena
         /** @brief Currently active skeletal clip. */
         kSkeletalAnimation *getCurrentAnimation();
 
+        /** @brief Number of registered skeletal clips. */
+        int getAnimationCount() const { return (int)animations.size(); }
+
+        /** @brief Registered skeletal clip by index, or nullptr. */
+        kSkeletalAnimation *getAnimation(int index) const
+        {
+            return (index >= 0 && index < (int)animations.size()) ? animations[index] : nullptr;
+        }
+
+        /** @brief Plays a registered clip by index and resets time. */
+        void playAnimation(int index);
+
+        /** @brief Current playback position in ticks. */
+        float getCurrentTime() const { return currentTime; }
+
+        // --- Named controller variables -------------------------------------
+        // The editor animator controller drives state transitions from named
+        // variables (bool / float / int / trigger). Scripts can set them through
+        // these methods; the editor samples getVariables() each step.
+
+        /** @brief Raw variable access used by the editor controller. */
+        void  setVariable(const kString &name, float value) { variables[name] = value; }
+
+        /** @brief Reads a variable value (0.0f when absent). */
+        float getVariable(const kString &name) const
+        {
+            auto it = variables.find(name);
+            return it != variables.end() ? it->second : 0.0f;
+        }
+
+        /** @brief All named controller variables (editor transition evaluation). */
+        const std::unordered_map<kString, float> &getVariables() const { return variables; }
+
+        /** @brief Sets a bool variable (stored as 0/1). */
+        void setBool(const kString &name, bool value)     { variables[name] = value ? 1.0f : 0.0f; }
+
+        /** @brief Sets a float variable. */
+        void setFloat(const kString &name, float value)   { variables[name] = value; }
+
+        /** @brief Sets an integer variable (stored as a float). */
+        void setInt(const kString &name, int value)       { variables[name] = (float)value; }
+
+        /** @brief Fires a trigger variable (sets it to 1.0f). */
+        void setTrigger(const kString &name)              { variables[name] = 1.0f; }
+
         /**
          * @brief Recursively computes bone transforms for the entire skeleton.
          * @param node            Current hierarchy node being processed.
@@ -98,6 +144,9 @@ namespace kemena
 
         // Non-skeletal placeholder.
         kAnimation                      *objectAnimation = nullptr;       ///< Registered non-skeletal clip (not yet driven).
+
+        // Named controller variables (bool/float/int/trigger stored as floats).
+        std::unordered_map<kString, float> variables;                     ///< Controller variable values.
 
         // Playback time / pacing.
         float currentTime    = 0.0f;                                      ///< Current playback position in ticks.

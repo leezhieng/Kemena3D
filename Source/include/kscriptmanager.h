@@ -37,6 +37,9 @@
 namespace kemena
 {
     class kObject;
+    class kInputManager;
+    class kAudioManager;
+    class kPhysicsManager;
 
     /**
      * @brief How a script asset's source is authored.
@@ -199,6 +202,11 @@ namespace kemena
                                                   int row, int col, const char *message)>;
 
         /**
+         * @brief Sink for runtime script output (print / log / printConsole).
+         */
+        using ScriptPrintHandler = std::function<void(const char *message)>;
+
+        /**
          * @brief Installs a process-wide handler for compiler messages.
          *
          * When set, every script compile error/warning/info is forwarded here
@@ -206,6 +214,21 @@ namespace kemena
          * Pass an empty handler to revert to stdout-only.
          */
         static void setMessageHandler(MessageHandler handler);
+
+        /**
+         * @brief Installs a process-wide handler for runtime script print output.
+         *
+         * When set, script `print`/`log`/`printConsole` calls are forwarded here
+         * (e.g. to the editor Console panel). Pass an empty handler to revert to
+         * stdout-only behaviour.
+         */
+        static void setScriptPrintHandler(ScriptPrintHandler handler);
+
+        /**
+         * @brief Dispatches a runtime script print message to the handler or stdout.
+         * @param message NUL-terminated message text.
+         */
+        static void handleScriptPrint(const char *message);
 
         // --- Script-asset registry ------------------------------------------
 
@@ -302,6 +325,33 @@ namespace kemena
         float getFixedDeltaTime() const { return fixedDeltaTime; }
 
         /**
+         * @brief Attaches the named input manager scripts use for getAction()/getAxis().
+         * @param manager Input manager instance; may be null to disable input queries.
+         */
+        void setInputManager(kInputManager *manager) { inputManager = manager; }
+
+        /** @brief Returns the attached named input manager, or nullptr. */
+        kInputManager *getInputManager() const { return inputManager; }
+
+        /**
+         * @brief Attaches the audio manager scripts use for playback and listener control.
+         * @param manager Audio manager instance; may be null to disable audio calls.
+         */
+        void setAudioManager(kAudioManager *manager) { audioManager = manager; }
+
+        /** @brief Returns the attached audio manager, or nullptr. */
+        kAudioManager *getAudioManager() const { return audioManager; }
+
+        /**
+         * @brief Attaches the physics manager scripts use for global physics queries.
+         * @param manager Physics manager instance; may be null to disable those calls.
+         */
+        void setPhysicsManager(kPhysicsManager *manager) { physicsManager = manager; }
+
+        /** @brief Returns the attached physics manager, or nullptr. */
+        kPhysicsManager *getPhysicsManager() const { return physicsManager; }
+
+        /**
          * @brief Invokes one lifecycle function on an instance, if it defines it.
          * @param inst Instance to dispatch to.
          * @param evt  Lifecycle event.
@@ -334,6 +384,9 @@ namespace kemena
         unsigned int      moduleCounter  = 0;       ///< Ensures unique module names.
         float             deltaTime      = 0.0f;    ///< Per-frame delta time for scripts.
         float             fixedDeltaTime = 0.0f;    ///< Fixed-step delta time for scripts.
+        kInputManager    *inputManager   = nullptr; ///< Named input manager for script input queries.
+        kAudioManager    *audioManager   = nullptr; ///< Audio manager for script playback calls.
+        kPhysicsManager  *physicsManager = nullptr; ///< Physics manager for script gravity/raycast calls.
 
         std::map<kString, kScriptAsset>     assets;    ///< Script assets by UUID.
         std::map<kString, kScriptInstance*> instances; ///< Live instances by component UUID.

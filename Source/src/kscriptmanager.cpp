@@ -58,6 +58,9 @@ namespace kemena
     // Process-wide host sink for compiler messages (see setMessageHandler()).
     static kScriptManager::MessageHandler g_messageHandler;
 
+    // Process-wide host sink for runtime script print output.
+    static kScriptManager::ScriptPrintHandler g_scriptPrintHandler;
+
     static void messageCallback(const asSMessageInfo *msg, void * /*param*/)
     {
         const char *type = "ERR ";
@@ -73,6 +76,21 @@ namespace kemena
     void kScriptManager::setMessageHandler(MessageHandler handler)
     {
         g_messageHandler = std::move(handler);
+    }
+
+    void kScriptManager::setScriptPrintHandler(ScriptPrintHandler handler)
+    {
+        g_scriptPrintHandler = std::move(handler);
+    }
+
+    void kScriptManager::handleScriptPrint(const char *message)
+    {
+        if (g_scriptPrintHandler)
+        {
+            g_scriptPrintHandler(message ? message : "");
+            return;
+        }
+        printf("[Script] %s\n", message ? message : "");
     }
 
     // -----------------------------------------------------------------------

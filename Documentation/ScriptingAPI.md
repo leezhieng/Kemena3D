@@ -85,6 +85,23 @@ void OnDestroy() { print("Goodbye"); }
 | `float getFixedDeltaTime()`   | Seconds per fixed step (constant). Use in `FixedUpdate()`. |
 | `void print(const string &in)`| Writes a line to the editor **Console** (prefixed `[Script]`). |
 | `void log(const string &in)`  | Identical to `print` — an alias. |
+| `void printConsole(const string &in)` | Alias that writes a line to the editor **Console** panel. |
+| `bool getAction(const string &in)`        | True while the named action is held (keyboard, mouse, or gamepad). |
+| `bool getActionPressed(const string &in)` | True only on the frame the named action was pressed. |
+| `bool getActionReleased(const string &in)`| True only on the frame the named action was released. |
+| `float getAxis(const string &in)`         | Current value of the named axis, in `[-1, 1]`. |
+| `kAudio@ loadAudio(const string &in)`     | Loads an audio clip (WAV/MP3/OGG/FLAC). Manager-owned; see [`kAudio`](#6-type-kaudio). |
+| `void unloadAudio(kAudio@)`               | Stops and destroys a previously loaded clip. |
+| `void playAudio(const string &in, bool loop, float volume, float pitch)` | One-shot helper: loads, configures, and plays a clip. |
+| `void stopAllAudio()`                     | Stops every clip currently managed by the audio system. |
+| `void setMasterVolume(float)`             | Sets the global output volume (`0` mute, `1` full). |
+| `float getMasterVolume()`                 | Reads the global output volume. |
+| `void setListenerPosition(const kVec3 &in)`       | Moves the 3-D audio listener. |
+| `void setListenerDirection(const kVec3 &in fwd, const kVec3 &in up)` | Orients the 3-D audio listener. |
+| `void setListenerVelocity(const kVec3 &in)`       | Sets the listener velocity for Doppler shift. |
+| `kAnimator@ getAnimator(kObject@)`        | Returns the skeletal animator of a mesh object, or `null`. |
+| `void setPhysicsGravity(const kVec3 &in)` | Sets the global gravity vector (m/s²). |
+| `kVec3 getPhysicsGravity()`               | Reads the global gravity vector. |
 
 ```angelscript
 void Start()
@@ -152,6 +169,11 @@ Unit vectors derived from the object's current rotation.
 | `bool getActive() const`        | Whether the object is active. |
 | `void setActive(bool)`          | Activate/deactivate (fires `OnEnable`/`OnDisable`). |
 | `kObject@ getParent() const`    | The parent object, or `null` if it has no parent. |
+| `kPhysicsObject@ getPhysicsObject() const` | The physics body attached to this object, or `null`. |
+
+> `getPhysicsObject()` returns the body spawned from the object's physics
+> descriptor at play start; use the [`kPhysicsObject`](#8-type-kphysobject)
+> handle to apply forces, impulses, and velocity changes.
 
 ### Examples
 
@@ -252,7 +274,130 @@ a.x = 2.0f;                    // direct component access
 
 ---
 
-## 6. Standard library (`string`)
+## 6. Type: `kAudio`
+
+A loaded, manager-owned audio clip. Obtain one with `loadAudio()`; you never
+construct or delete it. The manager keeps it alive until `unloadAudio()` (or
+audio shutdown), so assigning the handle elsewhere is safe.
+
+| Method | Description |
+|--------|-------------|
+| `void play()`                 | Start or resume playback. |
+| `void stop()`                 | Stop playback and rewind to the start. |
+| `void pause()`                | Pause without rewinding. |
+| `void resume()`               | Resume a paused clip. |
+| `void setLooping(bool)`       | Loop indefinitely when true. |
+| `void setVolume(float)`       | Linear volume (`0` silent, `1` full). |
+| `void setPitch(float)`        | Pitch / speed multiplier (`1` normal). |
+| `void setPosition(const kVec3 &in)` | World-space emitter position for 3-D audio. |
+| `void setVelocity(const kVec3 &in)` | Emitter velocity for Doppler shift. |
+| `void setSpatialization(bool)`      | Enable/disable 3-D panning and attenuation. |
+| `void setMinDistance(float)`        | Distance where attenuation begins. |
+| `void setMaxDistance(float)`        | Distance where the sound becomes inaudible. |
+| `void setAttenuationModel(int)`     | `0` none, `1` inverse, `2` linear, `3` exponential. |
+| `void setRolloff(float)`            | Rolloff factor for inverse/exponential models. |
+| `bool isPlaying() const`           | True if currently playing. |
+| `bool isPaused() const`            | True if paused. |
+| `bool isLooping() const`           | True if looping. |
+
+```angelscript
+void Start()
+{
+    kAudio@ music = loadAudio("Assets/audio/music.ogg");
+    if (music !is null)
+    {
+        music.setLooping(true);
+        music.setVolume(0.6f);
+        music.play();
+    }
+}
+```
+
+---
+
+## 7. Type: `kAnimator` / `kSkeletalAnimation`
+
+Animators drive skeletal mesh playback and are reached through
+`getAnimator(meshObject)` (the object must be a mesh node; `null` otherwise).
+
+### `kAnimator`
+
+| Method | Description |
+|--------|-------------|
+| `void setSpeed(float)`             | Global playback speed multiplier. |
+| `float getSpeed() const`           | Current playback speed multiplier. |
+| `void setCurrentTime(float)`       | Seek the active clip to a time (ticks). |
+| `float getCurrentTime() const`     | Current playback position (ticks). |
+| `int getAnimationCount() const`    | Number of registered clips. |
+| `void playAnimation(float index)`  | Play a registered clip by index and reset time. |
+| `kSkeletalAnimation@ getCurrentAnimation() const` | The active clip, or `null`. |
+| `void setBool(const string &in, bool)`   | Set a named Bool controller variable (0/1). |
+| `void setFloat(const string &in, float)` | Set a named Float controller variable. |
+| `void setInt(const string &in, int)`     | Set a named Int controller variable. |
+| `void setInt(const string &in, float)`   | Float overload used by the visual graph (truncates). |
+| `void setTrigger(const string &in)`      | Fire a named Trigger controller variable. |
+
+### `kSkeletalAnimation`
+
+| Method | Description |
+|--------|-------------|
+| `float getDuration() const`       | Total length in ticks. |
+| `float getTicksPerSecond() const` | Tick rate used to convert ticks to seconds. |
+| `float getSpeed() const`          | Current clip speed multiplier. |
+| `void setSpeed(float)`            | Set the clip speed multiplier. |
+
+```angelscript
+void Start()
+{
+    kAnimator@ anim = getAnimator(getSelf());
+    if (anim !is null)
+    {
+        anim.setSpeed(1.5f);
+        anim.playAnimation(0);
+    }
+}
+```
+
+---
+
+## 8. Type: `kPhysicsObject`
+
+A physics body obtained from `object.getPhysicsObject()`. It is manager-owned —
+never construct or delete it.
+
+| Method | Description |
+|--------|-------------|
+| `void setPosition(const kVec3 &in)`        | Teleport the body. |
+| `kVec3 getPosition() const`                | World-space body position. |
+| `void setLinearVelocity(const kVec3 &in)`  | Set linear velocity (m/s). |
+| `void setAngularVelocity(const kVec3 &in)` | Set angular velocity (rad/s). |
+| `kVec3 getLinearVelocity() const`          | Current linear velocity. |
+| `kVec3 getAngularVelocity() const`         | Current angular velocity. |
+| `void applyForce(const kVec3 &in)`         | Apply a continuous force at the centre of mass. |
+| `void applyImpulse(const kVec3 &in)`       | Apply an instantaneous impulse. |
+| `void applyTorque(const kVec3 &in)`        | Apply a torque for one step. |
+| `void setMass(float)`                      | Change the body mass. |
+| `void setFriction(float)`                  | Friction coefficient (0–1). |
+| `void setRestitution(float)`               | Restitution / bounciness (0–1). |
+| `void setLinearDamping(float)`             | Linear drag per second. |
+| `void setAngularDamping(float)`            | Angular drag per second. |
+| `void setGravityFactor(float)`             | Gravity scale for this body (`0` = none). |
+| `bool isActive() const`                    | True if the body is simulated. |
+| `int getObjectType() const`                | Motion type (see `kPhysicsObjectType`). |
+| `int getShapeType() const`                 | Collision shape type (see `kPhysicsShapeType`). |
+
+```angelscript
+void FixedUpdate()
+{
+    kPhysicsObject@ body = getSelf().getPhysicsObject();
+    if (body !is null)
+        body.applyImpulse(kVec3(0, 5, 0)); // jump-style nudge
+}
+```
+
+---
+
+## 9. Standard library (`string`)
 
 The only standard add-on registered is **`string`**. `array<T>`, `dictionary`,
 the math add-on, and file/datetime add-ons are **not** available.
@@ -296,7 +441,7 @@ void Start()
 
 ---
 
-## 7. Complete example scripts
+## 10. Complete example scripts
 
 ### Spinner
 ```angelscript
@@ -361,7 +506,7 @@ void OnDestroy() { log("Destroyed"); }
 
 ---
 
-## 8. Notes & current limitations
+## 11. Notes & current limitations
 
 - **Rotation units:** `getRotation`/`setRotation` are in **degrees**;
   `rotate(axis, angle)` is in **radians**.

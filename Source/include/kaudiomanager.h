@@ -59,6 +59,11 @@ namespace kemena
         // --- Global controls -------------------------------------------------
 
         /**
+         * @brief Stops every sound currently managed by this audio manager.
+         */
+        void stopAll();
+
+        /**
          * @brief Sets the master output volume.
          * @param volume Linear scalar; 0.0 = mute, 1.0 = full volume.
          */

@@ -12,6 +12,7 @@
 #include "kmeshgenerator.h"
 #include "kscriptmanager.h"
 #include "kguimanager.h"
+#include "kinputmanager.h"
 #include "kaudiomanager.h"
 #include "kphysicsmanager.h"
 #include "knavmanager.h"
@@ -81,6 +82,17 @@ namespace kemena
      * @return Pointer to the initialised kGuiManager.
      */
     KEMENA3D_API kGuiManager *createGuiManager(kRenderer *renderer);
+
+    /**
+     * @brief Create and initialise the named input manager.
+     *
+     * Provides platform-independent action/axis mapping over keyboard, mouse,
+     * and gamepad devices. Call kInputManager::update() once per frame before
+     * querying actions and axes.
+     *
+     * @return Pointer to the initialised kInputManager.
+     */
+    KEMENA3D_API kInputManager *createInputManager();
 
     /**
      * @brief Create and initialise the audio manager.

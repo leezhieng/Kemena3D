@@ -35,6 +35,20 @@ int main()
     mesh->setRotation(kQuat(kVec3(0.0f, -0.4f, 0.0f))); // euler radians -> quaternion
     mesh->setMaterial(mat);
 
+    // Named input: one set of logical actions that work across keyboard, mouse,
+    // and gamepad (console) without changing gameplay code.
+    kInputManager* input = createInputManager();
+
+    input->addAxis("Turn");
+    input->bindKeyAxis("Turn", K_KEY_A, K_KEY_D);            // Keyboard: A / D
+    input->bindGamepadAxis("Turn", K_GAMEPAD_AXIS_LEFTX);    // Console: left stick X
+
+    input->addAction("Reset");
+    input->bindKey("Reset", K_KEY_SPACE);                    // Keyboard: Space
+    input->bindGamepadButton("Reset", K_GAMEPAD_BUTTON_SOUTH); // Console: A / Cross
+
+    float angle = -0.4f;
+
     // Game loop
     kSystemEvent event;
     while (window->getRunning())
@@ -46,6 +60,13 @@ int main()
                 window->setRunning(false);
             }
         }
+
+        // Refresh named input and drive the mesh from the mapped actions.
+        input->update();
+        angle += input->getAxis("Turn") * window->getTimer()->getDeltaTime() * 1.5f;
+        if (input->getActionPressed("Reset"))
+            angle = -0.4f;
+        mesh->setRotation(kQuat(kVec3(0.0f, angle, 0.0f)));
 
         // render() now takes the world as well as the scene, and resolves the
         // viewpoint from world->getMainCamera().

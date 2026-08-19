@@ -50,6 +50,16 @@ namespace kemena
         }
     }
 
+    void kAnimator::playAnimation(int index)
+    {
+        kSkeletalAnimation *clip = getAnimation(index);
+        if (clip != nullptr)
+        {
+            currentAnimation = clip;
+            currentTime = 0.0f;
+        }
+    }
+
     kSkeletalAnimation *kAnimator::getCurrentAnimation()
     {
         return currentAnimation;

@@ -127,6 +127,18 @@ namespace kemena
         return assetManager;
     }
 
+    void kWorld::setInputManager(kInputManager *manager)
+    {
+        inputManager = manager;
+        if (scriptManager)
+            scriptManager->setInputManager(manager);
+    }
+
+    kInputManager *kWorld::getInputManager()
+    {
+        return inputManager;
+    }
+
     void kWorld::removeCamera(kCamera *camera)
     {
         cameras.erase(std::remove(cameras.begin(), cameras.end(), camera), cameras.end());
@@ -395,6 +407,9 @@ namespace kemena
             }
         }
 
+        if (scriptManager)
+            scriptManager->setPhysicsManager(physicsManager);
+
         physicsBodies.clear();
         characterBodies.clear();
 
@@ -484,6 +499,9 @@ namespace kemena
         delete physicsManager;
         physicsManager = nullptr;
         physicsRunning = false;
+
+        if (scriptManager)
+            scriptManager->setPhysicsManager(nullptr);
     }
 
     // -----------------------------------------------------------------------

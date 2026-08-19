@@ -105,6 +105,47 @@ namespace kemena
         Or,      ///< Logical OR.
         Not,     ///< Logical negation.
 
+        // --- Named input (resolved through the kInputManager) ---------------
+        GetAction,         ///< Named action is currently held (bool).
+        GetActionPressed,  ///< Named action was pressed this frame (bool).
+        GetActionReleased, ///< Named action was released this frame (bool).
+        GetAxis,           ///< Named axis value (float, -1..1).
+
+        // --- Audio -----------------------------------------------------------
+        PlaySound,            ///< Plays an audio clip from a file path.
+        StopAllSounds,        ///< Stops every playing audio clip.
+        SetMasterVolume,      ///< Sets the global audio volume.
+        GetMasterVolume,      ///< Reads the global audio volume.
+        SetListenerPosition,  ///< Moves the audio listener.
+        SetListenerDirection, ///< Orients the audio listener.
+
+        // --- Animation -------------------------------------------------------
+        GetAnimator,       ///< Returns the animator attached to a mesh object.
+        PlayAnimation,     ///< Plays an animation clip by index.
+        SetAnimatorSpeed,  ///< Sets animation playback speed.
+        SetAnimatorTime,   ///< Seeks the active animation.
+        GetAnimatorSpeed,  ///< Reads animation playback speed.
+
+        // --- Physics ---------------------------------------------------------
+        GetPhysicsObject,   ///< Returns the physics body attached to an object.
+        ApplyForce,         ///< Applies a force to a physics body.
+        ApplyImpulse,       ///< Applies an impulse to a physics body.
+        ApplyTorque,        ///< Applies a torque to a physics body.
+        SetLinearVelocity,  ///< Sets the linear velocity of a physics body.
+        SetAngularVelocity, ///< Sets the angular velocity of a physics body.
+        GetPhysicsVelocity, ///< Reads a physics body's linear velocity.
+        GetPhysicsPosition, ///< Reads a physics body's position.
+        SetPhysicsGravity,  ///< Sets global physics gravity.
+        GetPhysicsGravity,  ///< Reads global physics gravity.
+        IsPhysicsActive,    ///< True if the physics body is simulated.
+
+        PrintConsole, ///< Logs a value to the editor Console panel.
+
+        SetAnimatorBool,   ///< Sets an animator Bool variable.
+        SetAnimatorFloat,  ///< Sets an animator Float variable.
+        SetAnimatorInt,    ///< Sets an animator Int variable.
+        SetAnimatorTrigger,///< Fires an animator Trigger variable.
+
         Count ///< Sentinel (number of node types).
     };
 

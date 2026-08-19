@@ -184,6 +184,35 @@ namespace kemena
 #define K_MOUSEBUTTON_RIGHT 3
 /// @}
 
+/// @name Gamepad button identifiers (mirror SDL3 SDL_GamepadButton values)
+/// @{
+#define K_GAMEPAD_BUTTON_SOUTH 0             // Bottom face button (A / Cross)
+#define K_GAMEPAD_BUTTON_EAST 1              // Right face button (B / Circle)
+#define K_GAMEPAD_BUTTON_WEST 2              // Left face button (X / Square)
+#define K_GAMEPAD_BUTTON_NORTH 3             // Top face button (Y / Triangle)
+#define K_GAMEPAD_BUTTON_BACK 4
+#define K_GAMEPAD_BUTTON_GUIDE 5
+#define K_GAMEPAD_BUTTON_START 6
+#define K_GAMEPAD_BUTTON_LEFT_STICK 7
+#define K_GAMEPAD_BUTTON_RIGHT_STICK 8
+#define K_GAMEPAD_BUTTON_LEFT_SHOULDER 9
+#define K_GAMEPAD_BUTTON_RIGHT_SHOULDER 10
+#define K_GAMEPAD_BUTTON_DPAD_UP 11
+#define K_GAMEPAD_BUTTON_DPAD_DOWN 12
+#define K_GAMEPAD_BUTTON_DPAD_LEFT 13
+#define K_GAMEPAD_BUTTON_DPAD_RIGHT 14
+/// @}
+
+/// @name Gamepad axis identifiers (mirror SDL3 SDL_GamepadAxis values)
+/// @{
+#define K_GAMEPAD_AXIS_LEFTX 0
+#define K_GAMEPAD_AXIS_LEFTY 1
+#define K_GAMEPAD_AXIS_RIGHTX 2
+#define K_GAMEPAD_AXIS_RIGHTY 3
+#define K_GAMEPAD_AXIS_LEFT_TRIGGER 4
+#define K_GAMEPAD_AXIS_RIGHT_TRIGGER 5
+/// @}
+
 // Key Code (OS key location)
 #define K_KEY_UNKNOWN 0
 #define K_KEY_BACKSPACE 8

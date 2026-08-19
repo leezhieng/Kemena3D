@@ -59,6 +59,13 @@ namespace kemena
         return manager;
     }
 
+    kInputManager *createInputManager()
+    {
+        kInputManager *manager = new kInputManager();
+        manager->init();
+        return manager;
+    }
+
     kAudioManager *createAudioManager()
     {
         kAudioManager *manager = new kAudioManager();

@@ -122,6 +122,12 @@ namespace kemena
 
     // --- Global controls -----------------------------------------------------
 
+    void kAudioManager::stopAll()
+    {
+        for (kAudio *audio : m_impl->sounds)
+            audio->stop();
+    }
+
     void kAudioManager::setMasterVolume(float volume)
     {
         if (m_impl->initialized)

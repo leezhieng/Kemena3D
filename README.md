@@ -36,6 +36,39 @@ timing and logging to scripts.
 
 See [Documentation/Scripting.md](Documentation/Scripting.md) for the full guide.
 
+## Input
+
+The SDK ships a named input / action-mapping layer (`kInputManager`) on top of
+the raw SDL events. Instead of hard-coding key, mouse, or joystick checks in
+gameplay code, bind logical actions once and query them everywhere. The same
+action can be bound to several devices at once, so one set of game code works
+on PC (keyboard + mouse) and console (gamepad) without changes.
+
+```cpp
+#include <kemena/kemena.h>
+using namespace kemena;
+
+kInputManager* input = createInputManager();
+
+// Digital actions
+input->addAction("Jump");
+input->bindKey("Jump", K_KEY_SPACE);
+input->bindMouseButton("Jump", K_MOUSEBUTTON_LEFT);
+input->bindGamepadButton("Jump", K_GAMEPAD_BUTTON_SOUTH); // A / Cross
+
+// Analog axes
+input->addAxis("MoveX");
+input->bindKeyAxis("MoveX", K_KEY_A, K_KEY_D);
+input->bindGamepadAxis("MoveX", K_GAMEPAD_AXIS_LEFTX);
+
+// Each frame
+input->update();
+if (input->getActionPressed("Jump")) jump();
+float move = input->getAxis("MoveX"); // -1.0 .. 1.0
+```
+
+See [`kinputmanager.h`](Source/include/kinputmanager.h) for the full API.
+
 ## Asset Packaging
 
 The SDK includes a built-in asset packaging system for game distribution. Assets are bundled into a single `.kpak` file with optional per-file compression (LZNT1 on Windows). The Virtual File System (`kFileSystem`) transparently handles both packaged and loose-file modes.

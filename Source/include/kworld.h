@@ -34,6 +34,7 @@ namespace kemena
 {
     class kScene;
     class kPhysicsManager;
+    class kInputManager;
 
     /**
      * @brief Root container for the entire simulation environment.
@@ -127,6 +128,23 @@ namespace kemena
          * @return Pointer to the asset manager, or nullptr if not set.
          */
         kAssetManager *getAssetManager();
+
+        /**
+         * @brief Assigns the named input manager used by scripts (getAction/getAxis).
+         *
+         * The pointer is forwarded to this world's script manager so AngelScript
+         * and logic-graph scripts can query named input. The input manager must
+         * outlive the world (it is not owned here).
+         *
+         * @param manager Input manager instance, or nullptr to disable input queries.
+         */
+        void setInputManager(kInputManager *manager);
+
+        /**
+         * @brief Returns the named input manager assigned to this world.
+         * @return Pointer to the input manager, or nullptr if not set.
+         */
+        kInputManager *getInputManager();
 
         /**
          * @brief Removes a camera from this world's camera list.
@@ -277,6 +295,7 @@ namespace kemena
         kString resolveScriptAsset(kScript &component);
 
         kAssetManager *assetManager = nullptr; ///< Asset loader reference.
+        kInputManager *inputManager = nullptr; ///< Named input manager (borrowed, not owned).
 
         std::vector<kScene *>  scenes;  ///< Registered scenes.
         std::vector<kCamera *> cameras; ///< Registered cameras.
