@@ -85,6 +85,8 @@ namespace kemena
             case kScriptNodeType::SetPhysicsGravity:    return "Set Physics Gravity";
             case kScriptNodeType::GetPhysicsGravity:    return "Get Physics Gravity";
             case kScriptNodeType::IsPhysicsActive:      return "Is Physics Active";
+            case kScriptNodeType::Anchor:               return "Anchor";
+            case kScriptNodeType::Comment:              return "Comment";
             default:                                return "Node";
         }
     }
@@ -518,6 +520,17 @@ namespace kemena
                 out("Active", kScriptPinType::Bool);
                 break;
 
+            case kScriptNodeType::Anchor:
+                in("In", kScriptPinType::Float);
+                out("Out", kScriptPinType::Float);
+                break;
+
+            case kScriptNodeType::Comment:
+                n.sizeX   = 320.0f;
+                n.sizeY   = 180.0f;
+                n.comment = "Comment";
+                break;
+
             default:
                 break;
         }
@@ -576,6 +589,9 @@ namespace kemena
                 {"value_float", {n.valueFloat[0], n.valueFloat[1], n.valueFloat[2]}},
                 {"value_bool", n.valueBool},
                 {"value_str", n.valueStr},
+                {"size_x", n.sizeX},
+                {"size_y", n.sizeY},
+                {"comment", n.comment},
                 {"inputs", jin},
                 {"outputs", jout},
             });
@@ -627,6 +643,9 @@ namespace kemena
                 n.posY = jn.value("y", 0.0f);
                 n.valueBool = jn.value("value_bool", false);
                 n.valueStr  = jn.value("value_str", std::string());
+                n.sizeX     = jn.value("size_x", 300.0f);
+                n.sizeY     = jn.value("size_y", 200.0f);
+                n.comment   = jn.value("comment", std::string());
                 if (jn.contains("value_float") && jn["value_float"].is_array() &&
                     jn["value_float"].size() == 3)
                     for (int i = 0; i < 3; ++i)
@@ -804,6 +823,12 @@ namespace kemena
             {
                 switch (n.type)
                 {
+                    case kScriptNodeType::Anchor:
+                        // A reroute node forwards whatever feeds its input,
+                        // regardless of wire type. Editor-only nodes never
+                        // reach this point unless a link points at them.
+                        return n.inputs.empty() ? kString("0") : emitInput(n, n.inputs[0]);
+
                     case kScriptNodeType::LiteralFloat:  return formatFloat(n.valueFloat[0]);
                     case kScriptNodeType::LiteralBool:   return n.valueBool ? "true" : "false";
                     case kScriptNodeType::LiteralString: return "\"" + escapeString(n.valueStr) + "\"";
@@ -1007,6 +1032,21 @@ namespace kemena
                     const kScriptGraphNode *n = g.findNode(cur);
                     if (!n)
                         break;
+
+                    if (n->type == kScriptNodeType::Anchor)
+                    {
+                        // Pass-through reroute on an execution wire: follow the
+                        // first outgoing link without emitting a statement.
+                        const kScriptGraphLink *next = nullptr;
+                        for (const auto &p : n->outputs)
+                        {
+                            next = g.outgoingLink(n->id, p.id);
+                            if (next)
+                                break;
+                        }
+                        cur = next ? next->toNode : 0;
+                        continue;
+                    }
 
                     if (n->type == kScriptNodeType::Branch)
                     {

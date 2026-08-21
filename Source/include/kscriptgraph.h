@@ -146,6 +146,10 @@ namespace kemena
         SetAnimatorInt,    ///< Sets an animator Int variable.
         SetAnimatorTrigger,///< Fires an animator Trigger variable.
 
+        // --- Editor utility nodes (no generated code) ------------------------
+        Anchor,  ///< Pass-through reroute node used to tidy connection lines.
+        Comment, ///< Resizable background comment box with editable text.
+
         Count ///< Sentinel (number of node types).
     };
 
@@ -193,6 +197,11 @@ namespace kemena
         float   valueFloat[3] = { 0.0f, 0.0f, 0.0f }; ///< Literal numeric value.
         bool    valueBool     = false;                ///< Literal boolean value.
         kString valueStr;                             ///< Literal string OR variable name.
+
+        // Comment-box payload (used only when type == kScriptNodeType::Comment).
+        float   sizeX = 300.0f;                       ///< Comment box width (canvas units).
+        float   sizeY = 200.0f;                       ///< Comment box height (canvas units).
+        kString comment;                              ///< Comment text shown on the box.
     };
 
     /**

@@ -87,6 +87,10 @@ inline bool kPinCompatible(kPinType from, kPinType to)
  */
 enum class kShaderNodeType
 {
+    // --- Editor utility nodes (no shader output) ---
+    Anchor,         ///< Pass-through reroute node used to tidy connection lines.
+    Comment,        ///< Resizable background comment box with editable text.
+
     // --- Constant / built-in inputs ---
     ConstFloat,     ///< User-supplied constant float.
     ConstVec2,      ///< User-supplied constant vec2.
@@ -195,6 +199,11 @@ struct kShaderNode
     float   valueFloat[4] = { 0.f, 0.f, 0.f, 1.f }; ///< Constant value for Const* nodes.
     kString valueStr;                               ///< Texture uniform name or swizzle mask.
     bool    valueBool = false;                      ///< Generic boolean payload.
+
+    // Comment-box payload (used only when type == kShaderNodeType::Comment).
+    float   sizeX = 300.f;                          ///< Comment box width (canvas units).
+    float   sizeY = 200.f;                          ///< Comment box height (canvas units).
+    kString comment;                                ///< Comment text shown on the box.
 
     /**
      * @brief Returns a human-readable name for a shader node type.

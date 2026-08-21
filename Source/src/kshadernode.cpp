@@ -14,6 +14,8 @@ const char* kShaderNode::typeName(kShaderNodeType t)
 {
     switch (t)
     {
+        case kShaderNodeType::Anchor:             return "Anchor";
+        case kShaderNodeType::Comment:            return "Comment";
         case kShaderNodeType::ConstFloat:         return "Float";
         case kShaderNodeType::ConstVec2:          return "Vec2";
         case kShaderNodeType::ConstVec3:          return "Vec3 / Color";
@@ -143,6 +145,18 @@ kShaderNode kShaderGraph::makeNode(kShaderNodeType type, float x, float y)
 
     switch (type)
     {
+        // --- Editor utility nodes ---
+        case kShaderNodeType::Anchor:
+            n.inputs.push_back(makePin(newId(), "In",  kPinType::Float, false));
+            n.outputs.push_back(makePin(pid,    "Out", kPinType::Float, true));
+            break;
+
+        case kShaderNodeType::Comment:
+            n.sizeX   = 320.f;
+            n.sizeY   = 180.f;
+            n.comment = "Comment";
+            break;
+
         // --- Constants ---
         case kShaderNodeType::ConstFloat:
             n.outputs.push_back(makePin(pid, "Value", kPinType::Float, true));
@@ -397,6 +411,9 @@ nlohmann::json kShaderGraph::toJson() const
         jn["valueFloat"] = { n.valueFloat[0], n.valueFloat[1], n.valueFloat[2], n.valueFloat[3] };
         jn["valueStr"]   = n.valueStr;
         jn["valueBool"]  = n.valueBool;
+        jn["sizeX"]      = n.sizeX;
+        jn["sizeY"]      = n.sizeY;
+        jn["comment"]    = n.comment;
 
         auto& ji = jn["inputs"]  = nlohmann::json::array();
         for (const auto& p : n.inputs) ji.push_back(pinToJson(p));
@@ -440,6 +457,9 @@ void kShaderGraph::fromJson(const nlohmann::json& j)
         n.posY  = jn.value("y",    0.f);
         n.valueStr  = jn.value("valueStr",  "");
         n.valueBool = jn.value("valueBool", false);
+        n.sizeX     = jn.value("sizeX", 300.f);
+        n.sizeY     = jn.value("sizeY", 200.f);
+        n.comment   = jn.value("comment", std::string());
         if (jn.contains("valueFloat") && jn["valueFloat"].size() == 4)
         {
             for (int i = 0; i < 4; ++i) n.valueFloat[i] = jn["valueFloat"][i];
@@ -512,15 +532,42 @@ kString kShaderCompiler::emitPin(const kShaderGraph& g, int nodeId, int pinId, C
         return "0.0";
     }
 
+    // Resolve the source through pass-through anchor nodes. Anchors carry no
+    // shader semantics: a wire routed through them is simply a wire from the
+    // original source node to this input.
+    int fromNode = link->fromNode;
+    int fromPin  = link->fromPin;
+
+    while (true)
+    {
+        const kShaderNode* src = g.findNode(fromNode);
+        if (!src || src->type != kShaderNodeType::Anchor)
+            break;
+
+        if (src->inputs.empty())
+            break;
+        const kShaderLink* prev = g.incomingLink(fromNode, src->inputs[0].id);
+        if (!prev)
+        {
+            // Dangling anchor: fall back to the destination pin's default.
+            const kShaderNode* dst = g.findNode(nodeId);
+            for (const auto& p : dst->inputs)
+                if (p.id == pinId) return pinDefault(p);
+            return "0.0";
+        }
+        fromNode = prev->fromNode;
+        fromPin  = prev->fromPin;
+    }
+
     // Emit the source node and get its output var
-    kString srcVar = emitNode(g, link->fromNode, ctx);
+    kString srcVar = emitNode(g, fromNode, ctx);
 
     // Find the actual output pin type
-    const kShaderNode* src = g.findNode(link->fromNode);
+    const kShaderNode* src = g.findNode(fromNode);
     kPinType actualType = kPinType::Float;
     int pinIdx = 0;
     for (int i = 0; i < (int)src->outputs.size(); ++i)
-        if (src->outputs[i].id == link->fromPin) { actualType = src->outputs[i].type; pinIdx = i; break; }
+        if (src->outputs[i].id == fromPin) { actualType = src->outputs[i].type; pinIdx = i; break; }
 
     // Find the input pin's expected type
     const kShaderNode* dst = g.findNode(nodeId);
