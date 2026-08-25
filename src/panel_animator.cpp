@@ -483,7 +483,9 @@ int PanelAnimator::hitTestInputPins(ImVec2 mouse, ImVec2 origin) const
         if (s.isComment()) continue;
         ImVec2 p = getInputPinPos(s, origin);
         float dx = mouse.x - p.x, dy = mouse.y - p.y;
-        float r = PIN_RADIUS * canvasZoom * 2.5f;
+        // Anchors are tiny; keep their pin hit radius tight so the body can be
+        // selected instead of the pin grabbing every click near the node.
+        float r = PIN_RADIUS * canvasZoom * (s.isAnchor() ? 1.0f : 2.5f);
         if (dx * dx + dy * dy <= r * r)
             return s.id;
     }
@@ -497,7 +499,9 @@ int PanelAnimator::hitTestOutputPins(ImVec2 mouse, ImVec2 origin) const
         if (s.isComment()) continue;
         ImVec2 p = getOutputPinPos(s, origin);
         float dx = mouse.x - p.x, dy = mouse.y - p.y;
-        float r = PIN_RADIUS * canvasZoom * 2.5f;
+        // Anchors are tiny; keep their pin hit radius tight so the body can be
+        // selected instead of the pin grabbing every click near the node.
+        float r = PIN_RADIUS * canvasZoom * (s.isAnchor() ? 1.0f : 2.5f);
         if (dx * dx + dy * dy <= r * r)
             return s.id;
     }
@@ -660,8 +664,6 @@ void PanelAnimator::drawAnchorNode(ImDrawList* dl, AnimState& state, ImVec2 orig
     dl->AddCircleFilled(c, r, IM_COL32(72, 84, 102, 235));
     dl->AddCircle(c, r, isSelected ? IM_COL32(255, 210, 80, 255) : IM_COL32(140, 165, 195, 255),
                   0, isSelected ? 2.5f : 1.5f);
-    dl->AddText({ c.x - 4.f * zoom, c.y - ImGui::GetFontSize() * 0.5f },
-                IM_COL32(235, 235, 235, 255), "A");
 
     // Pins are drawn by getInputPinPos/getOutputPinPos geometry.
     ImVec2 inPos  = getInputPinPos(state, origin);

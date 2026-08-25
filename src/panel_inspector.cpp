@@ -2278,6 +2278,97 @@ namespace
         return asPath.filename().string();
     }
 
+    struct ScriptVariableDecl
+    {
+        std::string name;
+        std::string typeName; ///< AngelScript type, e.g. "kAnimator@", "float".
+    };
+
+    // Extracts simple file-scope globals ("type name = value;") from a script
+    // source file. Covers the generated .as from a .logic node graph as well as
+    // hand-written scripts whose globals follow the same simple declaration form.
+    std::vector<ScriptVariableDecl> collectScriptVariables(const std::string &asPath)
+    {
+        std::vector<ScriptVariableDecl> out;
+        std::ifstream f(asPath);
+        if (!f.is_open())
+            return out;
+
+        static const std::string kTypes[] = {
+            "kAnimator@", "kAudioSource@", "kMaterial@", "kObject@",
+            "kVec3", "string", "bool", "float", "int",
+        };
+
+        std::string line;
+        while (std::getline(f, line))
+        {
+            size_t first = line.find_first_not_of(" \t");
+            if (first == std::string::npos)
+                continue;
+            // Only file-scope globals (column 0) are script globals; function-local
+            // declarations are indented and must not be exposed in the inspector.
+            if (first != 0)
+                continue;
+            std::string stmt = line.substr(first);
+            // Skip comments, preprocessor lines and block markers.
+            if (stmt[0] == '/' || stmt[0] == '*' || stmt[0] == '#' ||
+                stmt[0] == '{' || stmt[0] == '}')
+                continue;
+
+            size_t semi = stmt.find(';');
+            if (semi == std::string::npos)
+                continue;
+            std::string decl = stmt.substr(0, semi);
+            size_t eq = decl.find('=');
+            if (eq == std::string::npos)
+                continue;
+
+            std::string lhs = decl.substr(0, eq);
+            while (!lhs.empty() && (lhs.back() == ' ' || lhs.back() == '\t'))
+                lhs.pop_back();
+
+            for (const std::string &t : kTypes)
+            {
+                if (lhs.compare(0, t.size(), t) != 0)
+                    continue;
+                char after = (lhs.size() > t.size()) ? lhs[t.size()] : ' ';
+                if (after != ' ' && after != '\t')
+                    continue;
+
+                std::string name = lhs.substr(t.size());
+                size_t nfirst = name.find_first_not_of(" \t");
+                if (nfirst == std::string::npos)
+                    break;
+                name = name.substr(nfirst);
+
+                ScriptVariableDecl d;
+                d.name     = name;
+                d.typeName = t;
+                out.push_back(d);
+                break;
+            }
+        }
+        return out;
+    }
+
+    // True when the given object matches a script-global handle-type variable:
+    // kObject@ matches any object; the rest require the object to carry the
+    // matching component (e.g. an animator for kAnimator@).
+    bool scriptHandleTypeMatches(kObject *o, const std::string &typeName)
+    {
+        if (!o)
+            return false;
+        if (typeName == "kObject@")
+            return true;
+        if (typeName == "kAnimator@")
+            return !o->getAnimatorRef().empty();
+        if (typeName == "kAudioSource@")
+            return !o->getAudioSources().empty();
+        if (typeName == "kMaterial@")
+            return o->getType() == NODE_TYPE_MESH;
+        return false;
+    }
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2872,6 +2963,149 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 ImGui::SameLine(ImGui::GetWindowWidth() - 28.0f);
                 if (ImGui::SmallButton("x##RemSc"))
                     toRemove = s.uuid;
+
+                // Expose script-scope globals (logic-graph variables and .as
+                // globals) so the user can assign values or object references.
+                std::vector<ScriptVariableDecl> vars = collectScriptVariables(s.fileName);
+                if (!vars.empty())
+                {
+                    for (const auto &decl : vars)
+                    {
+                        kScriptVarBinding *binding = nullptr;
+                        for (auto &b : s.variableBindings)
+                        {
+                            if (b.name == decl.name)
+                            {
+                                binding = &b;
+                                break;
+                            }
+                        }
+                        if (!binding)
+                        {
+                            kScriptVarBinding nb;
+                            nb.name     = decl.name;
+                            nb.typeName = decl.typeName;
+                            s.variableBindings.push_back(nb);
+                            binding = &s.variableBindings.back();
+                        }
+
+                        ImGui::PushID(decl.name.c_str());
+                        ImGui::TextUnformatted(decl.name.c_str());
+                        ImGui::SameLine(150.0f);
+                        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 20.0f);
+
+                        if (decl.typeName == "int")
+                        {
+                            int iv = (int)binding->valueFloat[0];
+                            if (ImGui::DragInt("##scvar", &iv, 1.0f))
+                            {
+                                binding->valueFloat[0] = (float)iv;
+                                binding->assigned = true;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        else if (decl.typeName == "float")
+                        {
+                            if (ImGui::DragFloat("##scvar", &binding->valueFloat[0], 0.05f))
+                            {
+                                binding->assigned = true;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        else if (decl.typeName == "bool")
+                        {
+                            if (ImGui::Checkbox("##scvar", &binding->valueBool))
+                            {
+                                binding->assigned = true;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        else if (decl.typeName == "kVec3")
+                        {
+                            float v[3] = {binding->valueFloat[0],
+                                          binding->valueFloat[1],
+                                          binding->valueFloat[2]};
+                            if (ImGui::DragFloat3("##scvar", v, 0.05f))
+                            {
+                                binding->valueFloat[0] = v[0];
+                                binding->valueFloat[1] = v[1];
+                                binding->valueFloat[2] = v[2];
+                                binding->assigned = true;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        else if (decl.typeName == "string")
+                        {
+                            char buf[128];
+                            strncpy_s(buf, sizeof(buf), binding->valueStr.c_str(), _TRUNCATE);
+                            buf[sizeof(buf) - 1] = '\0';
+                            if (ImGui::InputText("##scvar", buf, sizeof(buf)))
+                            {
+                                binding->valueStr = buf;
+                                binding->assigned = true;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        else
+                        {
+                            // Handle types: a read-only field the user links by
+                            // dragging a scene object from the Hierarchy panel
+                            // onto it. The dropped object is validated against the
+                            // variable's handle type before linking — no per-frame
+                            // full-scene traversal is needed (findObjectByUuid uses
+                            // the hierarchy's objectMap fast path).
+                            std::string linkedName = "(None)";
+                            if (!binding->valueStr.empty())
+                            {
+                                if (kObject *linked = manager->findObjectByUuid(binding->valueStr))
+                                    linkedName = linked->getName();
+                            }
+
+                            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 24.0f);
+                            char linkBuf[256];
+                            strncpy_s(linkBuf, sizeof(linkBuf), linkedName.c_str(), _TRUNCATE);
+                            linkBuf[sizeof(linkBuf) - 1] = '\0';
+                            ImGui::InputText("##scobj", linkBuf, sizeof(linkBuf),
+                                             ImGuiInputTextFlags_ReadOnly);
+
+                            // Drag an object from the Hierarchy panel here to link it.
+                            if (ImGui::BeginDragDropTarget())
+                            {
+                                const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(
+                                    "SCENE_OBJECT", ImGuiDragDropFlags_AcceptBeforeDelivery);
+                                if (payload && payload->IsDelivery())
+                                {
+                                    std::string droppedUuid((const char *)payload->Data);
+                                    kObject *dropped = manager->findObjectByUuid(droppedUuid);
+                                    if (dropped && scriptHandleTypeMatches(dropped, decl.typeName))
+                                    {
+                                        binding->valueStr = droppedUuid;
+                                        binding->assigned = true;
+                                        manager->projectSaved = false;
+                                    }
+                                }
+                                else if (payload && ImGui::IsItemHovered())
+                                {
+                                    std::string droppedUuid((const char *)payload->Data);
+                                    kObject *dropped = manager->findObjectByUuid(droppedUuid);
+                                    if (!dropped || !scriptHandleTypeMatches(dropped, decl.typeName))
+                                        ImGui::SetTooltip("Object does not match this variable type");
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("x##clrscobj"))
+                            {
+                                binding->valueStr.clear();
+                                binding->assigned = false;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+                }
+
                 ImGui::PopID();
             }
             if (!toRemove.empty())
@@ -4229,6 +4463,14 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
         animPreviewEndFrame   = endF;
         animPreviewStartFrameDraft = startF;
         animPreviewEndFrameDraft   = endF;
+
+        // Load the root-motion options stored in the .animation file.
+        animPreviewRootMotionRotation   = j.value("rootMotionRotation", false);
+        animPreviewRootMotionPositionY  = j.value("rootMotionPositionY", false);
+        animPreviewRootMotionPositionXZ = j.value("rootMotionPositionXZ", false);
+        animPreviewRootMotionRotationDraft   = animPreviewRootMotionRotation;
+        animPreviewRootMotionPositionYDraft  = animPreviewRootMotionPositionY;
+        animPreviewRootMotionPositionXZDraft = animPreviewRootMotionPositionXZ;
         animPreviewLightEnabled = false;
         animPreviewRotX = 24.09f;
         animPreviewRotY = 26.57f;
@@ -4306,6 +4548,11 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
                 if (skel)
                 {
                     animPreviewClip = skel;
+                    // Note: the root-motion flags are intentionally NOT applied
+                    // to the preview clip — the preview always plays the full
+                    // animation (root motion visible). The flags only take
+                    // effect at game time, where the root motion is redirected
+                    // to scripts as delta position/rotation.
                     animPreviewAnimator = new kAnimator(skel);
 
                     std::function<void(kMesh *)> applyAnim = [&](kMesh *m)
@@ -4577,6 +4824,54 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
     ImGui::SetNextItemWidth((sz - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
     ImGui::DragInt("End Frame", &animPreviewEndFrameDraft, 1, 0, 1000);
 
+    // -----------------------------------------------------------------------
+    // Root Motion options — which root-bone channels are redirected to scripts
+    // at game time (exposed as the animator's delta position/rotation) instead
+    // of being applied to the object. The preview always shows the full
+    // animation including root motion.
+    // -----------------------------------------------------------------------
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    ImGui::Separator();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    ImGui::TextUnformatted("Root Motion");
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+
+    // The checkboxes take effect immediately — each toggle commits the value
+    // and writes it to the .animation file (no Apply needed). The preview
+    // always shows the full animation; the options only matter at game time,
+    // where the root motion is redirected to scripts as delta position/rotation.
+    auto saveRootMotionFlags = [&]()
+    {
+        animPreviewRootMotionRotation   = animPreviewRootMotionRotationDraft;
+        animPreviewRootMotionPositionY  = animPreviewRootMotionPositionYDraft;
+        animPreviewRootMotionPositionXZ = animPreviewRootMotionPositionXZDraft;
+        try
+        {
+            nlohmann::json outJ;
+            {
+                std::ifstream in(animPath);
+                if (in.is_open())
+                    in >> outJ;
+            }
+            outJ["rootMotionRotation"]   = animPreviewRootMotionRotation;
+            outJ["rootMotionPositionY"]  = animPreviewRootMotionPositionY;
+            outJ["rootMotionPositionXZ"] = animPreviewRootMotionPositionXZ;
+            std::ofstream out(animPath);
+            if (out.is_open())
+                out << outJ.dump(4);
+        }
+        catch (...) {}
+    };
+
+    if (ImGui::Checkbox("Root transform rotation", &animPreviewRootMotionRotationDraft))
+        saveRootMotionFlags();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    if (ImGui::Checkbox("Root transform position (Y)", &animPreviewRootMotionPositionYDraft))
+        saveRootMotionFlags();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
+    if (ImGui::Checkbox("Root transform position (XZ)", &animPreviewRootMotionPositionXZDraft))
+        saveRootMotionFlags();
+
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
     if (ImGui::Button("Apply", ImVec2((sz - ImGui::GetStyle().ItemSpacing.x) * 0.5f, 0)))
     {
@@ -4585,6 +4880,12 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
 
         animPreviewStartFrame = animPreviewStartFrameDraft;
         animPreviewEndFrame   = animPreviewEndFrameDraft;
+
+        // Commit the root-motion options (they take effect at game time; the
+        // preview keeps showing the full animation including root motion).
+        animPreviewRootMotionRotation   = animPreviewRootMotionRotationDraft;
+        animPreviewRootMotionPositionY  = animPreviewRootMotionPositionYDraft;
+        animPreviewRootMotionPositionXZ = animPreviewRootMotionPositionXZDraft;
 
         if (animPreviewFrame < (float)animPreviewStartFrame)
             animPreviewFrame = (float)animPreviewStartFrame;
@@ -4602,6 +4903,9 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
             }
             outJ["startFrame"] = animPreviewStartFrame;
             outJ["endFrame"]   = animPreviewEndFrame;
+            outJ["rootMotionRotation"]   = animPreviewRootMotionRotation;
+            outJ["rootMotionPositionY"]  = animPreviewRootMotionPositionY;
+            outJ["rootMotionPositionXZ"] = animPreviewRootMotionPositionXZ;
             std::ofstream out(animPath);
             if (out.is_open())
                 out << outJ.dump(4);
@@ -4613,6 +4917,9 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
     {
         animPreviewStartFrameDraft = animPreviewStartFrame;
         animPreviewEndFrameDraft   = animPreviewEndFrame;
+        animPreviewRootMotionRotationDraft   = animPreviewRootMotionRotation;
+        animPreviewRootMotionPositionYDraft  = animPreviewRootMotionPositionY;
+        animPreviewRootMotionPositionXZDraft = animPreviewRootMotionPositionXZ;
     }
 }
 

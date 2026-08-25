@@ -2865,7 +2865,7 @@ void Manager::startGameAudio()
         if (!haveListener && defaultGameCamera &&
             defaultGameCamera != editorCamera)
         {
-            listenerPos     = defaultGameCamera->getPosition();
+            listenerPos     = defaultGameCamera->getGlobalPosition();
             kQuat rot       = defaultGameCamera->getGlobalRotation();
             listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
             listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
@@ -2879,7 +2879,7 @@ void Manager::startGameAudio()
             {
                 if (cam != editorCamera)
                 {
-                    listenerPos     = cam->getPosition();
+                    listenerPos     = cam->getGlobalPosition();
                     kQuat rot       = cam->getGlobalRotation();
                     listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
                     listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
@@ -2992,7 +2992,7 @@ void Manager::updateGameAudio(kCamera *gameCamera)
         }
         else if (gameCamera)
         {
-            listenerPos     = gameCamera->getPosition();
+            listenerPos     = gameCamera->getGlobalPosition();
             kQuat rot       = gameCamera->getGlobalRotation();
             listenerForward = glm::rotate(rot, kVec3(0.0f, 0.0f, -1.0f));
             listenerUp      = glm::rotate(rot, kVec3(0.0f, 1.0f,  0.0f));
@@ -4005,6 +4005,12 @@ void Manager::createNewAnimationFromMesh(const kString &meshUuid, const fs::path
     j["meshUuid"]   = meshUuid;
     j["startFrame"] = 0;
     j["endFrame"]   = endFrame;
+    // Root-motion extraction options (off by default). When enabled, scripts
+    // can read the corresponding root-motion delta from the animator and the
+    // channel is baked out of the animation preview pose.
+    j["rootMotionRotation"]  = false;
+    j["rootMotionPositionY"] = false;
+    j["rootMotionPositionXZ"] = false;
 
     std::ofstream f(filePath);
     if (!f.is_open())
@@ -5146,6 +5152,25 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 s.fileName = sj.value("file_name", std::string(""));
                 s.checksum = sj.value("checksum", std::string(""));
                 s.isActive = sj.value("active", true);
+
+                if (sj.contains("variables") && sj["variables"].is_array())
+                {
+                    for (const auto &vj : sj["variables"])
+                    {
+                        kScriptVarBinding vb;
+                        vb.name      = vj.value("name", std::string(""));
+                        vb.typeName  = vj.value("type", std::string(""));
+                        vb.valueStr  = vj.value("value_str", std::string(""));
+                        vb.valueBool = vj.value("value_bool", false);
+                        vb.assigned  = vj.value("assigned", false);
+                        if (vj.contains("value") && vj["value"].is_array() &&
+                            vj["value"].size() == 3)
+                            for (int i = 0; i < 3; ++i)
+                                vb.valueFloat[i] = vj["value"][i].get<float>();
+                        s.variableBindings.push_back(vb);
+                    }
+                }
+
                 result->addScript(s);
             }
         }
@@ -8615,6 +8640,13 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
         float endFrame   = aj.value("endFrame", 30.0f);
         rt.clipFrames[st.animationUuid] = { startFrame, endFrame };
 
+        // Root-motion options from the .animation asset: which channels are
+        // extracted for scripts and baked out of the pose (see kAnimator).
+        bool rootMotionRotation = aj.value("rootMotionRotation", false);
+        bool rootMotionPositionY = aj.value("rootMotionPositionY", false);
+        bool rootMotionPositionXZ = aj.value("rootMotionPositionXZ", false);
+        rt.clipRootMotion[st.animationUuid] = { rootMotionRotation, rootMotionPositionY, rootMotionPositionXZ };
+
         fs::path glbPath = mgr->projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
         if (!fs::exists(glbPath))
             continue;
@@ -8627,6 +8659,25 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
             // stepAnimators drives time manually; zero speed stops the main
             // kRenderer from advancing the same clip a second time each frame.
             clip->setSpeed(0.0f);
+
+            // Apply the .animation asset's root-motion options so scripts can
+            // read the extracted deltas and the pose is baked accordingly.
+            auto rmIt = rt.clipRootMotion.find(st.animationUuid);
+            if (rmIt != rt.clipRootMotion.end())
+            {
+                clip->setRootMotionRotation(rmIt->second[0]);
+                clip->setRootMotionPositionY(rmIt->second[1]);
+                clip->setRootMotionPositionXZ(rmIt->second[2]);
+            }
+            animatorDebugLog("[Animator] rootMotion clip=" + st.animationUuid +
+                             " read(rot,y,xz)=(" +
+                             std::to_string(rootMotionRotation ? 1 : 0) + "," +
+                             std::to_string(rootMotionPositionY ? 1 : 0) + "," +
+                             std::to_string(rootMotionPositionXZ ? 1 : 0) + ")" +
+                             " clip(rot,y,xz)=(" +
+                             std::to_string(clip->getRootMotionRotation() ? 1 : 0) + "," +
+                             std::to_string(clip->getRootMotionPositionY() ? 1 : 0) + "," +
+                             std::to_string(clip->getRootMotionPositionXZ() ? 1 : 0) + ")");
 
             // Compensate for unit-scale differences between the animation asset
             // and the mesh it is bound to. Both are imported independently and
@@ -8848,6 +8899,9 @@ void Manager::stepAnimators(float dt)
                             sample = t;
                     }
                 }
+                // NOTE: do NOT call getRootMotionDeltaPosition()/Rotation() here
+                // — they consume the accumulator and would steal deltas from
+                // scripts. Only the flags and resolved root bone are logged.
                 std::string msg = "[Animator] step dt=" + std::to_string(dt) +
                                   " stateTime=" + std::to_string(rt.stateTimeSeconds) +
                                   " animSec=" + std::to_string(animSeconds) +
@@ -8858,7 +8912,13 @@ void Manager::stepAnimators(float dt)
                                   " nonIdentityBones=" + std::to_string(nonIdentity) +
                                   " sample=(" + std::to_string(sample.x) + "," +
                                                 std::to_string(sample.y) + "," +
-                                                std::to_string(sample.z) + ")";
+                                                std::to_string(sample.z) + ")" +
+                                  " rootMotion=" + std::to_string(rt.animator->isRootMotionActive() ? 1 : 0) +
+                                  " rmBone='" + rt.animator->getResolvedRootBoneName() + "'" +
+                                  " rm(rot,y,xz)=(" +
+                                  std::to_string(rt.animator->getRootMotionRotation() ? 1 : 0) + "," +
+                                  std::to_string(rt.animator->getRootMotionPositionY() ? 1 : 0) + "," +
+                                  std::to_string(rt.animator->getRootMotionPositionXZ() ? 1 : 0) + ")";
                 animatorDebugLog(msg);
             }
             dbg++;

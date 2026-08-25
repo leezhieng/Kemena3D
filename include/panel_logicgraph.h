@@ -8,6 +8,7 @@
 #include "imgui.h"
 
 #include <string>
+#include <vector>
 
 using namespace kemena;
 
@@ -101,6 +102,15 @@ private:
     /** @brief Draws the side panel listing the graph's variables. */
     void drawVariablesPanel();
 
+    /**
+     * @brief Keeps Get/Set Variable pin types in sync with their selected
+     *        variable's declared type.
+     *
+     * Called every frame before the canvas is drawn so a variable whose type
+     * changed immediately retypes the pins of nodes referencing it.
+     */
+    void syncVariableNodePins();
+
     /** @brief Draws the pannable node-graph canvas and handles its interactions. */
     void drawCanvas();
 
@@ -139,6 +149,22 @@ private:
      */
     void tryConnect(int nodeA, int pinA, int nodeB, int pinB);
 
+    /**
+     * @brief Collects the unique action names currently bound in Project Settings.
+     *
+     * Used to populate the Get Action / Get Action Pressed / Get Action Released
+     * / Get Axis node picker so node action names can't silently drift from the
+     * bindings that getAction()/getActionPressed()/getActionReleased() resolve.
+     * @return De-duplicated list of action names (empty when no project is open).
+     */
+    std::vector<std::string> actionNameList() const;
+
+    /** @brief Copies the currently selected node into the clipboard. */
+    void copySelectedNode();
+
+    /** @brief Pastes the clipboard node offset from its original position. */
+    void pasteClipboard();
+
     kGuiManager *gui     = nullptr;
     Manager     *manager = nullptr;
 
@@ -146,7 +172,15 @@ private:
     std::string  filePath; ///< Current .logic path ("" = untitled).
 
     ImVec2 canvasOffset = ImVec2(0.0f, 0.0f);
+    float  canvasZoom   = 1.0f;                ///< Canvas zoom factor (mouse wheel).
     ImVec2 canvasOrigin = ImVec2(0.0f, 0.0f); ///< Canvas top-left, refreshed each frame.
+
+    // Pan state (middle-mouse drag). Persistent so panning keeps working when
+    // the cursor moves over a node body (the node's button only owns the left
+    // button, so it must not gate the pan).
+    bool   isPanning      = false;
+    ImVec2 panStartMouse  = ImVec2(0.0f, 0.0f);
+    ImVec2 panStartOffset = ImVec2(0.0f, 0.0f);
 
     int selectedNode = 0;
 
@@ -162,7 +196,15 @@ private:
     // Comment resize state.
     int resizingComment = 0;
 
+    // Copy/paste clipboard (single node).
+    bool            hasClipboard  = false;
+    kScriptGraphNode clipboardNode;
+
     std::string statusLine; ///< Last save/compile result shown in the toolbar.
+
+    ///< Throttles re-reading project.json so the input-action picker stays in
+    ///< sync with Project Settings without opening the file every frame.
+    int inputRefreshCounter = 0;
 };
 
 #endif // PANEL_LOGICGRAPH_H

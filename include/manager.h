@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <array>
 #include <random>
 #include <iostream>
 #include <filesystem>
@@ -139,6 +140,7 @@ struct RuntimeAnimator
     std::vector<kSkeletalAnimation *> ownedClips;                  ///< Loaded clips (owned).
     std::unordered_map<std::string, kSkeletalAnimation *> clipForState; ///< animationUuid → clip.
     std::unordered_map<std::string, std::pair<float, float>> clipFrames; ///< animationUuid → (startFrame, endFrame).
+    std::unordered_map<std::string, std::array<bool, 3>> clipRootMotion; ///< animationUuid → {rotation, positionY, positionXZ}.
     int currentStateId = -1;                                       ///< State currently playing.
     float stateTimeSeconds = 0.0f;                                 ///< Seconds since entering the current state.
     std::unordered_map<std::string, float> variables;              ///< Controller variable values.

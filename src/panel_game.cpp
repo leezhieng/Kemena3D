@@ -284,7 +284,9 @@ void PanelGame::draw(bool &isOpened)
     bool isPaused = (playState == GamePlayState::Paused);
 
     gui->beginDisabled(!enabled);
-    gui->windowStart("Game", &isOpened);
+    // Disable keyboard/gamepad navigation inside the game panel so the arrow
+    // keys (and Tab) never move focus between the Play/Pause/Stop buttons.
+    gui->windowStart("Game", &isOpened, ImGuiWindowFlags_NoNavInputs);
 
     gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(4, 2));
 

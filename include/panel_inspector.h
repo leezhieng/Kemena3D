@@ -257,6 +257,19 @@ private:
 	int animPreviewStartFrameDraft = 0;  ///< Unsaved Start Frame value shown in the inspector.
 	int animPreviewEndFrameDraft   = 30; ///< Unsaved End Frame value shown in the inspector.
 
+	// Root-motion options stored in the .animation file. When enabled, at game
+	// time the matching root-bone channel is redirected to scripts (as the
+	// animator's delta position/rotation) instead of being applied to the
+	// object. The animation preview always plays the full animation, including
+	// root motion. *Draft values are shown/edited in the UI and committed to
+	// the file when "Apply" is pressed.
+	bool animPreviewRootMotionRotation  = false; ///< Root rotation channel committed.
+	bool animPreviewRootMotionPositionY = false; ///< Root Y translation channel committed.
+	bool animPreviewRootMotionPositionXZ = false; ///< Root XZ translation channel committed.
+	bool animPreviewRootMotionRotationDraft  = false; ///< Root rotation channel draft.
+	bool animPreviewRootMotionPositionYDraft = false; ///< Root Y translation channel draft.
+	bool animPreviewRootMotionPositionXZDraft = false; ///< Root XZ translation channel draft.
+
 	bool animPreviewLightEnabled = false; ///< Whether the preview light is enabled.
 	float animPreviewLightYaw   = 45.0f; ///< Preview light azimuth, in degrees.
 	float animPreviewLightPitch = 60.0f; ///< Preview light elevation, in degrees.
