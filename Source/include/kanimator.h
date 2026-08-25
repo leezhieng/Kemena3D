@@ -123,6 +123,42 @@ namespace kemena
         float getSpeed();
 
         // -------------------------------------------------------------------
+        // Root-motion extraction.
+        //
+        // When the active clip's root-motion channels (kSkeletalAnimation:
+        // setRootMotionRotation / setRootMotionPositionY / setRootMotionPositionXZ)
+        // are enabled, the topmost animated bone is treated as the root bone.
+        // Its motion for those channels is (a) accumulated into per-query deltas
+        // below and (b) baked out of the pose so the character stays in place —
+        // the script then applies the deltas to the GameObject / physics object.
+        //
+        // The deltas are returned in the root bone's local space. Rotation is
+        // exposed as euler degrees (XYZ) to match the rest of the scripting API.
+        // -------------------------------------------------------------------
+
+        /** @brief Accumulated root-bone position delta since the last query (local space). */
+        kVec3 getRootMotionDeltaPosition();
+
+        /** @brief Accumulated root-bone rotation delta since the last query, in euler degrees (XYZ). */
+        kVec3 getRootMotionDeltaRotation();
+
+        /** @brief Clears accumulated root motion and re-seeds tracking (called on clip switches). */
+        void resetRootMotion();
+
+        /** @brief True when the active clip extracts the root bone's XZ translation. */
+        bool getRootMotionPositionXZ() const;
+        /** @brief True when the active clip extracts the root bone's Y translation. */
+        bool getRootMotionPositionY() const;
+        /** @brief True when the active clip extracts the root bone's rotation. */
+        bool getRootMotionRotation() const;
+
+        /** @brief True when the active clip has at least one root-motion channel enabled. */
+        bool isRootMotionActive() const;
+
+        /** @brief Name of the resolved root-motion bone (empty until the first pose is sampled). */
+        const kString &getResolvedRootBoneName() const { return rootBoneName; }
+
+        // -------------------------------------------------------------------
         // Object-transform animation (kAnimation) — placeholder.
         //
         // Reserved for the future cinematic editor. The setters accept and
@@ -153,6 +189,29 @@ namespace kemena
         float deltaTime      = 0.0f;                                      ///< Last elapsed time in seconds.
         float speed          = 1.0f;                                      ///< Global playback speed multiplier.
         int   currentFrameId = -1;                                        ///< Last processed frame id (guards duplicate updates).
+
+        // Root-motion extraction state. The root bone is the topmost animated
+        // node of the active clip; only tracked while a channel is enabled.
+        kVec3                       rootMotionAccumPos      = kVec3(0.0f);       ///< Accumulated position delta since last query.
+        kVec3                       rootMotionAccumRotEuler = kVec3(0.0f);       ///< Accumulated rotation delta (degrees) since last query.
+        kVec3                       lastRootPos             = kVec3(0.0f);       ///< Root position at the previous pose sample.
+        kQuat                       lastRootRot             = kQuat(1.0f, 0, 0, 0); ///< Root rotation at the previous pose sample.
+        float                       lastRootTime            = 0.0f;              ///< Clip time of the previous pose sample (loop detection).
+        bool                        rootMotionInitialized   = false;             ///< True once the first pose has been sampled.
+        kString                     rootBoneName;                                ///< Name of the resolved root-motion bone.
+        kSkeletalAnimation         *rootBoneForAnim         = nullptr;           ///< Clip the root bone was resolved for.
+        bool                        rootBoneResolved        = false;             ///< True once the root bone has been resolved.
+        kVec3                       bakeRootPos             = kVec3(0.0f);       ///< Root position baked into the pose (start-of-play reference).
+        kQuat                       bakeRootRot             = kQuat(1.0f, 0, 0, 0); ///< Root rotation baked into the pose.
+
+        /** @brief Resolves the topmost animated node as the root-motion bone. */
+        void resolveRootBone();
+        /** @brief Recursive helper for resolveRootBone(). */
+        void findRootBoneRecursive(const kNodeData *node);
+        /** @brief True when the active clip has at least one root-motion channel enabled. */
+        bool rootMotionActive() const;
+        /** @brief Accumulates the per-frame root-motion delta and bakes the enabled channels out of the pose. */
+        void handleRootMotion(kBone *bone, kMat4 &nodeTransform);
     };
 }
 

@@ -1,5 +1,7 @@
 #include "kbone.h"
 
+#include <cmath>
+
 #ifndef KEMENA_NO_ASSIMP
 #include "kassimp_internal.h"
 #include <assimp/anim.h>
@@ -71,6 +73,53 @@ namespace kemena
             return;
         for (auto &p : positions)
             p.position *= scale;
+    }
+
+    bool kBone::isStatic() const
+    {
+        // Position channel is static when there are 0/1 keyframes, or every
+        // keyframe is (within epsilon) identical.
+        bool posStatic = true;
+        if (positionCount >= 2)
+        {
+            const kVec3 &first = positions[0].position;
+            for (int i = 1; i < positionCount; ++i)
+            {
+                if (glm::length(positions[i].position - first) > 1e-6f)
+                {
+                    posStatic = false;
+                    break;
+                }
+            }
+        }
+
+        // Rotation channel is static when there are 0/1 keyframes, or every
+        // keyframe is (within epsilon) the same orientation. q and -q encode
+        // the same rotation, so both are accepted as "identical".
+        bool rotStatic = true;
+        if (rotationCount >= 2)
+        {
+            const kQuat &first = rotations[0].orientation;
+            for (int i = 1; i < rotationCount; ++i)
+            {
+                const kQuat &q = rotations[i].orientation;
+                bool same = (std::fabs(q.x - first.x) < 1e-4f &&
+                             std::fabs(q.y - first.y) < 1e-4f &&
+                             std::fabs(q.z - first.z) < 1e-4f &&
+                             std::fabs(q.w - first.w) < 1e-4f) ||
+                            (std::fabs(q.x + first.x) < 1e-4f &&
+                             std::fabs(q.y + first.y) < 1e-4f &&
+                             std::fabs(q.z + first.z) < 1e-4f &&
+                             std::fabs(q.w + first.w) < 1e-4f);
+                if (!same)
+                {
+                    rotStatic = false;
+                    break;
+                }
+            }
+        }
+
+        return posStatic && rotStatic;
     }
 
     const kMat4 kBone::getLocalTransform() const

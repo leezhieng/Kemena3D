@@ -3,9 +3,11 @@
 #include "kinputmanager.h"
 #include "kaudio.h"
 #include "kaudiomanager.h"
+#include "kaudiosource.h"
 #include "kanimator.h"
 #include "kskelanimation.h"
 #include "kmesh.h"
+#include "kmaterial.h"
 #include "kphysicsmanager.h"
 #include "kphysicsobject.h"
 
@@ -259,6 +261,21 @@ namespace kemena
     static float skeletalAnimGetSpeed(kSkeletalAnimation *a)        { return a ? a->getSpeed() : 0.0f; }
     static void  skeletalAnimSetSpeed(kSkeletalAnimation *a, float s) { if (a) a->setSpeed(s); }
 
+    // Root-motion extraction: the returned deltas are accumulated since the
+    // last query and are consumed (reset) by the call, so scripts should read
+    // them once per frame and apply them to the GameObject / physics object.
+    static kVec3 animatorRootMotionDeltaPos(kAnimator *a)
+    {
+        return a ? a->getRootMotionDeltaPosition() : kVec3(0.0f);
+    }
+    static kVec3 animatorRootMotionDeltaRot(kAnimator *a)
+    {
+        return a ? a->getRootMotionDeltaRotation() : kVec3(0.0f);
+    }
+    static bool animatorRootMotionXZ(kAnimator *a)  { return a ? a->getRootMotionPositionXZ() : false; }
+    static bool animatorRootMotionY(kAnimator *a)   { return a ? a->getRootMotionPositionY() : false; }
+    static bool animatorRootMotionRot(kAnimator *a) { return a ? a->getRootMotionRotation() : false; }
+
     // -----------------------------------------------------------------------
     // Physics wrappers
     // -----------------------------------------------------------------------
@@ -484,6 +501,14 @@ namespace kemena
         r = e->RegisterObjectType("kSkeletalAnimation", 0, asOBJ_REF | asOBJ_NOCOUNT);
         assert(r >= 0);
 
+        // --- Editor-asset handle types (opaque to scripts) --------------------
+        // Registered so logic-graph variables of these types can be declared and
+        // cast to/from generic object handles in generated AngelScript.
+        r = e->RegisterObjectType("kAudioSource", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        assert(r >= 0);
+        r = e->RegisterObjectType("kMaterial", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        assert(r >= 0);
+
         r = e->RegisterObjectMethod("kAnimator", "void setSpeed(float)",
                                     asFUNCTION(animatorSetSpeed), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kAnimator", "float getSpeed() const",
@@ -517,6 +542,19 @@ namespace kemena
                                     asFUNCTION(skeletalAnimGetSpeed), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kSkeletalAnimation", "void setSpeed(float)",
                                     asFUNCTION(skeletalAnimSetSpeed), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+
+        // Root-motion extraction deltas (kVec3, consumed by the call). Rotation
+        // is returned as euler degrees (XYZ) to match kObject.getRotation().
+        r = e->RegisterObjectMethod("kAnimator", "kVec3 getRootMotionDeltaPosition()",
+                                    asFUNCTION(animatorRootMotionDeltaPos), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "kVec3 getRootMotionDeltaRotation()",
+                                    asFUNCTION(animatorRootMotionDeltaRot), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "bool getRootMotionPositionXZ() const",
+                                    asFUNCTION(animatorRootMotionXZ), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "bool getRootMotionPositionY() const",
+                                    asFUNCTION(animatorRootMotionY), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "bool getRootMotionRotation() const",
+                                    asFUNCTION(animatorRootMotionRot), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
         // --- kPhysicsObject ---------------------------------------------------
         r = e->RegisterObjectMethod("kPhysicsObject", "void setPosition(const kVec3 &in)",

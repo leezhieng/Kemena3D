@@ -41,6 +41,28 @@ namespace kemena
         String,   ///< Text value.
         Vec3,     ///< 3-component vector value.
         Object,   ///< kObject handle.
+        Int,      ///< Integer value.
+    };
+
+    /**
+     * @brief Type of a graph-scope variable.
+     *
+     * The editor lets the user create variables of each of these types. Object
+     * handle types (Object / Animator / AudioSource / Material) are stored as
+     * AngelScript @ handles; the primitive/value types map directly onto
+     * AngelScript value types.
+     */
+    enum class kScriptVarType
+    {
+        Int = 0,         ///< Signed integer.
+        Float,           ///< Floating-point value.
+        Bool,            ///< Boolean value.
+        Vec3,            ///< 3-component vector value.
+        String,          ///< Text value.
+        Object,          ///< Generic kObject handle.
+        Animator,        ///< kAnimator handle.
+        AudioSource,     ///< kAudioSource handle.
+        Material,        ///< kMaterial handle.
     };
 
     /**
@@ -98,14 +120,17 @@ namespace kemena
         ScaleVec3, ///< Vec3 * Float.
 
         // --- Compare / logic -------------------------------------------------
-        Greater, ///< a > b.
-        Less,    ///< a < b.
-        Equal,   ///< a == b.
-        And,     ///< Logical AND.
-        Or,      ///< Logical OR.
-        Not,     ///< Logical negation.
+        Greater,    ///< a > b.
+        Less,       ///< a < b.
+        EqualFloat, ///< a == b (float).
+        And,        ///< Logical AND.
+        Or,         ///< Logical OR.
+        Not,        ///< Logical negation.
 
         // --- Named input (resolved through the kInputManager) ---------------
+        // Each node sits in the exec chain: its exec input polls the action each
+        // frame, a data "Value" output exposes the value, and the "triggered"
+        // exec output fires the next node only while the action/axis is active.
         GetAction,         ///< Named action is currently held (bool).
         GetActionPressed,  ///< Named action was pressed this frame (bool).
         GetActionReleased, ///< Named action was released this frame (bool).
@@ -139,8 +164,6 @@ namespace kemena
         GetPhysicsGravity,  ///< Reads global physics gravity.
         IsPhysicsActive,    ///< True if the physics body is simulated.
 
-        PrintConsole, ///< Logs a value to the editor Console panel.
-
         SetAnimatorBool,   ///< Sets an animator Bool variable.
         SetAnimatorFloat,  ///< Sets an animator Float variable.
         SetAnimatorInt,    ///< Sets an animator Int variable.
@@ -149,6 +172,18 @@ namespace kemena
         // --- Editor utility nodes (no generated code) ------------------------
         Anchor,  ///< Pass-through reroute node used to tidy connection lines.
         Comment, ///< Resizable background comment box with editable text.
+
+        // --- Flow control (kept after Comment to preserve serialised ids) ----
+        Sequence, ///< Runs its exec outputs in order; outputs can be added/removed.
+
+        // --- Animation root motion (kept last to preserve serialised ids) ----
+        GetAnimatorRootMotionPosition, ///< Accumulated root-motion position delta since last query (Vec3).
+        GetAnimatorRootMotionRotation, ///< Accumulated root-motion rotation delta since last query (Vec3, degrees).
+
+        // --- Typed equality (kept after root motion to preserve serialised ids)
+        EqualBool,   ///< a == b (bool).
+        EqualInt,    ///< a == b (int).
+        EqualString, ///< a == b (string).
 
         Count ///< Sentinel (number of node types).
     };
@@ -159,6 +194,24 @@ namespace kemena
      * @return A static, null-terminated display string (e.g. "On Update").
      */
     KEMENA3D_API const char *kScriptNodeTypeName(kScriptNodeType type);
+
+    /**
+     * @brief Human-readable label for a graph variable type.
+     * @param type Variable type to name.
+     * @return A static, null-terminated display string (e.g. "audio source").
+     */
+    KEMENA3D_API const char *kScriptVarTypeName(kScriptVarType type);
+
+    /**
+     * @brief Maps a graph variable type to the pin type used by get/set nodes.
+     *
+     * All object-handle variable types share the Object pin type so they can
+     * interoperate with the existing object-producing/getting nodes.
+     *
+     * @param type Variable type to map.
+     * @return The kScriptPinType used by Get Variable / Set Variable nodes.
+     */
+    KEMENA3D_API kScriptPinType kScriptVarTypePin(kScriptVarType type);
 
     /**
      * @brief A connection point on a node.
@@ -172,6 +225,7 @@ namespace kemena
 
         // Inline default used when an input data pin is left unconnected.
         float   defFloat  = 0.0f;                       ///< Default for unconnected Float inputs.
+        int     defInt    = 0;                          ///< Default for unconnected Int inputs.
         float   defVec[3] = { 0.0f, 0.0f, 0.0f };       ///< Default for unconnected Vec3 inputs.
         bool    defBool   = false;                      ///< Default for unconnected Bool inputs.
         kString defStr;                                 ///< Default for unconnected String inputs.
@@ -217,13 +271,19 @@ namespace kemena
     /**
      * @brief A graph-scope variable, emitted as an AngelScript global.
      *
-     * v1 supports float variables only; this keeps generated code type-sound
-     * without per-node pin retyping.
+     * Variables carry a type so the editor can offer int, float, bool, vector3,
+     * string and object-handle globals, and so Get/Set Variable nodes can pin
+     * themselves to the matching type.
      */
     struct KEMENA3D_API kScriptGraphVar
     {
-        kString name;            ///< Identifier (must be a valid AngelScript name).
-        float   defValue = 0.0f; ///< Initial value.
+        kString name;                                ///< Identifier (must be a valid AngelScript name).
+        kScriptVarType type = kScriptVarType::Float; ///< Variable value type.
+        float   defValue = 0.0f;                     ///< Initial float value.
+        int     defInt   = 0;                        ///< Initial int value.
+        bool    defBool  = false;                    ///< Initial bool value.
+        float   defVec[3] = { 0.0f, 0.0f, 0.0f };    ///< Initial Vec3 value.
+        kString defStr;                              ///< Initial string value.
     };
 
     /**

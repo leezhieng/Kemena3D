@@ -71,6 +71,17 @@ namespace kemena
         void scalePositions(float scale);
 
         /**
+         * @brief True when this bone's position and rotation keyframes are all
+         *        identical (constant) — i.e. the node never actually moves.
+         *
+         * Some FBX exporters emit constant (identity) animation channels on
+         * static container nodes (e.g. an armature's "Skeleton" node). The
+         * root-motion detection skips such bones so it lands on the topmost
+         * bone that genuinely carries motion.
+         */
+        bool isStatic() const;
+
+        /**
          * @brief Returns the interpolated local transform for the current time.
          * @return 4x4 local-space bone transform matrix.
          */

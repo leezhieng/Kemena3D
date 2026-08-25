@@ -170,6 +170,15 @@ namespace kemena
          */
         std::vector<kCamera *> getCameras();
 
+        /**
+         * @brief Returns every object across all active scenes as a flat list.
+         *
+         * Editor-side convenience (e.g. the Inspector's object-reference picker);
+         * runtime code uses the private collectAllObjects() helper directly.
+         * @return All objects in every active scene.
+         */
+        std::vector<kObject *> getAllObjects();
+
         // --- Scripting -------------------------------------------------------
 
         /**

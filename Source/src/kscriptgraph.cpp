@@ -2,6 +2,7 @@
 
 #include <set>
 #include <cstdio>
+#include <algorithm>
 
 namespace kemena
 {
@@ -21,7 +22,6 @@ namespace kemena
             case kScriptNodeType::EventOnDestroy:   return "On Destroy";
             case kScriptNodeType::Branch:           return "Branch";
             case kScriptNodeType::Print:            return "Print";
-            case kScriptNodeType::PrintConsole:     return "Print Console";
             case kScriptNodeType::SetPosition:      return "Set Position";
             case kScriptNodeType::SetRotation:      return "Set Rotation";
             case kScriptNodeType::SetScale:         return "Set Scale";
@@ -51,7 +51,10 @@ namespace kemena
             case kScriptNodeType::ScaleVec3:        return "Scale Vector3";
             case kScriptNodeType::Greater:          return "Greater";
             case kScriptNodeType::Less:             return "Less";
-            case kScriptNodeType::Equal:            return "Equal";
+            case kScriptNodeType::EqualFloat:       return "Equal (Float)";
+            case kScriptNodeType::EqualBool:        return "Equal (Bool)";
+            case kScriptNodeType::EqualInt:         return "Equal (Int)";
+            case kScriptNodeType::EqualString:      return "Equal (String)";
             case kScriptNodeType::And:              return "And";
             case kScriptNodeType::Or:               return "Or";
             case kScriptNodeType::Not:              return "Not";
@@ -87,7 +90,45 @@ namespace kemena
             case kScriptNodeType::IsPhysicsActive:      return "Is Physics Active";
             case kScriptNodeType::Anchor:               return "Anchor";
             case kScriptNodeType::Comment:              return "Comment";
+            case kScriptNodeType::Sequence:             return "Sequence";
+            case kScriptNodeType::GetAnimatorRootMotionPosition: return "Get Root Motion Position";
+            case kScriptNodeType::GetAnimatorRootMotionRotation: return "Get Root Motion Rotation";
             default:                                return "Node";
+        }
+    }
+
+    const char *kScriptVarTypeName(kScriptVarType type)
+    {
+        switch (type)
+        {
+            case kScriptVarType::Int:         return "int";
+            case kScriptVarType::Float:       return "float";
+            case kScriptVarType::Bool:        return "bool";
+            case kScriptVarType::Vec3:        return "vector3";
+            case kScriptVarType::String:      return "string";
+            case kScriptVarType::Object:      return "object";
+            case kScriptVarType::Animator:    return "animator";
+            case kScriptVarType::AudioSource: return "audio source";
+            case kScriptVarType::Material:    return "material";
+            default:                          return "float";
+        }
+    }
+
+    kScriptPinType kScriptVarTypePin(kScriptVarType type)
+    {
+        switch (type)
+        {
+            case kScriptVarType::Int:    return kScriptPinType::Int;
+            case kScriptVarType::Float:  return kScriptPinType::Float;
+            case kScriptVarType::Bool:   return kScriptPinType::Bool;
+            case kScriptVarType::Vec3:   return kScriptPinType::Vec3;
+            case kScriptVarType::String: return kScriptPinType::String;
+            // All object handles interoperate on the Object pin type.
+            case kScriptVarType::Object:
+            case kScriptVarType::Animator:
+            case kScriptVarType::AudioSource:
+            case kScriptVarType::Material:
+            default:                     return kScriptPinType::Object;
         }
     }
 
@@ -211,7 +252,6 @@ namespace kemena
                 break;
 
             case kScriptNodeType::Print:
-            case kScriptNodeType::PrintConsole:
                 in("", kScriptPinType::Exec);
                 in("Text", kScriptPinType::String);
                 out("", kScriptPinType::Exec);
@@ -324,9 +364,27 @@ namespace kemena
 
             case kScriptNodeType::Greater:
             case kScriptNodeType::Less:
-            case kScriptNodeType::Equal:
+            case kScriptNodeType::EqualFloat:
                 in("A", kScriptPinType::Float);
                 in("B", kScriptPinType::Float);
+                out("Result", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::EqualBool:
+                in("A", kScriptPinType::Bool);
+                in("B", kScriptPinType::Bool);
+                out("Result", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::EqualInt:
+                in("A", kScriptPinType::Int);
+                in("B", kScriptPinType::Int);
+                out("Result", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::EqualString:
+                in("A", kScriptPinType::String);
+                in("B", kScriptPinType::String);
                 out("Result", kScriptPinType::Bool);
                 break;
 
@@ -345,10 +403,14 @@ namespace kemena
             case kScriptNodeType::GetAction:
             case kScriptNodeType::GetActionPressed:
             case kScriptNodeType::GetActionReleased:
-                out("Value", kScriptPinType::Bool);
+                in("", kScriptPinType::Exec);
+                out("", kScriptPinType::Exec);       // trigger output on top
+                out("Value", kScriptPinType::Bool);  // data output below
                 break;
 
             case kScriptNodeType::GetAxis:
+                in("", kScriptPinType::Exec);
+                out("", kScriptPinType::Exec);
                 out("Value", kScriptPinType::Float);
                 break;
 
@@ -531,6 +593,22 @@ namespace kemena
                 n.comment = "Comment";
                 break;
 
+            case kScriptNodeType::Sequence:
+                in("", kScriptPinType::Exec);
+                out("", kScriptPinType::Exec);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::GetAnimatorRootMotionPosition:
+                in("Animator", kScriptPinType::Object);
+                out("Delta Position", kScriptPinType::Vec3);
+                break;
+
+            case kScriptNodeType::GetAnimatorRootMotionRotation:
+                in("Animator", kScriptPinType::Object);
+                out("Delta Rotation", kScriptPinType::Vec3);
+                break;
+
             default:
                 break;
         }
@@ -549,6 +627,7 @@ namespace kemena
             {"type", (int)p.type},
             {"is_output", p.isOutput},
             {"def_float", p.defFloat},
+            {"def_int", p.defInt},
             {"def_vec", {p.defVec[0], p.defVec[1], p.defVec[2]}},
             {"def_bool", p.defBool},
             {"def_str", p.defStr},
@@ -563,6 +642,7 @@ namespace kemena
         p.type     = (kScriptPinType)j.value("type", 1);
         p.isOutput = j.value("is_output", false);
         p.defFloat = j.value("def_float", 0.0f);
+        p.defInt   = j.value("def_int", 0);
         p.defBool  = j.value("def_bool", false);
         p.defStr   = j.value("def_str", std::string());
         if (j.contains("def_vec") && j["def_vec"].is_array() && j["def_vec"].size() == 3)
@@ -607,7 +687,15 @@ namespace kemena
 
         kJson jvars = kJson::array();
         for (const auto &v : variables)
-            jvars.push_back({{"name", v.name}, {"def", v.defValue}});
+            jvars.push_back({
+                {"name", v.name},
+                {"type", (int)v.type},
+                {"def", v.defValue},
+                {"def_int", v.defInt},
+                {"def_vec", {v.defVec[0], v.defVec[1], v.defVec[2]}},
+                {"def_bool", v.defBool},
+                {"def_str", v.defStr},
+            });
 
         return kJson{
             {"kind", "script_graph"},
@@ -639,6 +727,8 @@ namespace kemena
                 n.id   = jn.value("id", 0);
                 n.type = (kScriptNodeType)jn.value("type", 0);
                 n.name = jn.value("name", std::string());
+                if (n.name == "Equal")                     // legacy label from
+                    n.name = kScriptNodeTypeName(n.type);  // before Equal (Float)
                 n.posX = jn.value("x", 0.0f);
                 n.posY = jn.value("y", 0.0f);
                 n.valueBool = jn.value("value_bool", false);
@@ -656,6 +746,54 @@ namespace kemena
                 if (jn.contains("outputs"))
                     for (const auto &jp : jn["outputs"])
                         n.outputs.push_back(pinFromJson(jp));
+
+                // Migration: named-input nodes gain their "poll" exec input and
+                // "triggered" exec output when older .logic files lack them.
+                switch (n.type)
+                {
+                    case kScriptNodeType::GetAction:
+                    case kScriptNodeType::GetActionPressed:
+                    case kScriptNodeType::GetActionReleased:
+                    case kScriptNodeType::GetAxis:
+                    {
+                        // Older graphs only stored the data "Value" output and no
+                        // exec pins. Restore both the "poll" exec input and the
+                        // "triggered" exec output so the node can sit in a chain.
+                        bool hasExecIn = false, hasExecOut = false;
+                        for (const auto &p : n.inputs)
+                            if (p.type == kScriptPinType::Exec) { hasExecIn = true; break; }
+                        for (const auto &p : n.outputs)
+                            if (p.type == kScriptPinType::Exec) { hasExecOut = true; break; }
+                        if (!hasExecIn)
+                        {
+                            kScriptGraphPin p;
+                            p.id       = newId();
+                            p.type     = kScriptPinType::Exec;
+                            p.isOutput = false;
+                            n.inputs.insert(n.inputs.begin(), p);
+                        }
+                        if (!hasExecOut)
+                        {
+                            kScriptGraphPin p;
+                            p.id       = newId();
+                            p.type     = kScriptPinType::Exec;
+                            p.isOutput = true;
+                            n.outputs.insert(n.outputs.begin(), p);
+                        }
+                        // Normalise pin order: exec pins on top, data below.
+                        auto execFirst = [](const kScriptGraphPin &a,
+                                            const kScriptGraphPin &b) {
+                            return (a.type == kScriptPinType::Exec) &&
+                                   (b.type != kScriptPinType::Exec);
+                        };
+                        std::stable_sort(n.inputs.begin(), n.inputs.end(), execFirst);
+                        std::stable_sort(n.outputs.begin(), n.outputs.end(), execFirst);
+                        break;
+                    }
+                    default:
+                        break;
+                }
+
                 nodes.push_back(n);
             }
         }
@@ -680,7 +818,15 @@ namespace kemena
             {
                 kScriptGraphVar v;
                 v.name     = jv.value("name", std::string());
+                v.type     = (kScriptVarType)jv.value("type", (int)kScriptVarType::Float);
                 v.defValue = jv.value("def", 0.0f);
+                v.defInt   = jv.value("def_int", 0);
+                v.defBool  = jv.value("def_bool", false);
+                v.defStr   = jv.value("def_str", std::string());
+                if (jv.contains("def_vec") && jv["def_vec"].is_array() &&
+                    jv["def_vec"].size() == 3)
+                    for (int i = 0; i < 3; ++i)
+                        v.defVec[i] = jv["def_vec"][i].get<float>();
                 variables.push_back(v);
             }
         }
@@ -717,6 +863,54 @@ namespace kemena
                 else                       { out += c; }
             }
             return out;
+        }
+
+        // AngelScript declaration for a graph variable type.
+        kString varTypeDecl(kScriptVarType t)
+        {
+            switch (t)
+            {
+                case kScriptVarType::Int:         return "int";
+                case kScriptVarType::Float:       return "float";
+                case kScriptVarType::Bool:        return "bool";
+                case kScriptVarType::Vec3:        return "kVec3";
+                case kScriptVarType::String:      return "string";
+                case kScriptVarType::Object:      return "kObject@";
+                case kScriptVarType::Animator:    return "kAnimator@";
+                case kScriptVarType::AudioSource: return "kAudioSource@";
+                case kScriptVarType::Material:    return "kMaterial@";
+                default:                          return "float";
+            }
+        }
+
+        bool varTypeIsHandle(kScriptVarType t)
+        {
+            switch (t)
+            {
+                case kScriptVarType::Object:
+                case kScriptVarType::Animator:
+                case kScriptVarType::AudioSource:
+                case kScriptVarType::Material:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        kString varDefault(const kScriptGraphVar &v)
+        {
+            switch (v.type)
+            {
+                case kScriptVarType::Int:    return std::to_string(v.defInt);
+                case kScriptVarType::Float:  return formatFloat(v.defValue);
+                case kScriptVarType::Bool:   return v.defBool ? "true" : "false";
+                case kScriptVarType::Vec3:
+                    return "kVec3(" + formatFloat(v.defVec[0]) + ", " +
+                           formatFloat(v.defVec[1]) + ", " +
+                           formatFloat(v.defVec[2]) + ")";
+                case kScriptVarType::String: return "\"" + escapeString(v.defStr) + "\"";
+                default:                     return "null";
+            }
         }
 
         const char *eventFuncName(kScriptNodeType t)
@@ -770,6 +964,7 @@ namespace kemena
                 switch (p.type)
                 {
                     case kScriptPinType::Float:  return formatFloat(p.defFloat);
+                    case kScriptPinType::Int:    return std::to_string(p.defInt);
                     case kScriptPinType::Bool:   return p.defBool ? "true" : "false";
                     case kScriptPinType::String: return "\"" + escapeString(p.defStr) + "\"";
                     case kScriptPinType::Vec3:
@@ -783,8 +978,19 @@ namespace kemena
 
             kString emitInput(const kScriptGraphNode &n, const kScriptGraphPin &pin)
             {
-                const kScriptGraphLink *link = g.incomingLink(n.id, pin.id);
-                if (!link)
+                // Data inputs may carry several wires; every connected source
+                // expression is gathered so the values can be combined.
+                std::vector<kString> terms;
+                for (const auto &l : g.links)
+                {
+                    if (l.toNode != n.id || l.toPin != pin.id)
+                        continue;
+                    const kScriptGraphNode *src = g.findNode(l.fromNode);
+                    if (src)
+                        terms.push_back(emitNode(*src, l.fromPin));
+                }
+
+                if (terms.empty())
                 {
                     if (pin.type == kScriptPinType::Object)
                     {
@@ -793,10 +999,22 @@ namespace kemena
                     }
                     return pinDefault(pin);
                 }
-                const kScriptGraphNode *src = g.findNode(link->fromNode);
-                if (!src)
-                    return pinDefault(pin);
-                return emitNode(*src, link->fromPin);
+                if (terms.size() == 1)
+                    return terms[0];
+
+                // Multiple wires feed one input — combine their values.
+                // Numeric / Vec3 are summed, strings concatenated, bools OR'd.
+                // Object handles can't be merged, so keep the first source.
+                const char *sep = " + ";
+                if (pin.type == kScriptPinType::Bool)
+                    sep = " || ";
+                else if (pin.type == kScriptPinType::Object)
+                    return terms[0];
+
+                kString s;
+                for (size_t i = 0; i < terms.size(); ++i)
+                    s += (i > 0 ? sep : "") + terms[i];
+                return "(" + s + ")";
             }
 
             kString emitNamedInput(const kScriptGraphNode &n, const char *name)
@@ -877,7 +1095,10 @@ namespace kemena
                         return "(" + emitNamedInput(n, "A") + " > " + emitNamedInput(n, "B") + ")";
                     case kScriptNodeType::Less:
                         return "(" + emitNamedInput(n, "A") + " < " + emitNamedInput(n, "B") + ")";
-                    case kScriptNodeType::Equal:
+                    case kScriptNodeType::EqualFloat:
+                    case kScriptNodeType::EqualBool:
+                    case kScriptNodeType::EqualInt:
+                    case kScriptNodeType::EqualString:
                         return "(" + emitNamedInput(n, "A") + " == " + emitNamedInput(n, "B") + ")";
                     case kScriptNodeType::And:
                         return "(" + emitNamedInput(n, "A") + " && " + emitNamedInput(n, "B") + ")";
@@ -902,6 +1123,10 @@ namespace kemena
                         return "getAnimator(" + emitNamedInput(n, "Target") + ")";
                     case kScriptNodeType::GetAnimatorSpeed:
                         return emitNamedInput(n, "Animator") + ".getSpeed()";
+                    case kScriptNodeType::GetAnimatorRootMotionPosition:
+                        return emitNamedInput(n, "Animator") + ".getRootMotionDeltaPosition()";
+                    case kScriptNodeType::GetAnimatorRootMotionRotation:
+                        return emitNamedInput(n, "Animator") + ".getRootMotionDeltaRotation()";
 
                     case kScriptNodeType::GetPhysicsObject:
                         return emitNamedInput(n, "Target") + ".getPhysicsObject()";
@@ -926,8 +1151,6 @@ namespace kemena
                 {
                     case kScriptNodeType::Print:
                         return "print(" + emitNamedInput(n, "Text") + ");";
-                    case kScriptNodeType::PrintConsole:
-                        return "printConsole(" + emitNamedInput(n, "Text") + ");";
                     case kScriptNodeType::SetPosition:
                         return emitNamedInput(n, "Target") + ".setPosition(" +
                                emitNamedInput(n, "Value") + ");";
@@ -948,9 +1171,20 @@ namespace kemena
                         return emitNamedInput(n, "Target") + ".setActive(" +
                                emitNamedInput(n, "Active") + ");";
                     case kScriptNodeType::SetVariable:
-                        return n.valueStr.empty()
-                                   ? kString("// Set Variable: no variable selected")
-                                   : n.valueStr + " = " + emitNamedInput(n, "Value") + ";";
+                    {
+                        if (n.valueStr.empty())
+                            return "// Set Variable: no variable selected";
+                        kString rhs = emitNamedInput(n, "Value");
+                        for (const auto &v : g.variables)
+                        {
+                            if (v.name == n.valueStr && varTypeIsHandle(v.type))
+                            {
+                                rhs = "cast<" + varTypeDecl(v.type) + ">(" + rhs + ")";
+                                break;
+                            }
+                        }
+                        return n.valueStr + " = " + rhs + ";";
+                    }
 
                     case kScriptNodeType::PlaySound:
                         return "playAudio(" + emitNamedInput(n, "File") + ", " +
@@ -1068,6 +1302,62 @@ namespace kemena
                         break; // a branch ends the linear chain
                     }
 
+                    if (n->type == kScriptNodeType::Sequence)
+                    {
+                        // Run each exec output in order (top to bottom).
+                        for (const auto &p : n->outputs)
+                        {
+                            if (p.type != kScriptPinType::Exec)
+                                continue;
+                            int target = execTarget(*n, p);
+                            if (target != 0)
+                                out += emitExec(target, indent, visited);
+                        }
+                        break; // a sequence ends the linear chain
+                    }
+
+                    // Named-input nodes are used two ways:
+                    //  1. As a trigger in an exec chain - the exec output fires
+                    //     the next node only while the action/axis is active
+                    //     (e.g. Get Action "Left" -> Print prints while held).
+                    //  2. As a data source - the "Value" output feeds a consumer
+                    //     (e.g. a Branch) that decides what to do for BOTH the
+                    //     active and inactive states. Gating the chain on the
+                    //     held state here would wrap the consumer in
+                    //     "if (getAction(...))" and make its false/released
+                    //     branch unreachable, so when the data output is
+                    //     connected we let the exec flow pass through and let
+                    //     the downstream consumer make the decision.
+                    if (n->type == kScriptNodeType::GetAction ||
+                        n->type == kScriptNodeType::GetActionPressed ||
+                        n->type == kScriptNodeType::GetActionReleased ||
+                        n->type == kScriptNodeType::GetAxis)
+                    {
+                        bool dataConsumed = false;
+                        for (const auto &p : n->outputs)
+                            if (p.type != kScriptPinType::Exec &&
+                                g.isPinConnected(n->id, p.id))
+                            {
+                                dataConsumed = true;
+                                break;
+                            }
+
+                        if (!dataConsumed)
+                        {
+                            kString cond = emitNodeImpl(*n, 0);
+                            if (n->type == kScriptNodeType::GetAxis)
+                                cond = "(" + cond + ") != 0.0f";
+                            const kScriptGraphPin *eo = firstExecOut(*n);
+                            int target = eo ? execTarget(*n, *eo) : 0;
+                            out += pad + "if (" + cond + ")\n" + pad + "{\n";
+                            out += emitExec(target, indent + 4, visited);
+                            out += pad + "}\n";
+                            break; // a triggered input ends the linear chain
+                        }
+                        // else: the Value output drives a downstream consumer,
+                        // so fall through and treat the node as pass-through.
+                    }
+
                     kString s = statement(*n);
                     if (!s.empty())
                         out += pad + s + "\n";
@@ -1096,7 +1386,7 @@ namespace kemena
         {
             if (v.name.empty())
                 continue;
-            code += "float " + v.name + " = " + formatFloat(v.defValue) + ";\n";
+            code += varTypeDecl(v.type) + " " + v.name + " = " + varDefault(v) + ";\n";
         }
         if (!graph.variables.empty())
             code += "\n";

@@ -2,6 +2,22 @@
 
 namespace kemena
 {
+    namespace
+    {
+        // Refresh the world transform for every ancestor of @p node, root-first,
+        // so getGlobalPosition()/getGlobalRotation() reflect the full parent chain.
+        // Cheap (a handful of 4x4 multiplies) and idempotent — safe to call from
+        // the render hot path.
+        void refreshWorldTransforms(kObject *node)
+        {
+            if (node == nullptr)
+                return;
+            if (node->getParent() != nullptr)
+                refreshWorldTransforms(node->getParent());
+            node->calculateModelMatrix();
+        }
+    }
+
     kCamera::kCamera(kObject *parentNode, kCameraType type)
     {
         if (parentNode != nullptr)
@@ -27,27 +43,46 @@ namespace kemena
     {
         // Look at is always the front of the camera, otherwise gizmo and icons will display at the wrong position
         if (cameraType == kCameraType::CAMERA_TYPE_FREE)
-		{
-			kVec3 forward = glm::normalize(newLookAt - getPosition());
-			kVec3 defaultForward(0.0f, 0.0f, -1.0f);
-			kQuat rotQuat = glm::rotation(defaultForward, forward);
-			
-			setRotation(rotQuat);
-		}
-		else
-			lookAt = newLookAt;
+        {
+            // Resolve the camera's world-space origin so the look direction is
+            // computed against the parent chain, not just the local transform.
+            refreshWorldTransforms(this);
+            kVec3 worldPos = getGlobalPosition();
+
+            kVec3 forward = newLookAt - worldPos;
+            float len = glm::length(forward);
+            if (len < 1e-6f)
+                return; // target coincides with the camera — keep current orientation
+            forward /= len;
+
+            kVec3 defaultForward(0.0f, 0.0f, -1.0f);
+            kQuat desiredWorldRot = glm::rotation(defaultForward, forward);
+
+            // World orientation = parent's world rotation * local rotation, so
+            // solve for the local rotation that yields the desired world look.
+            kQuat parentWorldRot(1.0f, 0.0f, 0.0f, 0.0f);
+            if (getParent() != nullptr)
+                parentWorldRot = getParent()->getGlobalRotation();
+
+            setRotation(glm::normalize(glm::inverse(parentWorldRot) * desiredWorldRot));
+        }
+        else
+            lookAt = newLookAt;
     }
 
     kVec3 kCamera::getLookAt()
     {
-		// Free camera will always return the forward direction as lookAt
-		
-		if (cameraType == kCameraType::CAMERA_TYPE_LOCKED)
-			return lookAt;
-		else if (cameraType == kCameraType::CAMERA_TYPE_FREE)
-			return getPosition() + calculateForward();
-		
-		return lookAt;
+        // Free camera will always return the forward direction as lookAt
+
+        if (cameraType == kCameraType::CAMERA_TYPE_LOCKED)
+            return lookAt;
+        else if (cameraType == kCameraType::CAMERA_TYPE_FREE)
+        {
+            refreshWorldTransforms(this);
+            return getGlobalPosition() + (getGlobalRotation() * kVec3(0.0f, 0.0f, -1.0f));
+        }
+
+        return lookAt;
     }
 
     void kCamera::setFOV(float newFOV)
@@ -92,8 +127,21 @@ namespace kemena
 
     kMat4 kCamera::calculateMVP(kMesh *mesh)
     {
+        // Build the view from the camera's world transform so a camera nested
+        // under a moving/rotating parent follows it.
+        refreshWorldTransforms(this);
+
         kMat4 model = mesh->getModelMatrixWorld();
-        kMat4 view = glm::lookAt(getPosition(), lookAt, calculateUp());
+
+        kVec3 eye     = getGlobalPosition();
+        kQuat worldRot = getGlobalRotation();
+        kVec3 up       = worldRot * kVec3(0.0f, 1.0f, 0.0f);
+
+        kVec3 center = (cameraType == kCameraType::CAMERA_TYPE_FREE)
+                           ? eye + (worldRot * kVec3(0.0f, 0.0f, -1.0f))
+                           : lookAt;
+
+        kMat4 view       = glm::lookAt(eye, center, up);
         kMat4 projection = glm::perspective(glm::radians(fov), aspectRatio, nearClip, farClip);
 
         return projection * view * model;
@@ -101,12 +149,22 @@ namespace kemena
 
     kMat4 kCamera::getViewMatrix()
     {
+        // The view matrix must be derived from the camera's world-space pose.
+        // A camera parented under another object inherits that object's
+        // translation/rotation/scale, so using only the local transform here
+        // would make the camera ignore its parent.
+        refreshWorldTransforms(this);
+
         kMat4 view;
 
+        kVec3 eye     = getGlobalPosition();
+        kQuat worldRot = getGlobalRotation();
+        kVec3 up       = worldRot * kVec3(0.0f, 1.0f, 0.0f);
+
         if (cameraType == kCameraType::CAMERA_TYPE_FREE)
-            view = glm::lookAt(getPosition(), getPosition() + calculateForward(), calculateUp());
+            view = glm::lookAt(eye, eye + (worldRot * kVec3(0.0f, 0.0f, -1.0f)), up);
         else if (cameraType == kCameraType::CAMERA_TYPE_LOCKED)
-            view = glm::lookAt(getPosition(), lookAt, calculateUp());
+            view = glm::lookAt(eye, lookAt, up);
 
         return view;
     }

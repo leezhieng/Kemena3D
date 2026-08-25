@@ -84,6 +84,32 @@ namespace kemena
         /** @brief Current playback speed multiplier. */
         float getSpeed() const;
 
+        // -------------------------------------------------------------------
+        // Root-motion extraction options.
+        //
+        // Each flag names a channel of the root bone (the topmost animated
+        // node). When a channel is enabled the kAnimator extracts that motion
+        // as a per-frame delta (queryable by scripts) and bakes it out of the
+        // pose — so the character no longer walks/turns on its own and the
+        // script applies the delta to the GameObject / physics object instead.
+        // The inspector's .animation asset panel toggles these per clip.
+        // -------------------------------------------------------------------
+
+        /** @brief Extract & bake the root bone's rotation (turning). */
+        void setRootMotionRotation(bool enabled);
+        /** @brief True when the root bone's rotation is extracted. */
+        bool getRootMotionRotation() const;
+
+        /** @brief Extract & bake the root bone's vertical (Y) translation. */
+        void setRootMotionPositionY(bool enabled);
+        /** @brief True when the root bone's Y translation is extracted. */
+        bool getRootMotionPositionY() const;
+
+        /** @brief Extract & bake the root bone's horizontal (XZ) translation. */
+        void setRootMotionPositionXZ(bool enabled);
+        /** @brief True when the root bone's XZ translation is extracted. */
+        bool getRootMotionPositionXZ() const;
+
     private:
         float                        duration       = 0.0f; ///< Total length in ticks.
         int                          ticksPerSecond = 25;   ///< Tick rate.
@@ -92,6 +118,10 @@ namespace kemena
         std::vector<kMesh *>         meshes;                ///< Bound mesh references.
         std::map<kString, kBoneInfo> boneInfoMap;           ///< Bone name → info lookup.
         float                        speed = 1.0f;          ///< Playback speed multiplier.
+
+        bool rootMotionRotation   = false; ///< Root rotation channel is extracted/baked.
+        bool rootMotionPositionY  = false; ///< Root Y translation channel is extracted/baked.
+        bool rootMotionPositionXZ = false; ///< Root XZ translation channel is extracted/baked.
     };
 }
 

@@ -79,6 +79,31 @@ namespace kemena
      * references a script *asset* by UUID — the live compiled module is owned by
      * kScriptManager and looked up via @c uuid (the component UUID).
      */
+    /**
+     * @brief User-assigned value for one script-scope global variable.
+     *
+     * The inspector enumerates the globals declared by a script asset (from its
+     * source text) and lets the user assign values or object references. These
+     * bindings are stored on the kScript component and applied to the private
+     * module's globals when the instance is created at runtime.
+     */
+    struct KEMENA3D_API kScriptVarBinding
+    {
+        kString name;                 ///< Global variable name.
+        kString typeName;             ///< AngelScript type name (e.g. "kAnimator@").
+        kString valueStr;             ///< String value, or referenced object UUID for handles.
+        float   valueFloat[3] = {0.0f, 0.0f, 0.0f}; ///< int/float/bool/vec3 storage.
+        bool    valueBool = false;    ///< Bool storage.
+        bool    assigned  = false;    ///< True once the user set a value in the inspector.
+    };
+
+    /**
+     * @brief Per-object script *component* descriptor.
+     *
+     * This is the lightweight, serialisable record stored on a kObject. It only
+     * references a script *asset* by UUID — the live compiled module is owned by
+     * kScriptManager and looked up via @c uuid (the component UUID).
+     */
     struct KEMENA3D_API kScript
     {
         kString uuid;              ///< UUID of this attachment (unique per object+slot).
@@ -86,6 +111,9 @@ namespace kemena
         kString fileName;          ///< Source file path (editor convenience / fallback).
         kString checksum;          ///< Source checksum recorded at last compile.
         bool    isActive = true;   ///< Whether this script runs each frame.
+
+        ///< User-assigned values for script-scope globals (editor inspector).
+        std::vector<kScriptVarBinding> variableBindings;
     };
 
     /**
@@ -298,6 +326,35 @@ namespace kemena
 
         /** @brief Destroys every live instance (e.g. when Play stops). */
         void destroyAllInstances();
+
+        /**
+         * @brief Value to write into one script-global variable of a live instance.
+         *
+         * Primitive types use @c i / @c f / @c b / @c vec; handle types
+         * ("kObject@", "kAnimator@", ...) use @c handle.
+         */
+        struct KEMENA3D_API kScriptGlobalValue
+        {
+            kString name;
+            kString typeName;
+            int    i      = 0;
+            float  f      = 0.0f;
+            bool   b      = false;
+            float  vec[3] = {0.0f, 0.0f, 0.0f};
+            void  *handle = nullptr;
+        };
+
+        /**
+         * @brief Writes a value into one global variable of a live instance.
+         *
+         * Looks the global up by name on the instance's private module and writes
+         * the value at its storage address. Handles are stored as raw pointers
+         * (kObject/kAnimator/... are registered with asOBJ_REF | asOBJ_NOCOUNT).
+         *
+         * @param inst  Instance whose module globals are written.
+         * @param value Name, type and value to apply.
+         */
+        void applyGlobalVariable(kScriptInstance *inst, const kScriptGlobalValue &value);
 
         // --- Execution -------------------------------------------------------
 

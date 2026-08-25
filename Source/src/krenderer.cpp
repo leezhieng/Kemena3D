@@ -828,7 +828,7 @@ void main()
                     shader->setValue("modelMatrix", currentMesh->getModelMatrixWorld());
                     shader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
                     shader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
-                    shader->setValue("viewPos", world->getMainCamera()->getPosition());
+                    shader->setValue("viewPos", world->getMainCamera()->getGlobalPosition());
 
                     shader->setValue("material.tiling", currentMesh->getMaterial()->getUvTiling());
                     shader->setValue("material.ambient", currentMesh->getMaterial()->getAmbientColor());
@@ -1061,13 +1061,8 @@ void main()
 
             if (world->getMainCamera() != nullptr && currentLight->getMaterial() != nullptr)
             {
-                kMat4 view = lookAt(world->getMainCamera()->getPosition(),
-                                    world->getMainCamera()->getLookAt(),
-                                    world->getMainCamera()->calculateUp());
-                kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
-                                                    world->getMainCamera()->getAspectRatio(),
-                                                    world->getMainCamera()->getNearClip(),
-                                                    world->getMainCamera()->getFarClip());
+                kMat4 view = world->getMainCamera()->getViewMatrix();
+                kMat4 projection = world->getMainCamera()->getProjectionMatrix();
 
                 if (currentLight->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
                 {
@@ -1120,13 +1115,8 @@ void main()
 
             if (world->getMainCamera() != nullptr && currentCamera->getMaterial() != nullptr)
             {
-                kMat4 view = lookAt(world->getMainCamera()->getPosition(),
-                                    world->getMainCamera()->getLookAt(),
-                                    world->getMainCamera()->calculateUp());
-                kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
-                                                    world->getMainCamera()->getAspectRatio(),
-                                                    world->getMainCamera()->getNearClip(),
-                                                    world->getMainCamera()->getFarClip());
+                kMat4 view = world->getMainCamera()->getViewMatrix();
+                kMat4 projection = world->getMainCamera()->getProjectionMatrix();
 
                 if (currentCamera->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
                 {
@@ -1173,13 +1163,8 @@ void main()
 
             if (world->getMainCamera() != nullptr && audioObj->getMaterial() != nullptr)
             {
-                kMat4 view = lookAt(world->getMainCamera()->getPosition(),
-                                    world->getMainCamera()->getLookAt(),
-                                    world->getMainCamera()->calculateUp());
-                kMat4 projection = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
-                                                    world->getMainCamera()->getAspectRatio(),
-                                                    world->getMainCamera()->getNearClip(),
-                                                    world->getMainCamera()->getFarClip());
+                kMat4 view = world->getMainCamera()->getViewMatrix();
+                kMat4 projection = world->getMainCamera()->getProjectionMatrix();
 
                 if (audioObj->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
                 {
@@ -1857,13 +1842,8 @@ void main()
             pickingShader->unuse();
             pickingIconShader->use();
 
-            kMat4 view = lookAt(world->getMainCamera()->getPosition(),
-                                world->getMainCamera()->getLookAt(),
-                                world->getMainCamera()->calculateUp());
-            kMat4 proj = glm::perspective(glm::radians(world->getMainCamera()->getFOV()),
-                                          world->getMainCamera()->getAspectRatio(),
-                                          world->getMainCamera()->getNearClip(),
-                                          world->getMainCamera()->getFarClip());
+            kMat4 view = world->getMainCamera()->getViewMatrix();
+            kMat4 proj = world->getMainCamera()->getProjectionMatrix();
 
             kVec3 idColor = idToRgb(currentNode->getId());
             pickingIconShader->setValue("viewProjection", proj * view);

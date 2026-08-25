@@ -592,12 +592,27 @@ namespace kemena
             for (size_t j = 0; j < getScripts().size(); ++j)
             {
                 const kScript &sc = getScripts().at(j);
+
+                json varBindings = json::array();
+                for (const auto &vb : sc.variableBindings)
+                {
+                    varBindings.push_back({
+                        {"name",       vb.name},
+                        {"type",       vb.typeName},
+                        {"value_str",  vb.valueStr},
+                        {"value",      {vb.valueFloat[0], vb.valueFloat[1], vb.valueFloat[2]}},
+                        {"value_bool", vb.valueBool},
+                        {"assigned",   vb.assigned},
+                    });
+                }
+
                 scriptsData.push_back({
                     {"uuid",        sc.uuid},       // component (attachment) UUID
                     {"script_uuid", sc.scriptUuid}, // referenced script asset UUID
                     {"file_name",   sc.fileName},   // source path (fallback / editor)
                     {"checksum",    sc.checksum},   // source checksum at last compile
                     {"active",      sc.isActive},
+                    {"variables",   varBindings},   // user-assigned globals
                 });
             }
         }

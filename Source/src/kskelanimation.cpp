@@ -134,4 +134,11 @@ namespace kemena
     std::vector<kMesh *> kSkeletalAnimation::getMeshes()           { return meshes; }
     void             kSkeletalAnimation::setSpeed(float s)         { speed = s; }
     float            kSkeletalAnimation::getSpeed()         const  { return speed; }
+
+    void  kSkeletalAnimation::setRootMotionRotation(bool enabled)  { rootMotionRotation = enabled; }
+    bool  kSkeletalAnimation::getRootMotionRotation() const        { return rootMotionRotation; }
+    void  kSkeletalAnimation::setRootMotionPositionY(bool enabled) { rootMotionPositionY = enabled; }
+    bool  kSkeletalAnimation::getRootMotionPositionY() const       { return rootMotionPositionY; }
+    void  kSkeletalAnimation::setRootMotionPositionXZ(bool enabled){ rootMotionPositionXZ = enabled; }
+    bool  kSkeletalAnimation::getRootMotionPositionXZ() const      { return rootMotionPositionXZ; }
 }

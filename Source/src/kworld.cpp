@@ -206,6 +206,26 @@ namespace kemena
             collectSubtree(child, out);
     }
 
+    // Finds the first animator in an object's subtree. The editor attaches an
+    // animator to the skinned (bone) meshes inside the animated object, so the
+    // referenced object itself may not be the mesh that holds the kAnimator.
+    static kAnimator *findAnimatorInSubtree(kObject *node)
+    {
+        if (!node)
+            return nullptr;
+        if (node->getType() == NODE_TYPE_MESH)
+        {
+            if (kAnimator *a = static_cast<kMesh *>(node)->getAnimator())
+                return a;
+        }
+        for (kObject *child : node->getChildren())
+        {
+            if (kAnimator *a = findAnimatorInSubtree(child))
+                return a;
+        }
+        return nullptr;
+    }
+
     std::vector<kObject *> kWorld::collectAllObjects()
     {
         std::vector<kObject *> out;
@@ -215,6 +235,11 @@ namespace kemena
                 collectSubtree(scene->getRootNode(), out);
         }
         return out;
+    }
+
+    std::vector<kObject *> kWorld::getAllObjects()
+    {
+        return collectAllObjects();
     }
 
     kString kWorld::resolveScriptAsset(kScript &component)
@@ -246,6 +271,12 @@ namespace kemena
 
         std::vector<kObject *> objects = collectAllObjects();
 
+        // UUID -> object map used to resolve handle-type variable bindings.
+        std::map<kString, kObject *> byUuid;
+        for (kObject *o : objects)
+            if (o && !o->getUuid().empty())
+                byUuid[o->getUuid()] = o;
+
         // Pass 1 — build every instance, then dispatch Awake().
         for (kObject *obj : objects)
         {
@@ -263,6 +294,46 @@ namespace kemena
                     continue;
 
                 inst->owner = obj;
+
+                // Apply user-assigned script-global values before Awake() so
+                // the first frame of gameplay already sees them.
+                for (const auto &binding : comp.variableBindings)
+                {
+                    if (!binding.assigned)
+                        continue;
+
+                    kScriptManager::kScriptGlobalValue gv;
+                    gv.name     = binding.name;
+                    gv.typeName = binding.typeName;
+                    gv.i        = (int)binding.valueFloat[0];
+                    gv.f        = binding.valueFloat[0];
+                    gv.b        = binding.valueBool;
+                    gv.vec[0]   = binding.valueFloat[0];
+                    gv.vec[1]   = binding.valueFloat[1];
+                    gv.vec[2]   = binding.valueFloat[2];
+
+                    if (binding.typeName == "kObject@")
+                    {
+                        auto it = byUuid.find(binding.valueStr);
+                        gv.handle = (it != byUuid.end()) ? (void *)it->second : nullptr;
+                    }
+                    else if (binding.typeName == "kAnimator@")
+                    {
+                        auto it = byUuid.find(binding.valueStr);
+                        if (it != byUuid.end())
+                            gv.handle = (void *)findAnimatorInSubtree(it->second);
+                    }
+                    else if (binding.typeName == "kAudioSource@")
+                    {
+                        auto it = byUuid.find(binding.valueStr);
+                        if (it != byUuid.end() && !it->second->getAudioSources().empty())
+                            gv.handle = (void *)&it->second->getAudioSources()[0];
+                    }
+                    // kMaterial@ is asset-side; left null unless resolved elsewhere.
+
+                    scriptManager->applyGlobalVariable(inst, gv);
+                }
+
                 scriptManager->setActiveObject(obj);
                 scriptManager->callEvent(inst, K_SCRIPT_AWAKE);
                 inst->awakeCalled = true;
@@ -786,6 +857,24 @@ namespace kemena
                 s.fileName   = sj.value("file_name", std::string(""));
                 s.checksum   = sj.value("checksum", std::string(""));
                 s.isActive   = sj.value("active", true);
+
+                if (sj.contains("variables") && sj["variables"].is_array())
+                {
+                    for (const auto &vj : sj["variables"])
+                    {
+                        kScriptVarBinding vb;
+                        vb.name      = vj.value("name", std::string(""));
+                        vb.typeName  = vj.value("type", std::string(""));
+                        vb.valueStr  = vj.value("value_str", std::string(""));
+                        vb.valueBool = vj.value("value_bool", false);
+                        vb.assigned  = vj.value("assigned", false);
+                        if (vj.contains("value") && vj["value"].is_array() &&
+                            vj["value"].size() == 3)
+                            for (int i = 0; i < 3; ++i)
+                                vb.valueFloat[i] = vj["value"][i].get<float>();
+                        s.variableBindings.push_back(vb);
+                    }
+                }
 
                 kString sid = s.scriptUuid.empty() ? s.uuid : s.scriptUuid;
                 if (!sid.empty() && world->getScriptManager())

@@ -336,6 +336,11 @@ Animators drive skeletal mesh playback and are reached through
 | `void setInt(const string &in, int)`     | Set a named Int controller variable. |
 | `void setInt(const string &in, float)`   | Float overload used by the visual graph (truncates). |
 | `void setTrigger(const string &in)`      | Fire a named Trigger controller variable. |
+| `kVec3 getRootMotionDeltaPosition()`     | Accumulated root-bone position delta since the last query (root-local space), consumed by the call. Only channels enabled in the `.animation` asset ("Root transform position (Y)" / "(XZ)") contribute. |
+| `kVec3 getRootMotionDeltaRotation()`     | Accumulated root-bone rotation delta since the last query, as euler degrees (XYZ), consumed by the call. Enabled by "Root transform rotation". |
+| `bool getRootMotionPositionXZ() const`   | True when the active clip extracts the root bone's XZ translation. |
+| `bool getRootMotionPositionY() const`    | True when the active clip extracts the root bone's Y translation. |
+| `bool getRootMotionRotation() const`     | True when the active clip extracts the root bone's rotation. |
 
 ### `kSkeletalAnimation`
 
@@ -354,6 +359,29 @@ void Start()
     {
         anim.setSpeed(1.5f);
         anim.playAnimation(0);
+    }
+}
+```
+
+#### Root motion
+
+When a channel is enabled in the `.animation` asset's **Root Motion** options
+("Root transform rotation", "Root transform position (Y)", "Root transform
+position (XZ)"), at game time the matching root-bone motion is **not applied to
+the object** — it is baked out of the pose and exposed here as a per-frame
+delta instead. The animation preview always plays the full clip including root
+motion. Read the deltas once per frame and apply them to the GameObject or its
+physics body; each call consumes (resets) the accumulated value.
+
+```angelscript
+void Update()
+{
+    kAnimator@ anim = getAnimator(getSelf());
+    if (anim !is null)
+    {
+        // Apply extracted movement to the character object (local space).
+        self.translate(anim.getRootMotionDeltaPosition());
+        self.setRotation(self.getRotation() + anim.getRootMotionDeltaRotation());
     }
 }
 ```

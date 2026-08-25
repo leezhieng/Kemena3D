@@ -343,6 +343,44 @@ namespace kemena
         instances.clear();
     }
 
+    void kScriptManager::applyGlobalVariable(kScriptInstance *inst,
+                                             const kScriptGlobalValue &value)
+    {
+        if (!inst || !inst->valid || !inst->module || value.name.empty())
+            return;
+
+        int idx = inst->module->GetGlobalVarIndexByName(value.name.c_str());
+        if (idx < 0)
+            return;
+
+        void *addr = inst->module->GetAddressOfGlobalVar(idx);
+        if (!addr)
+            return;
+
+        if (value.typeName == "int")
+            *(int *)addr = value.i;
+        else if (value.typeName == "float")
+            *(float *)addr = value.f;
+        else if (value.typeName == "bool")
+            *(bool *)addr = value.b;
+        else if (value.typeName == "kVec3")
+        {
+            float *dst = (float *)addr;
+            dst[0] = value.vec[0];
+            dst[1] = value.vec[1];
+            dst[2] = value.vec[2];
+        }
+        else if (value.typeName == "kObject@" || value.typeName == "kAnimator@" ||
+                 value.typeName == "kAudioSource@" || value.typeName == "kMaterial@")
+        {
+            // Handles are raw pointers (asOBJ_REF | asOBJ_NOCOUNT): the global
+            // storage slot holds a single pointer we can overwrite directly.
+            *(void **)addr = value.handle;
+        }
+        // "string" globals are left untouched (scriptstdstring objects need the
+        // engine factory to assign; out of scope for these bindings).
+    }
+
     // -----------------------------------------------------------------------
     // Execution
     // -----------------------------------------------------------------------
