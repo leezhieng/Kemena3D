@@ -8521,7 +8521,8 @@ static void enterAnimatorState(RuntimeAnimator &rt, AnimState *state)
         rt.animator->playAnimation(it->second);
 }
 
-static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *state, float animSeconds)
+static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *state, float animSeconds,
+                                              AnimTransition **outFired)
 {
     if (!state)
         return nullptr;
@@ -8556,6 +8557,8 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
                 // current state keeps playing instead.
                 if (rt.clipForState.count(target->animationUuid) == 0)
                     continue;
+                if (outFired)
+                    *outFired = &t;
                 return target;
             }
         }
@@ -8816,6 +8819,11 @@ void Manager::stepAnimators(float dt)
         if (!rt.animator)
             continue;
 
+        // Advance any active cross-fade before evaluating state transitions so
+        // a blend started this frame isn't advanced until the next one.
+        if (rt.animator->isBlending())
+            rt.animator->updateBlend(dt);
+
         AnimState *state = rt.graph->findState(rt.currentStateId);
         if (!state)
         {
@@ -8851,9 +8859,15 @@ void Manager::stepAnimators(float dt)
             animSeconds = endSec;
         }
 
-        AnimState *next = evaluateAnimatorTransitions(rt, state, animSeconds);
+        AnimTransition *firedTrans = nullptr;
+        AnimState *next = evaluateAnimatorTransitions(rt, state, animSeconds, &firedTrans);
         if (next)
         {
+            // Capture the source clip and its current pose time so a cross-fade
+            // can blend from the exact pose the transition fired at.
+            kSkeletalAnimation *fromClip = clip;
+            const float fromTicks = animSeconds * clip->getTicksPerSecond();
+
             enterAnimatorState(rt, next);
             state = next;
             clipIt = rt.clipForState.find(state->animationUuid);
@@ -8864,6 +8878,20 @@ void Manager::stepAnimators(float dt)
             startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
             endFrame   = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
             animSeconds = startFrame / kAnimFps;
+
+            // Honour the transition's blend settings: cross-fade over
+            // blendDuration seconds (the editor default), or snap instantly when
+            // the transition uses AnimBlendMode::Instant / a zero duration.
+            const bool crossFade = firedTrans &&
+                                   firedTrans->blendMode == AnimBlendMode::CrossFade &&
+                                   firedTrans->blendDuration > 0.01f &&
+                                   fromClip != nullptr && fromClip != clip;
+            if (crossFade)
+            {
+                const float toTicks = animSeconds * clip->getTicksPerSecond();
+                rt.animator->beginBlend(fromClip, fromTicks, clip, toTicks,
+                                        firedTrans->blendDuration);
+            }
         }
 
         float ticks = animSeconds * clip->getTicksPerSecond();
