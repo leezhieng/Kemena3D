@@ -7,6 +7,59 @@
 
 namespace kemena
 {
+    // -----------------------------------------------------------------------
+    // Local-transform blending helpers used by calculateBoneTransform() during
+    // cross-faded state transitions. Both clips belong to the same skeleton, so
+    // per-bone local-space blending (position lerp / rotation nlerp / scale
+    // lerp) produces smooth, stable transitions without global-space "stretch".
+    // -----------------------------------------------------------------------
+
+    static void decomposeTRS(const kMat4 &m, kVec3 &translation, kQuat &rotation, kVec3 &scale)
+    {
+        translation = kVec3(m[3][0], m[3][1], m[3][2]);
+        scale = kVec3(glm::length(kVec3(m[0])),
+                      glm::length(kVec3(m[1])),
+                      glm::length(kVec3(m[2])));
+
+        // Rebuild the pure rotation columns (divide the scale out) so non-unit
+        // scale does not leak into the quaternion extraction.
+        kMat3 rot(1.0f);
+        rot[0] = (scale.x > 1e-6f) ? kVec3(m[0]) / scale.x : kVec3(m[0]);
+        rot[1] = (scale.y > 1e-6f) ? kVec3(m[1]) / scale.y : kVec3(m[1]);
+        rot[2] = (scale.z > 1e-6f) ? kVec3(m[2]) / scale.z : kVec3(m[2]);
+        rotation = kQuat(rot);
+    }
+
+    static kMat4 composeTRS(const kVec3 &translation, const kQuat &rotation, const kVec3 &scale)
+    {
+        return glm::translate(kMat4(1.0f), translation) *
+               kMat4(rotation) *
+               glm::scale(kMat4(1.0f), scale);
+    }
+
+    static kMat4 blendLocalTransforms(const kMat4 &from, const kMat4 &to, float t)
+    {
+        kVec3 fromPos, toPos;
+        kQuat fromRot, toRot;
+        kVec3 fromScl, toScl;
+        decomposeTRS(from, fromPos, fromRot, fromScl);
+        decomposeTRS(to,   toPos,   toRot,   toScl);
+
+        // Take the shortest rotation path (quaternions q and -q are identical).
+        if (glm::dot(fromRot, toRot) < 0.0f)
+            toRot = -toRot;
+
+        // Interpolate each component independently: position/scale by lerp and
+        // rotation by SLERP (constant angular velocity), then reconstruct the
+        // TRS matrix. Never lerp raw 4x4 matrices directly — that skews and
+        // shears the blend.
+        const kVec3 pos = glm::mix(fromPos, toPos, t);
+        const kQuat rot = glm::slerp(fromRot, toRot, t);
+        const kVec3 scl = glm::mix(fromScl, toScl, t);
+
+        return composeTRS(pos, rot, scl);
+    }
+
     kAnimator::kAnimator(kSkeletalAnimation *newAnimation)
     {
         currentTime = 0.0f;
@@ -32,20 +85,28 @@ namespace kemena
         deltaTime = newDeltaTime;
         if (currentAnimation != nullptr && currentFrameId != frameId)
         {
-            const float prevTime = currentTime;
-            currentTime += currentAnimation->getTicksPerSecond() * newDeltaTime;
-            currentTime = fmod(currentTime, currentAnimation->getDuration());
+            // When no time has elapsed, the caller is only re-reading the pose
+            // (the editor's Manager::stepAnimators drives the clip time and
+            // computes the pose directly). Recomputing it here is redundant and
+            // roughly doubles the per-frame pose cost during cross-fades, so
+            // skip it — the renderer just uses the pose stepAnimators produced.
+            if (newDeltaTime != 0.0f)
+            {
+                const float prevTime = currentTime;
+                currentTime += currentAnimation->getTicksPerSecond() * newDeltaTime;
+                currentTime = fmod(currentTime, currentAnimation->getDuration());
 
-            // When the clip loops (time wrapped past the end), re-seed the
-            // root-motion tracker. Otherwise the end-of-clip → start-of-clip
-            // pose jump is accumulated as a huge delta that cancels out all
-            // the motion gathered over the previous loop, snapping the object
-            // back to its starting position.
-            if (rootMotionActive() && currentTime < prevTime)
-                resetRootMotion();
+                // When the clip loops (time wrapped past the end), re-seed the
+                // root-motion tracker. Otherwise the end-of-clip → start-of-clip
+                // pose jump is accumulated as a huge delta that cancels out all
+                // the motion gathered over the previous loop, snapping the object
+                // back to its starting position.
+                if (rootMotionActive() && currentTime < prevTime)
+                    resetRootMotion();
 
-            const kNodeData &rootNode = currentAnimation->getRootNode();
-            calculateBoneTransform(&rootNode, kMat4(1.0f));
+                const kNodeData &rootNode = currentAnimation->getRootNode();
+                calculateBoneTransform(&rootNode, kMat4(1.0f));
+            }
         }
         // Only update once per frame.
         currentFrameId = frameId;
@@ -59,6 +120,9 @@ namespace kemena
     {
         if (animation != nullptr)
         {
+            // A direct play is an instant switch — drop any active cross-fade.
+            blending = false;
+            blendFromAnimation = nullptr;
             currentAnimation = animation;
             currentTime = 0.0f;
             resetRootMotion();
@@ -70,6 +134,8 @@ namespace kemena
         kSkeletalAnimation *clip = getAnimation(index);
         if (clip != nullptr)
         {
+            blending = false;
+            blendFromAnimation = nullptr;
             currentAnimation = clip;
             currentTime = 0.0f;
             resetRootMotion();
@@ -89,21 +155,85 @@ namespace kemena
         kString nodeName      = node->name;
         kMat4   nodeTransform = node->transformation;
 
-        kBone *bone = currentAnimation->findBone(nodeName);
-        if (bone != nullptr)
+        // Cross-fade: while a state transition is blending, sample the source
+        // clip at blendFromTime and the destination clip (the active clip) at
+        // currentTime, then blend their local transforms per bone. The skeleton
+        // hierarchy is traversed once with the blended transforms (local-space
+        // blending), which keeps the transition smooth and artifact-free.
+        if (blending && blendFromAnimation != nullptr)
         {
-            bone->update(currentTime);
-            nodeTransform = bone->getLocalTransform();
+            kBone *fromBone = blendFromAnimation->findBone(nodeName);
+            kBone *toBone   = currentAnimation->findBone(nodeName);
 
-            // Root-motion extraction: the topmost animated bone is the root
-            // bone. When any channel is enabled, resolve it once and then
-            // accumulate the per-frame delta + bake the enabled channels out
-            // of the pose so the character stays in place.
-            if (rootMotionActive())
+            // Root-motion is NEVER blended during a cross-fade. Whether the
+            // source or the destination clip carries root motion, its root
+            // displacement would be mixed into the pose and make the character
+            // slide / glitch back and forth while the fade runs. Instead the
+            // root is always taken from the destination clip: baked through
+            // handleRootMotion() when the destination has root motion, or its
+            // natural rest pose otherwise. The root bone is resolved from the
+            // clip that actually carries root motion so this exclusion also
+            // applies when only the source clip has it enabled.
+            bool isRootMotionBone = false;
+            const bool fromHasRootMotion = blendFromAnimation != nullptr &&
+                (blendFromAnimation->getRootMotionRotation() ||
+                 blendFromAnimation->getRootMotionPositionY() ||
+                 blendFromAnimation->getRootMotionPositionXZ());
+            if (fromHasRootMotion || rootMotionActive())
             {
-                resolveRootBone();
-                if (nodeName == rootBoneName)
-                    handleRootMotion(bone, nodeTransform);
+                if (rootMotionActive())
+                    resolveRootBone();
+                else
+                    resolveRootBoneFor(blendFromAnimation);
+                isRootMotionBone = (nodeName == rootBoneName);
+            }
+
+            if (isRootMotionBone && toBone != nullptr)
+            {
+                toBone->update(currentTime);
+                nodeTransform = toBone->getLocalTransform();
+                if (rootMotionActive())
+                    handleRootMotion(toBone, nodeTransform);
+            }
+            else if (fromBone != nullptr && toBone != nullptr)
+            {
+                fromBone->update(blendFromTime);
+                toBone->update(currentTime);
+                nodeTransform = blendLocalTransforms(fromBone->getLocalTransform(),
+                                                     toBone->getLocalTransform(),
+                                                     blendFactor());
+            }
+            else if (toBone != nullptr)
+            {
+                // Bone absent from the source clip — fall back to the destination.
+                toBone->update(currentTime);
+                nodeTransform = toBone->getLocalTransform();
+            }
+            else if (fromBone != nullptr)
+            {
+                // Bone absent from the destination clip — keep the source pose.
+                fromBone->update(blendFromTime);
+                nodeTransform = fromBone->getLocalTransform();
+            }
+        }
+        else
+        {
+            kBone *bone = currentAnimation->findBone(nodeName);
+            if (bone != nullptr)
+            {
+                bone->update(currentTime);
+                nodeTransform = bone->getLocalTransform();
+
+                // Root-motion extraction: the topmost animated bone is the root
+                // bone. When any channel is enabled, resolve it once and then
+                // accumulate the per-frame delta + bake the enabled channels out
+                // of the pose so the character stays in place.
+                if (rootMotionActive())
+                {
+                    resolveRootBone();
+                    if (nodeName == rootBoneName)
+                        handleRootMotion(bone, nodeTransform);
+                }
             }
         }
 
@@ -155,6 +285,80 @@ namespace kemena
     }
 
     // -----------------------------------------------------------------------
+    // Cross-fade (smooth state transitions).
+    // -----------------------------------------------------------------------
+
+    void kAnimator::beginBlend(kSkeletalAnimation *from, float fromTicks,
+                               kSkeletalAnimation *to, float toTicks, float duration)
+    {
+        // Drop any previous cross-fade so we always start clean.
+        blending = false;
+        blendFromAnimation = nullptr;
+
+        if (to == nullptr)
+            return;
+
+        currentAnimation = to;
+        currentTime = toTicks;
+        resetRootMotion();
+
+        // Instant switch when there is no source clip or no blend window.
+        if (from == nullptr || from == to || duration <= 0.0f)
+            return;
+
+        blendFromAnimation = from;
+        blendFromTime     = fromTicks;
+        blendFromTps      = from->getTicksPerSecond();
+        blendFromDuration = from->getDuration();
+        blendDuration     = duration;
+        blendElapsed      = 0.0f;
+        blending          = true;
+    }
+
+    bool kAnimator::updateBlend(float dt)
+    {
+        if (!blending)
+            return false;
+
+        blendElapsed += dt;
+        if (blendElapsed >= blendDuration)
+        {
+            blending = false;
+            blendFromAnimation = nullptr;
+            return false;
+        }
+
+        // Keep the source clip playing through the fade so the character's
+        // motion stays continuous — no stall at the start and no abrupt stop.
+        // The pose is still blended, but the character keeps moving, which
+        // removes the "laggy" feel of a frozen or damped transition.
+        if (blendFromAnimation != nullptr)
+        {
+            blendFromTime += blendFromTps * dt;
+            if (blendFromDuration > 0.0f)
+                blendFromTime = fmod(blendFromTime, blendFromDuration);
+        }
+
+        return true;
+    }
+
+    void kAnimator::endBlend()
+    {
+        blending = false;
+        blendFromAnimation = nullptr;
+    }
+
+    float kAnimator::blendFactor() const
+    {
+        if (!blending || blendDuration <= 0.0f)
+            return 1.0f;
+        const float t = glm::clamp(blendElapsed / blendDuration, 0.0f, 1.0f);
+        // Smoothstep: eases out of the source pose gently (no pop) and into
+        // the destination smoothly.
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    // -----------------------------------------------------------------------
     // Object-transform animation — placeholder for future cinematic editor.
     // The setters wire the clip in but updateAnimation() doesn't sample
     // tracks yet.
@@ -193,26 +397,31 @@ namespace kemena
         if (rootBoneResolved && rootBoneForAnim == currentAnimation)
             return;
 
+        resolveRootBoneFor(currentAnimation);
+    }
+
+    void kAnimator::resolveRootBoneFor(kSkeletalAnimation *anim)
+    {
         rootBoneName.clear();
-        rootBoneForAnim = currentAnimation;
+        rootBoneForAnim = anim;
         rootBoneResolved = true;
         rootMotionInitialized = false;
 
-        if (!currentAnimation)
+        if (!anim)
             return;
 
         // The root-motion bone is the topmost animated node in the hierarchy.
-        const kNodeData &root = currentAnimation->getRootNode();
-        findRootBoneRecursive(&root);
+        const kNodeData &root = anim->getRootNode();
+        findRootBoneRecursive(&root, anim);
     }
 
-    void kAnimator::findRootBoneRecursive(const kNodeData *node)
+    void kAnimator::findRootBoneRecursive(const kNodeData *node, kSkeletalAnimation *anim)
     {
         if (!node || !rootBoneName.empty())
             return;
-        if (currentAnimation)
+        if (anim)
         {
-            kBone *bone = currentAnimation->findBone(node->name);
+            kBone *bone = anim->findBone(node->name);
             if (bone)
             {
                 // Skip static container nodes. Many FBX exporters emit
@@ -227,7 +436,7 @@ namespace kemena
             }
         }
         for (int i = 0; i < node->childrenCount; ++i)
-            findRootBoneRecursive(&node->children[i]);
+            findRootBoneRecursive(&node->children[i], anim);
     }
 
     void kAnimator::handleRootMotion(kBone *bone, kMat4 &nodeTransform)

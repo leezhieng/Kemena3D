@@ -123,6 +123,49 @@ namespace kemena
         float getSpeed();
 
         // -------------------------------------------------------------------
+        // Cross-fade (smooth state transitions).
+        //
+        // Instead of instantly snapping to a new clip, the controller can
+        // beginBlend() between two clips of the same skeleton. During the blend
+        // calculateBoneTransform() samples both clips and interpolates the
+        // per-bone local transforms (local-space blending), giving smooth,
+        // stable transitions between animation states.
+        // -------------------------------------------------------------------
+
+        /**
+         * @brief Starts a cross-fade from one clip to another.
+         * @param from      Source clip (already playing). May be nullptr to just
+         *                  switch instantly.
+         * @param fromTicks Source clip time in ticks at the start of the blend.
+         * @param to        Destination clip — becomes the active clip.
+         * @param toTicks   Destination clip time in ticks at the start of the blend.
+         * @param duration  Cross-fade duration in seconds (> 0 to blend).
+         */
+        void beginBlend(kSkeletalAnimation *from, float fromTicks,
+                        kSkeletalAnimation *to, float toTicks, float duration);
+
+        /**
+         * @brief Advances the active cross-fade by @p dt seconds.
+         * @return True while the cross-fade is still running.
+         */
+        bool updateBlend(float dt);
+
+        /** @brief True while a cross-fade is in progress. */
+        bool isBlending() const { return blending; }
+
+        /** @brief Seconds elapsed in the active cross-fade (diagnostics). */
+        float getBlendElapsed() const { return blendElapsed; }
+
+        /** @brief Current cross-fade blend factor in [0,1] (diagnostics). */
+        float getBlendFactor() const { return blendFactor(); }
+
+        /** @brief Source clip time in ticks during the active cross-fade (diagnostics). */
+        float getBlendSourceTime() const { return blendFromTime; }
+
+        /** @brief Immediately ends any active cross-fade (snaps to the destination clip). */
+        void endBlend();
+
+        // -------------------------------------------------------------------
         // Root-motion extraction.
         //
         // When the active clip's root-motion channels (kSkeletalAnimation:
@@ -190,6 +233,15 @@ namespace kemena
         float speed          = 1.0f;                                      ///< Global playback speed multiplier.
         int   currentFrameId = -1;                                        ///< Last processed frame id (guards duplicate updates).
 
+        // Cross-fade (state transition) state.
+        kSkeletalAnimation *blendFromAnimation = nullptr;                 ///< Source clip during a cross-fade.
+        float blendFromTime     = 0.0f;                                   ///< Source clip time in ticks.
+        float blendFromTps      = 0.0f;                                   ///< Source clip ticks-per-second (advances the fade).
+        float blendFromDuration = 0.0f;                                   ///< Source clip duration in ticks (loop wrap).
+        float blendDuration     = 0.0f;                                   ///< Cross-fade duration in seconds.
+        float blendElapsed      = 0.0f;                                   ///< Seconds elapsed in the cross-fade.
+        bool  blending          = false;                                  ///< True while a cross-fade is active.
+
         // Root-motion extraction state. The root bone is the topmost animated
         // node of the active clip; only tracked while a channel is enabled.
         kVec3                       rootMotionAccumPos      = kVec3(0.0f);       ///< Accumulated position delta since last query.
@@ -206,12 +258,17 @@ namespace kemena
 
         /** @brief Resolves the topmost animated node as the root-motion bone. */
         void resolveRootBone();
-        /** @brief Recursive helper for resolveRootBone(). */
-        void findRootBoneRecursive(const kNodeData *node);
+        /** @brief Resolves the root-motion bone for a specific clip (used while cross-fading). */
+        void resolveRootBoneFor(kSkeletalAnimation *anim);
+        /** @brief Recursive helper for resolveRootBone() / resolveRootBoneFor(). */
+        void findRootBoneRecursive(const kNodeData *node, kSkeletalAnimation *anim);
         /** @brief True when the active clip has at least one root-motion channel enabled. */
         bool rootMotionActive() const;
         /** @brief Accumulates the per-frame root-motion delta and bakes the enabled channels out of the pose. */
         void handleRootMotion(kBone *bone, kMat4 &nodeTransform);
+
+        /** @brief Current cross-fade blend factor in [0,1] (smoothstepped). */
+        float blendFactor() const;
     };
 }
 

@@ -250,7 +250,10 @@ void main()
         {
             if (lt && lt->getActive() && lt->getLightType() == kLightType::LIGHT_TYPE_SUN)
             {
-                lightDir = glm::normalize(lt->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
+                // Refresh the sun's world transform so a nested sun light
+                // inherits its parent chain's rotation.
+                lt->calculateModelMatrix();
+                lightDir = glm::normalize(lt->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f));
                 hasSun = true;
                 break;
             }
@@ -823,13 +826,17 @@ void main()
         {
             if (!light || !light->getActive()) continue;
 
+            // Refresh the light's world transform so point/spot positions and
+            // sun/spot directions inherit any parent chain's transform.
+            light->calculateModelMatrix();
+
             if (light->getLightType() == LIGHT_TYPE_SUN)
             {
                 kString idx = std::to_string(outSun);
                 shader->setValue("sunLights[" + idx + "].power",
                                  light->getPower());
                 shader->setValue("sunLights[" + idx + "].direction",
-                                 glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                                 glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f)));
                 shader->setValue("sunLights[" + idx + "].diffuse",
                                  light->getDiffuseColor());
                 shader->setValue("sunLights[" + idx + "].specular",
@@ -840,7 +847,7 @@ void main()
             {
                 kString idx = std::to_string(outPoint);
                 shader->setValue("pointLights[" + idx + "].power",     light->getPower());
-                shader->setValue("pointLights[" + idx + "].position",  light->getPosition());
+                shader->setValue("pointLights[" + idx + "].position",  light->getGlobalPosition());
                 shader->setValue("pointLights[" + idx + "].constant",  light->getConstant());
                 shader->setValue("pointLights[" + idx + "].linear",    light->getLinear());
                 shader->setValue("pointLights[" + idx + "].quadratic", light->getQuadratic());
@@ -852,9 +859,9 @@ void main()
             {
                 kString idx = std::to_string(outSpot);
                 shader->setValue("spotLights[" + idx + "].power",       light->getPower());
-                shader->setValue("spotLights[" + idx + "].position",    light->getPosition());
+                shader->setValue("spotLights[" + idx + "].position",    light->getGlobalPosition());
                 shader->setValue("spotLights[" + idx + "].direction",
-                                 glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                                 glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f)));
                 shader->setValue("spotLights[" + idx + "].cutOff",      light->getCutOff());
                 shader->setValue("spotLights[" + idx + "].outerCutOff", light->getOuterCutOff());
                 shader->setValue("spotLights[" + idx + "].constant",    light->getConstant());

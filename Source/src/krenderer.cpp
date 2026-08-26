@@ -457,7 +457,10 @@ void main()
                 kLight *lt = scene->getLights().at(i);
                 if (lt && lt->getActive() && lt->getLightType() == kLightType::LIGHT_TYPE_SUN)
                 {
-                    lightDir = glm::normalize(lt->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
+                    // Refresh the sun's world transform so a nested sun light
+                    // inherits its parent chain's rotation.
+                    lt->calculateModelMatrix();
+                    lightDir = glm::normalize(lt->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f));
                     hasSun = true;
                     break;
                 }
@@ -856,11 +859,16 @@ void main()
                         if (light == nullptr || !light->getActive())
                             continue;
 
+                        // Refresh the light's world transform so point/spot
+                        // positions and sun/spot directions inherit any parent
+                        // chain's translation/rotation.
+                        light->calculateModelMatrix();
+
                         if (light->getLightType() == LIGHT_TYPE_SUN)
                         {
                             kString idx = std::to_string(countSun);
                             shader->setValue("sunLights[" + idx + "].power", light->getPower());
-                            shader->setValue("sunLights[" + idx + "].direction", glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                            shader->setValue("sunLights[" + idx + "].direction", glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f)));
                             shader->setValue("sunLights[" + idx + "].diffuse", light->getDiffuseColor());
                             shader->setValue("sunLights[" + idx + "].specular", light->getSpecularColor());
                             countSun++;
@@ -869,7 +877,7 @@ void main()
                         {
                             kString idx = std::to_string(countPoint);
                             shader->setValue("pointLights[" + idx + "].power", light->getPower());
-                            shader->setValue("pointLights[" + idx + "].position", light->getPosition());
+                            shader->setValue("pointLights[" + idx + "].position", light->getGlobalPosition());
                             shader->setValue("pointLights[" + idx + "].constant", light->getConstant());
                             shader->setValue("pointLights[" + idx + "].linear", light->getLinear());
                             shader->setValue("pointLights[" + idx + "].quadratic", light->getQuadratic());
@@ -881,8 +889,8 @@ void main()
                         {
                             kString idx = std::to_string(countSpot);
                             shader->setValue("spotLights[" + idx + "].power", light->getPower());
-                            shader->setValue("spotLights[" + idx + "].position", light->getPosition());
-                            shader->setValue("spotLights[" + idx + "].direction", glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                            shader->setValue("spotLights[" + idx + "].position", light->getGlobalPosition());
+                            shader->setValue("spotLights[" + idx + "].direction", glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f)));
                             shader->setValue("spotLights[" + idx + "].cutOff", light->getCutOff());
                             shader->setValue("spotLights[" + idx + "].outerCutOff", light->getOuterCutOff());
                             shader->setValue("spotLights[" + idx + "].constant", light->getConstant());
@@ -1082,7 +1090,7 @@ void main()
                     shader->setValue("viewProjection", projection * view);
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
-                    shader->setValue("billboardPosition", currentLight->getPosition());
+                    shader->setValue("billboardPosition", currentLight->getGlobalPosition());
                     shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
                     shader->setValue("color", currentLight->getDiffuseColor());
 
@@ -1136,7 +1144,7 @@ void main()
                     shader->setValue("viewProjection", projection * view);
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
-                    shader->setValue("billboardPosition", currentCamera->getPosition());
+                    shader->setValue("billboardPosition", currentCamera->getGlobalPosition());
                     shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
                     shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
@@ -1184,7 +1192,7 @@ void main()
                     shader->setValue("viewProjection", projection * view);
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
-                    shader->setValue("billboardPosition", audioObj->getPosition());
+                    shader->setValue("billboardPosition", audioObj->getGlobalPosition());
                     shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
                     shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
@@ -1849,7 +1857,7 @@ void main()
             pickingIconShader->setValue("viewProjection", proj * view);
             pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
             pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
-            pickingIconShader->setValue("billboardPosition", currentNode->getPosition());
+            pickingIconShader->setValue("billboardPosition", currentNode->getGlobalPosition());
             pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
             pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
                                                            idColor.g / 255.0f,
@@ -2321,7 +2329,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
                 float innerR = tanf(innerAngle) * coneLen;
                 float outerR = tanf(outerAngle) * coneLen;
 
-                kVec3 dir = glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
+                kVec3 dir = glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f));
                 kVec3 crossY = glm::cross(dir, kVec3(0, 1, 0));
                 kVec3 right = (glm::length(crossY) > 0.001f)
                                   ? glm::normalize(crossY)
@@ -2344,7 +2352,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
             else if (lt == kLightType::LIGHT_TYPE_SUN)
             {
                 color = kVec3(1.0f, 1.0f, 0.3f); // bright yellow
-                kVec3 dir = glm::normalize(light->getRotation() * kVec3(0.0f, -1.0f, 0.0f));
+                kVec3 dir = glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f));
                 float arrowLen = 3.0f;
                 float headLen = 0.5f;
 
