@@ -10,6 +10,7 @@
 #include "kmaterial.h"
 #include "kphysicsmanager.h"
 #include "kphysicsobject.h"
+#include "kcharactercontroller.h"
 
 #include <new>
 #include <cstdio>
@@ -55,6 +56,10 @@ namespace kemena
     static kString objGetName(kObject *o)                       { return o->getName(); }
     static void    objSetName(kObject *o, const kString &n)     { o->setName(n); }
     static kString objGetUuid(kObject *o)                       { return o->getUuid(); }
+
+    static kString objGetTag(kObject *o)                        { return o->getTag(); }
+    static void    objSetTag(kObject *o, const kString &t)      { o->setTag(t); }
+    static bool    objCompareTag(kObject *o, const kString &t)  { return o->compareTag(t); }
 
     static kVec3 objGetPosition(kObject *o)                     { return o->getPosition(); }
     static void  objSetPosition(kObject *o, const kVec3 &v)     { o->setPosition(v); }
@@ -290,6 +295,11 @@ namespace kemena
         return o ? o->getPhysicsObject() : nullptr;
     }
 
+    static kCharacterController *objGetCharacterController(kObject *o)
+    {
+        return o ? o->getCharacterController() : nullptr;
+    }
+
     static void physicsSetGravity(const kVec3 &gravity)
     {
         kPhysicsManager *pm = scriptPhysicsManager();
@@ -322,6 +332,10 @@ namespace kemena
     static bool  physIsActive(kPhysicsObject *p)                     { return p ? p->isActive() : false; }
     static int   physGetObjectType(kPhysicsObject *p)                { return p ? (int)p->getObjectType() : 0; }
     static int   physGetShapeType(kPhysicsObject *p)                 { return p ? (int)p->getShapeType() : 0; }
+
+    // kCharacterController methods.
+    static void  ccSetLinearVelocity(kCharacterController *c, const kVec3 &v) { if (c) c->setLinearVelocity(v); }
+    static void  ccMove(kCharacterController *c, const kVec3 &d)             { if (c) c->move(d); }
 
     // -----------------------------------------------------------------------
     // Registration
@@ -403,6 +417,13 @@ namespace kemena
         r = e->RegisterObjectMethod("kObject", "string getUuid() const",
                                     asFUNCTION(objGetUuid), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
+        r = e->RegisterObjectMethod("kObject", "string getTag() const",
+                                    asFUNCTION(objGetTag), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kObject", "void setTag(const string &in)",
+                                    asFUNCTION(objSetTag), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kObject", "bool compareTag(const string &in)",
+                                    asFUNCTION(objCompareTag), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+
         r = e->RegisterObjectMethod("kObject", "kVec3 getPosition() const",
                                     asFUNCTION(objGetPosition), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kObject", "void setPosition(const kVec3 &in)",
@@ -451,9 +472,15 @@ namespace kemena
         r = e->RegisterObjectType("kPhysicsObject", 0, asOBJ_REF | asOBJ_NOCOUNT);
         assert(r >= 0);
 
+        // Character-controller type (manager-owned; scripts hold handles).
+        r = e->RegisterObjectType("kCharacterController", 0, asOBJ_REF | asOBJ_NOCOUNT);
+        assert(r >= 0);
+
         // --- kObject physics access -------------------------------------------
         r = e->RegisterObjectMethod("kObject", "kPhysicsObject@ getPhysicsObject() const",
                                     asFUNCTION(objGetPhysicsObject), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kObject", "kCharacterController@ getCharacterController() const",
+                                    asFUNCTION(objGetCharacterController), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
         // --- kAudio -----------------------------------------------------------
         // Manager-owned clips: no reference counting; scripts hold handles.
@@ -593,6 +620,12 @@ namespace kemena
                                     asFUNCTION(physGetObjectType), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kPhysicsObject", "int getShapeType() const",
                                     asFUNCTION(physGetShapeType), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+
+        // --- kCharacterController ---------------------------------------------
+        r = e->RegisterObjectMethod("kCharacterController", "void setLinearVelocity(const kVec3 &in)",
+                                    asFUNCTION(ccSetLinearVelocity), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kCharacterController", "void move(const kVec3 &in)",
+                                    asFUNCTION(ccMove), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
         // --- Global functions ------------------------------------------------
         r = e->RegisterGlobalFunction("kObject@ getSelf()",

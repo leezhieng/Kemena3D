@@ -5,6 +5,7 @@
 #include "klight.h"
 #include "kcamera.h"
 #include "kfilesystem.h"
+#include "kdecal.h"
 
 #include <algorithm>
 #include <fstream>
@@ -161,6 +162,25 @@ namespace kemena
         return cameras;
     }
 
+    void kWorld::setPhysicsLayers(const std::vector<std::string> &names)
+    {
+        physicsLayers.clear();
+        physicsLayers.push_back("Default");
+        for (const std::string &n : names)
+        {
+            if (n.empty() || n == "Default")
+                continue;
+            if (static_cast<int>(physicsLayers.size()) >= kMaxPhysicsLayers)
+                break;
+            physicsLayers.push_back(n);
+        }
+    }
+
+    std::vector<std::string> kWorld::getPhysicsLayers() const
+    {
+        return physicsLayers;
+    }
+
     json kWorld::serialize(int startScene)
     {
         json scenesData = json::array();
@@ -174,10 +194,15 @@ namespace kemena
             }
         }
 
+        json layersData = json::array();
+        for (const std::string &l : physicsLayers)
+            layersData.push_back(l);
+
         json data =
             {
                 {"uuid", getUuid()},
                 {"scenes", scenesData},
+                {"physics_layers", layersData},
             };
 
         return data;
@@ -476,6 +501,8 @@ namespace kemena
                 physicsManager = nullptr;
                 return;
             }
+            // Restore the world's named physics layers before creating bodies.
+            physicsManager->setLayerNames(physicsLayers);
         }
 
         if (scriptManager)
@@ -528,6 +555,10 @@ namespace kemena
                 {
                     node->attachCharacter(cc);
                     characterBodies.push_back(node);
+                }
+                else
+                {
+                    printf("kWorld::startPhysics: createCharacter failed for '%s'\n", node->getName().c_str());
                 }
             }
         }
@@ -771,6 +802,18 @@ namespace kemena
             else { audioObj->setUuid(uuid.empty() ? generateUuid() : uuid); audioObj->setParent(parent); }
             result = audioObj;
         }
+        else if (type == "decal")
+        {
+            kDecal *decal = new kDecal();
+            decal->setName(name);
+            decal->setActive(active);
+            decal->setStatic(obj.value("static", false));
+            decal->setShaderType(obj.value("decal_shader", std::string("flat")));
+            decal->setSurfaceOffset(obj.value("decal_offset", 0.01f));
+            if (topLevel) scene->addObject(decal, uuid);
+            else { decal->setUuid(uuid.empty() ? generateUuid() : uuid); decal->setParent(parent); }
+            result = decal;
+        }
         else
         {
             kObject *empty = new kObject();
@@ -786,6 +829,7 @@ namespace kemena
         result->setPosition(pos);
         result->setRotation(kQuat(glm::radians(rotEu)));
         result->setScale(scl);
+        result->setTag(obj.value("tag", std::string("")));
 
         // Physics descriptor
         if (obj.contains("physics") && obj["physics"].is_object())
@@ -807,6 +851,7 @@ namespace kemena
             d.linearDamping  = phys.value("linear_damping", 0.05f);
             d.angularDamping = phys.value("angular_damping", 0.05f);
             d.gravityFactor  = phys.value("gravity_factor", 1.0f);
+            d.layer          = phys.value("layer", "Default");
             result->setHasPhysicsDesc(true);
         }
 
@@ -822,6 +867,7 @@ namespace kemena
             cd.gravityFactor = ch.value("gravity_factor", 1.0f);
             cd.slopeLimit    = ch.value("slope_limit", 45.0f);
             cd.stepHeight    = ch.value("step_height", 0.3f);
+            cd.layer         = ch.value("layer", "Default");
             result->setHasCharacterDesc(true);
         }
 
@@ -1035,6 +1081,17 @@ namespace kemena
 
         if (!data.contains("scenes") || !data["scenes"].is_array())
             return false;
+
+        // Restore named physics layers (default is just "Default").
+        if (data.contains("physics_layers") && data["physics_layers"].is_array())
+        {
+            std::vector<std::string> layers;
+            for (const auto &l : data["physics_layers"])
+                if (l.is_string())
+                    layers.push_back(l.get<std::string>());
+            if (!layers.empty())
+                setPhysicsLayers(layers);
+        }
 
         for (const auto &sceneJson : data["scenes"])
         {

@@ -10,10 +10,39 @@
 #include "kdatatype.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace kemena
 {
+    // -------------------------------------------------------------------------
+    // Shared physics-layer constants
+    // -------------------------------------------------------------------------
+
+    /**
+     * @brief Maximum number of user-defined physics layers.
+     *
+     * Each named layer (e.g. "Default", "Player", "Enemy") maps to a Jolt object
+     * layer. To preserve the static/dynamic broad-phase optimisation every user
+     * layer occupies two Jolt object layers: a static variant (index*2) and a
+     * moving variant (index*2+1). Bodies only collide with other bodies that are
+     * on the *same* user layer.
+     */
+    static constexpr int kMaxPhysicsLayers = 32;
+
+    /// Returns the Jolt object-layer value for a user layer index + motion flag.
+    /// @param userLayerIndex Index into the physics manager's layer name list.
+    /// @param moving         true = moving (dynamic/kinematic/trigger), false = static.
+    inline uint32_t physicsObjectLayer(int userLayerIndex, bool moving)
+    {
+        return static_cast<uint32_t>(userLayerIndex) * 2 + (moving ? 1u : 0u);
+    }
+
+    /// Returns the user-layer index from an encoded Jolt object-layer value.
+    inline int physicsUserLayerFromObjectLayer(uint32_t objectLayer)
+    {
+        return static_cast<int>(objectLayer / 2);
+    }
     // -------------------------------------------------------------------------
     // Shape descriptor
     // -------------------------------------------------------------------------
@@ -100,6 +129,7 @@ namespace kemena
         float              linearDamping  = 0.05f; ///< Linear velocity drag per second.
         float              angularDamping = 0.05f; ///< Angular velocity drag per second.
         float              gravityFactor  = 1.0f;  ///< Multiplier on world gravity (0 = gravity-free).
+        std::string        layer          = "Default"; ///< User physics layer name; bodies only collide with the same layer.
     };
 
     // -------------------------------------------------------------------------
@@ -223,10 +253,11 @@ namespace kemena
          * @brief Initialises the body inside an existing Jolt PhysicsSystem.
          * @param physicsSystem Opaque pointer to a `JPH::PhysicsSystem` owned by kPhysicsManager.
          * @param desc          Full creation parameters.
+         * @param userLayerIndex Index into the physics manager's layer-name list (see kMaxPhysicsLayers).
          * @return true on success.
          * @note Not part of the public API — call kPhysicsManager::createObject() instead.
          */
-        bool init(void *physicsSystem, const kPhysicsObjectDesc &desc);
+        bool init(void *physicsSystem, const kPhysicsObjectDesc &desc, int userLayerIndex = 0);
 
         /** @brief Removes the body from the simulation and releases its resources. */
         void uninit();

@@ -34,6 +34,8 @@ namespace kemena
 
         kVec3 position = kVec3(0.0f, 0.0f, 0.0f);       ///< Initial world-space position (capsule feet origin).
         kQuat rotation = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Initial world-space orientation.
+
+        std::string layer = "Default"; ///< User physics layer name (characters collide only with the same layer).
     };
 
     /**
@@ -56,9 +58,10 @@ namespace kemena
          * @brief Initialises the Jolt character.
          * @param physicsSystem Opaque JPH::PhysicsSystem* from kPhysicsManager.
          * @param desc          Capsule + motion parameters.
+         * @param userLayerIndex Index into the physics manager's layer-name list.
          * @return true on success.
          */
-        bool init(void *physicsSystem, const kCharacterControllerDesc &desc);
+        bool init(void *physicsSystem, const kCharacterControllerDesc &desc, int userLayerIndex = 0);
 
         /** @brief Removes the character from the physics system. */
         void uninit();
@@ -93,11 +96,30 @@ namespace kemena
          */
         void  setLinearVelocity(const kVec3 &velocity);
 
+        /**
+         * @brief Moves the character by a world-space per-step delta.
+         *
+         * Always treats the argument as a displacement for the next physics
+         * step, never as a velocity. kPhysicsManager::update() converts it to
+         * the body velocity that travels exactly that delta, so an animator
+         * root-motion delta can be fed straight in and the character moves 1:1
+         * with the animation. Use setLinearVelocity() only for true m/s drives.
+         * @param delta World-space displacement to travel over one step.
+         */
+        void  move(const kVec3 &delta);
+
         /** @brief Returns the character's current world-space velocity (m/s). */
         kVec3 getLinearVelocity() const;
 
         /** @brief True when the character is standing on walkable ground. */
         bool  isOnGround() const;
+
+        /**
+         * @brief Internal — called by kPhysicsManager::update() right before the
+         *        world steps to apply the pending move() displacement as a
+         *        velocity. Not intended for direct scripting use.
+         */
+        void  applyPendingMove(float deltaTime);
 
     private:
         struct Impl;

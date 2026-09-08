@@ -1,5 +1,7 @@
 #include "kmesh.h"
 #include <algorithm>
+#include <fstream>
+#include <iostream>
 
 namespace kemena
 {
@@ -294,6 +296,24 @@ namespace kemena
     void kObject::setName(kString newName)
     {
         name = newName;
+    }
+
+    kString kObject::getTag()
+    {
+        return tag;
+    }
+
+    void kObject::setTag(kString newTag)
+    {
+        tag = newTag;
+    }
+
+    bool kObject::compareTag(const kString &otherTag)
+    {
+        // Untagged objects (empty tag) never match anything.
+        if (tag.empty() || otherTag.empty())
+            return false;
+        return tag == otherTag;
     }
 
     kString kObject::getPrefabRef() const
@@ -695,6 +715,7 @@ namespace kemena
         case kNodeType::NODE_TYPE_LIGHT:   typeStr = "light";   break;
         case kNodeType::NODE_TYPE_AUDIO:   typeStr = "audio";   break;
         case kNodeType::NODE_TYPE_TERRAIN: typeStr = "terrain"; break;
+        case kNodeType::NODE_TYPE_DECAL:   typeStr = "decal";   break;
         default:                           typeStr = "object";  break;
         }
 
@@ -703,6 +724,7 @@ namespace kemena
                 {"type", typeStr},
                 {"uuid", getUuid()},
                 {"name", getName()},
+                {"tag", getTag()},
                 {"active", getActive()},
                 {"static", getStatic()},
                 {"position",
@@ -764,6 +786,7 @@ namespace kemena
                 {"linear_damping",  physicsDesc.linearDamping},
                 {"angular_damping", physicsDesc.angularDamping},
                 {"gravity_factor",  physicsDesc.gravityFactor},
+                {"layer",           physicsDesc.layer},
             };
             data["physics"] = phys;
         }
@@ -780,6 +803,7 @@ namespace kemena
                 {"gravity_factor", characterDesc.gravityFactor},
                 {"slope_limit",    characterDesc.slopeLimit},
                 {"step_height",    characterDesc.stepHeight},
+                {"layer",          characterDesc.layer},
             };
         }
 

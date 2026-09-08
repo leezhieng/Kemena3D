@@ -185,6 +185,12 @@ namespace kemena
         EqualInt,    ///< a == b (int).
         EqualString, ///< a == b (string).
 
+        // --- Tag compare (kept after typed equality to preserve serialised ids)
+        CompareTag,  ///< Object's tag == string (like Unity's CompareTag).
+
+        // --- Character controller move (kept last to preserve serialised ids)
+        MoveCharacter, ///< Drives a character controller's linear velocity toward a target each frame.
+
         Count ///< Sentinel (number of node types).
     };
 

@@ -292,6 +292,36 @@ namespace kemena
         void setName(kString newName);
 
         /**
+         * @brief Returns the user-defined tag of this object.
+         *
+         * Tags are free-form labels (like Unity's tags) that can be assigned to
+         * any kObject and its derived classes. The list of available tags is
+         * defined in the editor's project settings; the value is stored on the
+         * object itself and serialized with the scene.
+         *
+         * @return The tag kString; empty means "no tag".
+         */
+        kString getTag();
+
+        /**
+         * @brief Sets the user-defined tag of this object.
+         * @param newTag New tag kString (empty to clear).
+         */
+        void setTag(kString newTag);
+
+        /**
+         * @brief Compares this object's tag to a given tag (like Unity's CompareTag).
+         *
+         * Two objects share a tag when their tag kStrings are equal and
+         * non-empty. An empty tag never matches anything, so untagged objects
+         * compare false against any value.
+         *
+         * @param otherTag Tag to compare against.
+         * @return true if this object's tag equals @p otherTag (and both are non-empty).
+         */
+        bool compareTag(const kString &otherTag);
+
+        /**
          * @brief Returns the prefab asset UUID this object is an instance of, or empty.
          *
          * Non-empty only on the root node of a prefab instance. Set by the editor
@@ -607,6 +637,7 @@ namespace kemena
         unsigned int id = 0;
         kString uuid;
         kString name;
+        kString tag;  ///< User-defined tag (like Unity); "" = no tag. Stored on the object.
 
         kString prefabRef;     ///< If non-empty, this is the root of a prefab instance referencing the prefab asset with this UUID.
         kString templateUuid;  ///< For nodes inside a prefab instance, the UUID of the corresponding node in the prefab template.

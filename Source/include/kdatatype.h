@@ -91,7 +91,8 @@ namespace kemena
         NODE_TYPE_CAMERA, ///< Camera.
         NODE_TYPE_LIGHT,  ///< Light source.
         NODE_TYPE_AUDIO,  ///< Audio emitter object.
-        NODE_TYPE_TERRAIN ///< Terrain tile object.
+        NODE_TYPE_TERRAIN,///< Terrain tile object.
+        NODE_TYPE_DECAL   ///< Flat sticker-quad decal.
     };
 
     /**

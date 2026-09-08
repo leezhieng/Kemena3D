@@ -22,10 +22,7 @@
 #endif
 
 #include <iostream>
-
-// Layer indices — must match those used in kphysicsmanager.cpp
-static constexpr JPH::ObjectLayer LAYER_NON_MOVING = 0;
-static constexpr JPH::ObjectLayer LAYER_MOVING     = 1;
+#include <algorithm>
 
 namespace kemena
 {
@@ -49,10 +46,14 @@ namespace kemena
         delete m_impl;
     }
 
-    bool kPhysicsObject::init(void *physSys, const kPhysicsObjectDesc &desc)
+    bool kPhysicsObject::init(void *physSys, const kPhysicsObjectDesc &desc, int userLayerIndex)
     {
         if (m_impl->initialized)
             uninit();
+
+        // Clamp to the supported range (see kMaxPhysicsLayers).
+        if (userLayerIndex < 0)            userLayerIndex = 0;
+        if (userLayerIndex >= kMaxPhysicsLayers) userLayerIndex = kMaxPhysicsLayers - 1;
 
         auto *ps = static_cast<JPH::PhysicsSystem *>(physSys);
 
@@ -190,36 +191,41 @@ namespace kemena
         }
 
         // --- Motion type and layer ---------------------------------------
+        // The object layer encodes the user layer index (see kMaxPhysicsLayers)
+        // plus a moving/static flag so the broad-phase optimisation is preserved
+        // while bodies on different user layers never interact.
         JPH::EMotionType motionType;
-        JPH::ObjectLayer layer;
+        bool moving;
 
         switch (bodyType)
         {
             case kPhysicsObjectType::Dynamic:
                 motionType = JPH::EMotionType::Dynamic;
-                layer      = LAYER_MOVING;
+                moving     = true;
                 break;
 
             case kPhysicsObjectType::Static:
                 motionType = JPH::EMotionType::Static;
-                layer      = LAYER_NON_MOVING;
+                moving     = false;
                 break;
 
             case kPhysicsObjectType::Kinematic:
                 motionType = JPH::EMotionType::Kinematic;
-                layer      = LAYER_MOVING;
+                moving     = true;
                 break;
 
             case kPhysicsObjectType::Trigger:
                 motionType = JPH::EMotionType::Dynamic;
-                layer      = LAYER_MOVING;
+                moving     = true;
                 break;
 
             default:
                 motionType = JPH::EMotionType::Dynamic;
-                layer      = LAYER_MOVING;
+                moving     = true;
                 break;
         }
+        const JPH::ObjectLayer layer =
+            static_cast<JPH::ObjectLayer>(physicsObjectLayer(userLayerIndex, moving));
 
         // --- Body creation settings --------------------------------------
         JPH::BodyCreationSettings settings(

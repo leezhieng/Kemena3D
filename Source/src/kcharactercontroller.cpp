@@ -1,4 +1,5 @@
 #include "kcharactercontroller.h"
+#include "kphysicsobject.h"
 
 #ifdef _MSC_VER
 #  pragma warning(push, 0)
@@ -14,9 +15,7 @@
 
 #include <algorithm>
 #include <iostream>
-
-// Layer indices — must match those used in kphysicsmanager.cpp / kphysicsobject.cpp
-static constexpr JPH::ObjectLayer LAYER_MOVING = 1;
+#include <algorithm>
 
 // Degrees → radians (avoids pulling in extra math headers).
 static constexpr float K_DEG2RAD = 0.01745329252f;
@@ -28,6 +27,8 @@ namespace kemena
         JPH::PhysicsSystem    *physicsSystem = nullptr;
         JPH::Ref<JPH::Character> character;
         bool                   initialized = false;
+        kVec3                  pendingMove = kVec3(0.0f); ///< Displacement queued by move() for the next step.
+        bool                   moveDriven  = false;       ///< True while move() is the active driver (enables the anti-slide brake).
     };
 
     kCharacterController::kCharacterController()
@@ -41,10 +42,14 @@ namespace kemena
         delete m_impl;
     }
 
-    bool kCharacterController::init(void *physSys, const kCharacterControllerDesc &desc)
+    bool kCharacterController::init(void *physSys, const kCharacterControllerDesc &desc, int userLayerIndex)
     {
         if (m_impl->initialized)
             uninit();
+
+        // Clamp to the supported range (see kMaxPhysicsLayers).
+        if (userLayerIndex < 0)            userLayerIndex = 0;
+        if (userLayerIndex >= kMaxPhysicsLayers) userLayerIndex = kMaxPhysicsLayers - 1;
 
         auto *ps = static_cast<JPH::PhysicsSystem *>(physSys);
         if (!ps)
@@ -71,7 +76,8 @@ namespace kemena
 
         JPH::Ref<JPH::CharacterSettings> settings = new JPH::CharacterSettings();
         settings->mShape         = shape;
-        settings->mLayer         = LAYER_MOVING;
+        settings->mLayer         = static_cast<JPH::ObjectLayer>(
+            kemena::physicsObjectLayer(userLayerIndex, /*moving=*/true));
         settings->mMass          = desc.mass;
         settings->mFriction      = desc.friction;
         settings->mGravityFactor = desc.gravityFactor;
@@ -103,6 +109,9 @@ namespace kemena
     {
         if (!m_impl->initialized)
             return;
+
+        m_impl->pendingMove = kVec3(0.0f);
+        m_impl->moveDriven  = false;
 
         if (m_impl->character != nullptr)
         {
@@ -152,7 +161,61 @@ namespace kemena
     void kCharacterController::setLinearVelocity(const kVec3 &velocity)
     {
         if (!m_impl->initialized) return;
+        // Switching to explicit velocity mode: drop any queued move and the
+        // move-driven brake flag so neither can override this velocity next step.
+        m_impl->pendingMove = kVec3(0.0f);
+        m_impl->moveDriven  = false;
         m_impl->character->SetLinearVelocity(JPH::Vec3(velocity.x, velocity.y, velocity.z));
+    }
+
+    void kCharacterController::move(const kVec3 &delta)
+    {
+        if (!m_impl->initialized || m_impl->character == nullptr)
+            return;
+        // Accumulate: a script may issue several move() calls per frame.
+        m_impl->pendingMove.x += delta.x;
+        m_impl->pendingMove.y += delta.y;
+        m_impl->pendingMove.z += delta.z;
+    }
+
+    void kCharacterController::applyPendingMove(float deltaTime)
+    {
+        if (!m_impl->initialized || m_impl->character == nullptr || deltaTime <= 0.0f)
+            return;
+
+        if (m_impl->pendingMove.x != 0.0f ||
+            m_impl->pendingMove.y != 0.0f ||
+            m_impl->pendingMove.z != 0.0f)
+        {
+            // Convert the per-step displacement into the velocity that travels
+            // exactly that delta over this step. Preserve the current Y velocity
+            // so gravity/floor handling keeps working, unless the caller explicitly
+            // requested a vertical move via the Y component.
+            const JPH::Vec3 cur = m_impl->character->GetLinearVelocity();
+            float vy = cur.GetY();
+            if (m_impl->pendingMove.y != 0.0f)
+                vy = m_impl->pendingMove.y / deltaTime;
+
+            const float invDt = 1.0f / deltaTime;
+            m_impl->character->SetLinearVelocity(JPH::Vec3(
+                m_impl->pendingMove.x * invDt,
+                vy,
+                m_impl->pendingMove.z * invDt));
+            m_impl->pendingMove = kVec3(0.0f);
+            m_impl->moveDriven  = true;
+            return;
+        }
+
+        // No displacement queued this step: if move() was driving the character
+        // on the previous step, brake now so the residual body velocity cannot
+        // make it slide after the motion ends. Pure setLinearVelocity characters
+        // never set moveDriven, so their velocity is left untouched.
+        if (m_impl->moveDriven)
+        {
+            const JPH::Vec3 cur = m_impl->character->GetLinearVelocity();
+            m_impl->character->SetLinearVelocity(JPH::Vec3(0.0f, cur.GetY(), 0.0f));
+            m_impl->moveDriven = false;
+        }
     }
 
     kVec3 kCharacterController::getLinearVelocity() const

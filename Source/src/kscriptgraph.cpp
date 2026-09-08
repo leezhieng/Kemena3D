@@ -55,6 +55,7 @@ namespace kemena
             case kScriptNodeType::EqualBool:        return "Equal (Bool)";
             case kScriptNodeType::EqualInt:         return "Equal (Int)";
             case kScriptNodeType::EqualString:      return "Equal (String)";
+            case kScriptNodeType::CompareTag:       return "Compare Tag";
             case kScriptNodeType::And:              return "And";
             case kScriptNodeType::Or:               return "Or";
             case kScriptNodeType::Not:              return "Not";
@@ -88,6 +89,7 @@ namespace kemena
             case kScriptNodeType::SetPhysicsGravity:    return "Set Physics Gravity";
             case kScriptNodeType::GetPhysicsGravity:    return "Get Physics Gravity";
             case kScriptNodeType::IsPhysicsActive:      return "Is Physics Active";
+            case kScriptNodeType::MoveCharacter:        return "Move Character Controller";
             case kScriptNodeType::Anchor:               return "Anchor";
             case kScriptNodeType::Comment:              return "Comment";
             case kScriptNodeType::Sequence:             return "Sequence";
@@ -388,6 +390,13 @@ namespace kemena
                 out("Result", kScriptPinType::Bool);
                 break;
 
+            case kScriptNodeType::CompareTag:
+                // The tag to compare against is chosen from the project's tag
+                // list via the payload picker (node.valueStr), like GetAction.
+                in("Target", kScriptPinType::Object);
+                out("Result", kScriptPinType::Bool);
+                break;
+
             case kScriptNodeType::And:
             case kScriptNodeType::Or:
                 in("A", kScriptPinType::Bool);
@@ -580,6 +589,13 @@ namespace kemena
             case kScriptNodeType::IsPhysicsActive:
                 in("Physics", kScriptPinType::Object);
                 out("Active", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::MoveCharacter:
+                in("", kScriptPinType::Exec);
+                in("Target", kScriptPinType::Object);
+                in("Velocity", kScriptPinType::Vec3);
+                out("", kScriptPinType::Exec);
                 break;
 
             case kScriptNodeType::Anchor:
@@ -1100,6 +1116,9 @@ namespace kemena
                     case kScriptNodeType::EqualInt:
                     case kScriptNodeType::EqualString:
                         return "(" + emitNamedInput(n, "A") + " == " + emitNamedInput(n, "B") + ")";
+                    case kScriptNodeType::CompareTag:
+                        return emitNamedInput(n, "Target") + ".compareTag(\"" +
+                               escapeString(n.valueStr) + "\")";
                     case kScriptNodeType::And:
                         return "(" + emitNamedInput(n, "A") + " && " + emitNamedInput(n, "B") + ")";
                     case kScriptNodeType::Or:
@@ -1243,6 +1262,19 @@ namespace kemena
                                emitNamedInput(n, "Velocity") + ");";
                     case kScriptNodeType::SetPhysicsGravity:
                         return "setPhysicsGravity(" + emitNamedInput(n, "Gravity") + ");";
+                    case kScriptNodeType::MoveCharacter:
+                    {
+                        // The Velocity pin is treated as a per-frame MOTION delta
+                        // (e.g. animator root motion), so drive it through move(),
+                        // which translates the character by exactly that vector each
+                        // physics step. setLinearVelocity would treat it as m/s and
+                        // under-integrate the per-frame delta ~60x.
+                        kString target   = emitNamedInput(n, "Target");
+                        kString velocity = emitNamedInput(n, "Velocity");
+                        return "if (" + target + ".getCharacterController() !is null) " +
+                               target + ".getCharacterController().move(" +
+                               velocity + ");";
+                    }
 
                     default:
                         return "";

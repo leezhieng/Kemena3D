@@ -5,6 +5,7 @@
 #include "kdx11driver.h"
 #endif
 #include "kphysicsobject.h"
+#include "kdecal.h"
 #include <functional>
 #include <fstream>
 
@@ -1063,6 +1064,220 @@ void main()
                 }
             }
         }
+        else if (currentNode->getType() == kNodeType::NODE_TYPE_DECAL)
+        {
+            kDecal *decal = (kDecal *)currentNode;
+
+            // Decals are drawn like thin flat meshes through their assigned
+            // material. An "Unlit" material with alpha blending is the intended
+            // setup so the sticker ignores scene lighting; lit materials also
+            // work but shade the quad like a normal surface.
+            if (decal->getMaterial() != nullptr && world->getMainCamera() != nullptr)
+            {
+                kMaterial *mat = decal->getMaterial();
+
+                if (mat->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
+                {
+                    driver->setBlend(true);
+                    driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+                }
+                else
+                {
+                    driver->setBlend(false);
+                }
+
+                // Stickers must be visible from both faces; never cull them.
+                driver->setCullFace(false);
+
+                if (mat->getShader() != nullptr)
+                {
+                    kShader *shader = mat->getShader();
+                    shader->use();
+
+                    shader->setValue("modelMatrix", decal->getModelMatrixWorld());
+                    shader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
+                    shader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
+                    // Lit (PBR/Phong) materials transform normals via normalMatrix.
+                    shader->setValue("normalMatrix", glm::transpose(glm::inverse(decal->getModelMatrixWorld())));
+
+                    shader->setValue("material.tiling", mat->getUvTiling());
+                    shader->setValue("material.ambient", mat->getAmbientColor());
+                    shader->setValue("material.diffuse", mat->getDiffuseColor());
+                    shader->setValue("material.specular", mat->getSpecularColor());
+                    shader->setValue("material.shininess", mat->getShininess());
+                    shader->setValue("material.metallic", mat->getMetallic());
+                    shader->setValue("material.roughness", mat->getRoughness());
+
+                    // Lighting uniforms so lit (PBR/Phong) decal materials
+                    // evaluate exactly like meshes. Flat/unlit materials simply
+                    // ignore them (uniform lookups for absent locations are no-ops).
+                    int countSun = 0, countPoint = 0, countSpot = 0;
+                    for (size_t j = 0; j < scene->getLights().size(); ++j)
+                    {
+                        kLight *light = scene->getLights().at(j);
+                        if (light == nullptr || !light->getActive())
+                            continue;
+
+                        // Refresh the light's world transform so point/spot
+                        // positions and sun/spot directions inherit any parent
+                        // chain's translation/rotation.
+                        light->calculateModelMatrix();
+
+                        if (light->getLightType() == LIGHT_TYPE_SUN)
+                        {
+                            kString idx = std::to_string(countSun);
+                            shader->setValue("sunLights[" + idx + "].power", light->getPower());
+                            shader->setValue("sunLights[" + idx + "].direction", glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                            shader->setValue("sunLights[" + idx + "].diffuse", light->getDiffuseColor());
+                            shader->setValue("sunLights[" + idx + "].specular", light->getSpecularColor());
+                            countSun++;
+                        }
+                        else if (light->getLightType() == LIGHT_TYPE_POINT)
+                        {
+                            kString idx = std::to_string(countPoint);
+                            shader->setValue("pointLights[" + idx + "].power", light->getPower());
+                            shader->setValue("pointLights[" + idx + "].position", light->getGlobalPosition());
+                            shader->setValue("pointLights[" + idx + "].constant", light->getConstant());
+                            shader->setValue("pointLights[" + idx + "].linear", light->getLinear());
+                            shader->setValue("pointLights[" + idx + "].quadratic", light->getQuadratic());
+                            shader->setValue("pointLights[" + idx + "].diffuse", light->getDiffuseColor());
+                            shader->setValue("pointLights[" + idx + "].specular", light->getSpecularColor());
+                            countPoint++;
+                        }
+                        else if (light->getLightType() == LIGHT_TYPE_SPOT)
+                        {
+                            kString idx = std::to_string(countSpot);
+                            shader->setValue("spotLights[" + idx + "].power", light->getPower());
+                            shader->setValue("spotLights[" + idx + "].position", light->getGlobalPosition());
+                            shader->setValue("spotLights[" + idx + "].direction", glm::normalize(light->getGlobalRotation() * kVec3(0.0f, -1.0f, 0.0f)));
+                            shader->setValue("spotLights[" + idx + "].cutOff", light->getCutOff());
+                            shader->setValue("spotLights[" + idx + "].outerCutOff", light->getOuterCutOff());
+                            shader->setValue("spotLights[" + idx + "].constant", light->getConstant());
+                            shader->setValue("spotLights[" + idx + "].linear", light->getLinear());
+                            shader->setValue("spotLights[" + idx + "].quadratic", light->getQuadratic());
+                            shader->setValue("spotLights[" + idx + "].diffuse", light->getDiffuseColor());
+                            shader->setValue("spotLights[" + idx + "].specular", light->getSpecularColor());
+                            countSpot++;
+                        }
+                    }
+                    shader->setValue("sunLightNum", countSun);
+                    shader->setValue("pointLightNum", countPoint);
+                    shader->setValue("spotLightNum", countSpot);
+
+                    // Scene ambient + skybox IBL ambient (used by PBR/Phong).
+                    shader->setValue("sceneAmbient", scene->getAmbientLightColor());
+                    shader->setValue("skyboxAmbientEnabled", scene->getSkyboxAmbientEnabled());
+                    shader->setValue("skyboxAmbientStrength", scene->getSkyboxAmbientStrength());
+
+                    bool decalSkyboxBound = false;
+                    {
+                        kMaterial *skyboxMaterial = scene->getSkyboxMaterial();
+                        if (skyboxMaterial != nullptr && skyboxMaterial->getTextures().size() > 0 &&
+                            skyboxMaterial->getTexture(0)->getType() == kTextureType::TEX_TYPE_CUBE)
+                        {
+                            driver->bindTextureCube(9, skyboxMaterial->getTexture(0)->getTextureID());
+                            shader->setValue("skyboxMap", 9);
+                            decalSkyboxBound = true;
+                        }
+                    }
+
+                    // Decals never cast/receive shadows. Feeding enableShadow and
+                    // receiveShadow=false makes the lit shaders short-circuit
+                    // calcShadow() (returns 0.0) without sampling the shadow map.
+                    shader->setValue("enableShadow", enableShadow);
+                    shader->setValue("receiveShadow", false);
+                    shader->setValue("cascadeCount", std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades)));
+
+                    // Reset texture-presence flags so a previous draw's material
+                    // doesn't leak its has_X flags onto this decal.
+                    shader->setValue("has_albedoMap", false);
+                    shader->setValue("has_normalMap", false);
+                    shader->setValue("has_specularMap", false);
+                    shader->setValue("has_glossinessMap", false);
+                    shader->setValue("has_emissiveMap", false);
+                    shader->setValue("has_metallicRoughnessMap", false);
+                    shader->setValue("has_aoMap", false);
+
+                    // Material textures (unit 0..N-1).
+                    size_t texCount = mat->getTextures().size();
+                    for (size_t k = 0; k < texCount; ++k)
+                    {
+                        kTexture *tex = mat->getTexture(k);
+                        if (tex == nullptr)
+                            continue;
+
+                        if (tex->getType() == kTextureType::TEX_TYPE_2D)
+                            driver->bindTexture2D((int)k, tex->getTextureID());
+                        else if (tex->getType() == kTextureType::TEX_TYPE_CUBE)
+                            driver->bindTextureCube((int)k, tex->getTextureID());
+
+                        shader->setValue(tex->getTextureName().c_str(), (int)k); // sampler -> glUniform1i
+                        shader->setValue("has_" + tex->getTextureName(), true);
+                    }
+
+                    // Dynamic, shader-driven parameters (from `// @var`
+                    // annotations). Scalars/vectors set the uniform of the same
+                    // name; sampler params bind their texture to a free unit.
+                    int paramTexUnit = (int)texCount;
+                    for (const auto &kv : mat->getParams())
+                    {
+                        const kString &pn = kv.first;
+                        const kMaterialParam &p = kv.second;
+                        switch (p.type)
+                        {
+                        case kMaterialParamType::FLOAT:
+                            shader->setValue(pn, p.value.x);
+                            break;
+                        case kMaterialParamType::INT:
+                            shader->setValue(pn, (int)p.value.x);
+                            break;
+                        case kMaterialParamType::BOOL:
+                            shader->setValue(pn, p.value.x != 0.0f);
+                            break;
+                        case kMaterialParamType::VEC2:
+                            shader->setValue(pn, kVec2(p.value.x, p.value.y));
+                            break;
+                        case kMaterialParamType::VEC3:
+                            shader->setValue(pn, kVec3(p.value.x, p.value.y, p.value.z));
+                            break;
+                        case kMaterialParamType::VEC4:
+                            shader->setValue(pn, p.value);
+                            break;
+                        case kMaterialParamType::SAMPLER2D:
+                            if (p.texture && paramTexUnit < 8)
+                            {
+                                driver->bindTexture2D(paramTexUnit, p.texture->getTextureID());
+                                shader->setValue(pn, (int)paramTexUnit);
+                                shader->setValue("has_" + pn, true);
+                                paramTexUnit++;
+                            }
+                            break;
+                        case kMaterialParamType::SAMPLERCUBE:
+                            if (p.texture && paramTexUnit < 8)
+                            {
+                                driver->bindTextureCube(paramTexUnit, p.texture->getTextureID());
+                                shader->setValue(pn, (int)paramTexUnit);
+                                shader->setValue("has_" + pn, true);
+                                paramTexUnit++;
+                            }
+                            break;
+                        }
+                    }
+
+                    decal->draw();
+
+                    // Unbind material + param units.
+                    for (int k = paramTexUnit - 1; k >= 0; --k)
+                    {
+                        driver->unbindTexture2D(k);
+                        driver->unbindTextureCube(k);
+                    }
+                    if (decalSkyboxBound)
+                        driver->unbindTextureCube(9);
+                    shader->unuse();
+                }
+            }
+        }
         else if (currentNode->getType() == kNodeType::NODE_TYPE_LIGHT)
         {
             kLight *currentLight = (kLight *)currentNode;
@@ -1838,6 +2053,22 @@ void main()
                 currentMesh->draw();
             }
         }
+        else if (currentNode->getType() == kNodeType::NODE_TYPE_DECAL)
+        {
+            // Decals are pickable through their flat quad geometry, exactly
+            // like a mesh: the picking shader colors the quad by object ID.
+            kDecal *decal = (kDecal *)currentNode;
+            kVec3 idColor = idToRgb(decal->getId());
+            pickingShader->setValue("modelMatrix", decal->getModelMatrixWorld());
+            pickingShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
+                                                       idColor.g / 255.0f,
+                                                       idColor.b / 255.0f));
+
+            std::vector<kMat4> boneTransforms(128, kMat4(1.0f));
+            pickingShader->setValue("finalBonesMatrices", boneTransforms);
+
+            decal->draw();
+        }
         else if (pickingIconShader && pickingIconVAO &&
                  (currentNode->getType() == kNodeType::NODE_TYPE_LIGHT ||
                   currentNode->getType() == kNodeType::NODE_TYPE_CAMERA ||
@@ -2485,10 +2716,11 @@ void main() { outColor = vec4(lineColor, 1.0); }
                 walkAudio(scene->getRootNode());
         }
 
-        // --- Physics shapes (green wireframe for any selected object) -----
-        // Walks the full scene graph so nested objects show their collider too.
+        // --- Physics shapes (green wireframe) + character controllers -------
+        // (cyan capsule) for any selected object. Walks the full scene graph so
+        // nested objects show their collider / controller too.
         const kVec3 physColor(0.2f, 1.0f, 0.2f);
-        std::function<void(kObject *)> walkPhys = [&](kObject *node)
+        std::function<void(kObject *)> walkColliders = [&](kObject *node)
         {
             if (!node)
                 return;
@@ -2631,11 +2863,56 @@ void main() { outColor = vec4(lineColor, 1.0); }
                 drawLines(verts, physColor);
             }
 
+            // --- Character controllers (cyan capsule for any selected object) --
+            // A character controller is an independent capsule whose origin sits
+            // at the object's feet (the shape is offset up by half the total
+            // height), so we draw it starting at the node position and extending
+            // up to pos + height along the node's local +Y axis.
+            if (node->getActive() && node->getHasCharacterDesc() &&
+                selectedSet.find(node->getUuid()) != selectedSet.end())
+            {
+                node->calculateModelMatrix();
+                const kCharacterControllerDesc &cd = node->getCharacterDesc();
+                kVec3 pos = node->getGlobalPosition();
+                kQuat rot = node->getGlobalRotation();
+
+                // Local-axis vectors rotated into world space.
+                kVec3 rx = rot * kVec3(1, 0, 0);
+                kVec3 ry = rot * kVec3(0, 1, 0);
+                kVec3 rz = rot * kVec3(0, 0, 1);
+
+                const float radius = cd.radius;
+                // Total tip-to-tip height is cd.height; the cylindrical core is
+                // (height - 2*radius), matching the Jolt capsule in the runtime.
+                const float cylHalf = std::max(cd.height * 0.5f - radius, 0.0f);
+
+                // Capsule centre sits at feet + height/2; hemisphere centres are
+                // ±cylHalf from there along the local up axis.
+                kVec3 topC = pos + ry * (cd.height * 0.5f + cylHalf);
+                kVec3 botC = pos + ry * (cd.height * 0.5f - cylHalf);
+
+                std::vector<float> verts;
+                appendCircle(verts, topC, rx, rz, radius);
+                appendCircle(verts, botC, rx, rz, radius);
+                appendLine(verts, topC + rx * radius, botC + rx * radius);
+                appendLine(verts, topC - rx * radius, botC - rx * radius);
+                appendLine(verts, topC + rz * radius, botC + rz * radius);
+                appendLine(verts, topC - rz * radius, botC - rz * radius);
+
+                // Rounded end caps approximated by side-view great circles.
+                appendCircle(verts, topC, rx, ry, radius);
+                appendCircle(verts, topC, rz, ry, radius);
+                appendCircle(verts, botC, rx, ry, radius);
+                appendCircle(verts, botC, rz, ry, radius);
+
+                drawLines(verts, kVec3(0.3f, 0.85f, 1.0f)); // cyan
+            }
+
             for (kObject *child : node->getChildren())
-                walkPhys(child);
+                walkColliders(child);
         };
         if (scene->getRootNode())
-            walkPhys(scene->getRootNode());
+            walkColliders(scene->getRootNode());
 
         // Restore state
         driver->setDepthWrite(true);

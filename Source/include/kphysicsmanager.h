@@ -11,6 +11,9 @@
 #include "kphysicsobject.h"
 #include "kcharactercontroller.h"
 
+#include <string>
+#include <vector>
+
 namespace kemena
 {
     /**
@@ -95,6 +98,33 @@ namespace kemena
 
         /** @brief Returns the current global gravity vector (m/s²). */
         kVec3 getGravity() const;
+
+        // --- User-defined layers ---------------------------------------------
+
+        /**
+         * @brief Replaces the list of named physics layers.
+         *
+         * The first entry is always the "Default" layer (index 0). Bodies are
+         * only allowed to interact with other bodies on the same layer.
+         *
+         * @param names Ordered layer names; the list is capped at kMaxPhysicsLayers.
+         */
+        void setLayerNames(const std::vector<std::string> &names);
+
+        /** @brief Returns the current ordered list of named physics layers. */
+        std::vector<std::string> getLayerNames() const;
+
+        /**
+         * @brief Returns the index of a named layer, or -1 if it is not defined.
+         * @param name Layer name to look up.
+         */
+        int getLayerIndex(const std::string &name) const;
+
+        /**
+         * @brief Returns the name of a layer index, clamped to the valid range.
+         * @param index Layer index.
+         */
+        std::string getLayerName(int index) const;
 
         // --- Object factory --------------------------------------------------
 

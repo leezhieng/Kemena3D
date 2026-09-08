@@ -55,6 +55,19 @@ namespace kemena
     class KEMENA3D_API kWorld
     {
     public:
+        /**
+         * @brief Replaces the ordered list of named physics layers.
+         *
+         * Serialized with the world so the standalone runtime can restore the
+         * layer configuration and enforce same-layer-only collision.
+         *
+         * @param names Layer names; "Default" is always kept at index 0.
+         */
+        void setPhysicsLayers(const std::vector<std::string> &names);
+
+        /** @brief Returns the ordered list of named physics layers. */
+        std::vector<std::string> getPhysicsLayers() const;
+
         /** @brief Constructs an empty world and creates its script manager. */
         kWorld();
 
@@ -318,6 +331,7 @@ namespace kemena
         bool                   physicsRunning  = false;   ///< True while physics is stepping.
         std::vector<kObject *> physicsBodies;             ///< Nodes with a live rigid body.
         std::vector<kObject *> characterBodies;           ///< Nodes with a live character.
+        std::vector<std::string> physicsLayers{ "Default" }; ///< Named physics layers (serialized with the world).
 
         kParticleManager *particleManager  = nullptr; ///< Particle system manager (world-owned).
         bool              particlesRunning = false;   ///< True while particles are simulating.

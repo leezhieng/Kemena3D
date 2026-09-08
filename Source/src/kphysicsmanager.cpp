@@ -26,13 +26,15 @@
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
-// Object layer constants  (must match kphysicsobject.cpp)
+// Object layer constants  (must match kphysicsobject.cpp / kcharactercontroller.cpp)
+//
+// Every user layer occupies two Jolt object layers: a static variant
+// (index*2) and a moving variant (index*2+1). Bodies only collide with other
+// bodies on the *same* user layer (see ObjLayerPairFilter).
 // ---------------------------------------------------------------------------
 namespace Layers
 {
-    static constexpr JPH::ObjectLayer NON_MOVING = 0;
-    static constexpr JPH::ObjectLayer MOVING     = 1;
-    static constexpr JPH::ObjectLayer NUM_LAYERS = 2;
+    static constexpr JPH::ObjectLayer NUM_LAYERS = kemena::kMaxPhysicsLayers * 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,8 +55,12 @@ class BPLayerInterfaceImpl final : public JPH::BroadPhaseLayerInterface
 public:
     BPLayerInterfaceImpl()
     {
-        m_objectToBroadPhase[Layers::NON_MOVING] = BPLayers::NON_MOVING;
-        m_objectToBroadPhase[Layers::MOVING]     = BPLayers::MOVING;
+        for (JPH::uint l = 0; l < Layers::NUM_LAYERS; ++l)
+        {
+            // Even (static variant) -> NON_MOVING, odd (moving variant) -> MOVING.
+            m_objectToBroadPhase[l] = (l % 2 == 0) ? BPLayers::NON_MOVING
+                                                   : BPLayers::MOVING;
+        }
     }
 
     JPH::uint GetNumBroadPhaseLayers() const override
@@ -93,12 +99,11 @@ public:
     bool ShouldCollide(JPH::ObjectLayer layer1,
                        JPH::BroadPhaseLayer layer2) const override
     {
-        switch (layer1)
-        {
-            case Layers::NON_MOVING: return layer2 == BPLayers::MOVING;
-            case Layers::MOVING:     return true;
-            default: return false;
-        }
+        // Static variant only collides with moving bodies (broad-phase opt);
+        // moving variant collides with everything.
+        if (layer1 % 2 == 0)
+            return layer2 == BPLayers::MOVING;
+        return true;
     }
 };
 
@@ -111,12 +116,9 @@ public:
     bool ShouldCollide(JPH::ObjectLayer layer1,
                        JPH::ObjectLayer layer2) const override
     {
-        switch (layer1)
-        {
-            case Layers::NON_MOVING: return layer2 == Layers::MOVING;
-            case Layers::MOVING:     return true;
-            default: return false;
-        }
+        // Bodies only interact when they belong to the same user layer.
+        return kemena::physicsUserLayerFromObjectLayer(layer1) ==
+               kemena::physicsUserLayerFromObjectLayer(layer2);
     }
 };
 
@@ -136,6 +138,7 @@ namespace kemena
 
         std::vector<kPhysicsObject *>              objects;
         std::vector<kCharacterController *>        characters;
+        std::vector<std::string>                   layerNames{ "Default" };
         bool                                       initialized = false;
 
         static constexpr JPH::uint cMaxBodies             = 65536;
@@ -255,6 +258,11 @@ namespace kemena
         if (!m_impl->initialized || deltaTime <= 0.0f)
             return;
 
+        // Convert each character's pending per-step move() (issued by scripts
+        // since the last step) into the velocity that travels exactly that delta.
+        for (kCharacterController *cc : m_impl->characters)
+            cc->applyPendingMove(deltaTime);
+
         // 1 collision step is fine for games running ≥ 30 fps
         const int cCollisionSteps = 1;
         m_impl->physicsSystem->Update(
@@ -287,6 +295,46 @@ namespace kemena
     }
 
     // -----------------------------------------------------------------------
+    // User-defined layers
+    // -----------------------------------------------------------------------
+
+    void kPhysicsManager::setLayerNames(const std::vector<std::string> &names)
+    {
+        m_impl->layerNames.clear();
+        // Always keep "Default" as the first layer (index 0).
+        m_impl->layerNames.push_back("Default");
+        for (const std::string &n : names)
+        {
+            if (n.empty() || n == "Default")
+                continue;
+            if (static_cast<int>(m_impl->layerNames.size()) >= kMaxPhysicsLayers)
+                break;
+            m_impl->layerNames.push_back(n);
+        }
+    }
+
+    std::vector<std::string> kPhysicsManager::getLayerNames() const
+    {
+        return m_impl->layerNames;
+    }
+
+    int kPhysicsManager::getLayerIndex(const std::string &name) const
+    {
+        for (size_t i = 0; i < m_impl->layerNames.size(); ++i)
+            if (m_impl->layerNames[i] == name)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    std::string kPhysicsManager::getLayerName(int index) const
+    {
+        if (index < 0) index = 0;
+        if (index >= static_cast<int>(m_impl->layerNames.size()))
+            index = static_cast<int>(m_impl->layerNames.size()) - 1;
+        return m_impl->layerNames[index];
+    }
+
+    // -----------------------------------------------------------------------
     // Object factory
     // -----------------------------------------------------------------------
 
@@ -298,8 +346,12 @@ namespace kemena
             return nullptr;
         }
 
+        // Resolve the named layer to its index (fall back to Default = 0).
+        int userLayer = getLayerIndex(desc.layer);
+        if (userLayer < 0) userLayer = 0;
+
         kPhysicsObject *obj = new kPhysicsObject();
-        if (!obj->init(m_impl->physicsSystem.get(), desc))
+        if (!obj->init(m_impl->physicsSystem.get(), desc, userLayer))
         {
             delete obj;
             return nullptr;
@@ -329,9 +381,14 @@ namespace kemena
             return nullptr;
         }
 
+        // Resolve the named layer to its index (fall back to Default = 0).
+        int userLayer = getLayerIndex(desc.layer);
+        if (userLayer < 0) userLayer = 0;
+
         kCharacterController *cc = new kCharacterController();
-        if (!cc->init(m_impl->physicsSystem.get(), desc))
+        if (!cc->init(m_impl->physicsSystem.get(), desc, userLayer))
         {
+            std::cout << "[kPhysicsManager] createCharacter: cc->init failed." << std::endl;
             delete cc;
             return nullptr;
         }
