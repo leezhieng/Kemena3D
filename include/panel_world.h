@@ -63,6 +63,14 @@ private:
     bool wasGizmoUsing = false;                  ///< Whether the gizmo was being dragged on the previous frame (for undo detection).
     std::vector<TransformState> gizmoStartStates; ///< Selected-node transforms captured at the start of a gizmo drag, used to build the undo command.
 
+    // Toolbar icon textures (loaded from embedded resources).
+    uint32_t iconPivotIndividual = 0;  ///< "Individual origins" pivot-mode icon.
+    uint32_t iconPivotCenter     = 0;  ///< "Median point" (centre) pivot-mode icon.
+    uint32_t iconPivotLastSelected = 0; ///< "Active element" (last selected) pivot-mode icon.
+    uint32_t iconAlignLocal      = 0;  ///< Gizmo "Local" transform-space icon.
+    uint32_t iconAlignWorld      = 0;  ///< Gizmo "World" transform-space icon.
+    uint32_t iconCamera          = 0;  ///< Editor camera-settings button icon.
+
     /// Lazy-initialised offscreen renderer used for the camera-preview overlay
     /// shown at the bottom-right when a kCamera is the primary selection.
     kOffscreenRenderer *cameraPreview = nullptr;

@@ -436,107 +436,200 @@ void PanelLogicGraph::drawVariablesPanel()
         "int", "float", "bool", "vector3", "string",
         "object", "animator", "audio source", "material",
     };
-    static int newVarType = (int)kScriptVarType::Float;
 
-    ImGui::BeginChild("##scriptvars", ImVec2(180.0f, 0.0f), true);
-    ImGui::TextUnformatted("Variables");
-    ImGui::Separator();
+    ImGui::BeginChild("##scriptvars", ImVec2(variablesPanelWidth, 0.0f), true);
 
-    ImGui::SetNextItemWidth(92.0f);
-    ImGui::Combo("##addvartype", &newVarType, varTypeNames, IM_ARRAYSIZE(varTypeNames));
-    ImGui::SameLine();
-    if (ImGui::Button("+ Add"))
+    // "Add Variable" button at the very top, exactly like the animator column.
+    // New variables default to int; the type is changed in the table below.
+    if (ImGui::Button("Add Variable", ImVec2(-1.0f, 0.0f)))
     {
         kScriptGraphVar v;
-        v.name = "var" + std::to_string(graph.variables.size() + 1);
-        v.type = (kScriptVarType)newVarType;
+        // Pick the first free "varN" identifier so removing variables can never
+        // leave a duplicate global name behind (duplicates break compilation).
+        int counter = 1;
+        while (true)
+        {
+            bool taken = false;
+            for (const auto &ov : graph.variables)
+            {
+                if (ov.name == "var" + std::to_string(counter)) { taken = true; break; }
+            }
+            if (!taken) break;
+            counter++;
+        }
+        v.name = "var" + std::to_string(counter);
+        v.type = kScriptVarType::Int;
         graph.variables.push_back(v);
         graph.dirty = true;
     }
 
-    int removeIndex = -1;
-    for (size_t i = 0; i < graph.variables.size(); ++i)
+    if (graph.variables.empty())
     {
-        kScriptGraphVar &v = graph.variables[i];
-        ImGui::PushID((int)i);
+        // Center the placeholder message in the column.
+        const char* emptyMsg = "No variable defined";
+        const float emptyTw  = ImGui::CalcTextSize(emptyMsg).x;
+        const float emptyAw  = ImGui::GetContentRegionAvail().x;
+        if (emptyAw > emptyTw)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (emptyAw - emptyTw) * 0.5f);
+        ImGui::TextDisabled("%s", emptyMsg);
+    }
+    else
+    {
+        int removeIndex = -1;
 
-        char nameBuf[64];
-        strncpy_s(nameBuf, sizeof(nameBuf), v.name.c_str(), _TRUNCATE);
-        nameBuf[sizeof(nameBuf) - 1] = '\0';
-        ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
-        {
-            v.name = nameBuf;
-            graph.dirty = true;
-        }
+        // Square remove button sized to the row height; it sits at the left edge
+        // of its cell so the fixed column never crops it.
+        const float xBtn = ImGui::GetFrameHeight();
+        const float xCol = xBtn + ImGui::GetStyle().CellPadding.x * 2.0f + 2.0f;
 
-        int vt = (int)v.type;
-        ImGui::SetNextItemWidth(132.0f);
-        if (ImGui::Combo("##type", &vt, varTypeNames, IM_ARRAYSIZE(varTypeNames)))
+        if (ImGui::BeginTable("##scriptvarstable", 4,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH))
         {
-            v.type = (kScriptVarType)vt;
-            graph.dirty = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("x"))
-            removeIndex = (int)i;
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 104.0f);
+            ImGui::TableSetupColumn("Default", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, xCol);
+            ImGui::TableHeadersRow();
 
-        // Type-specific default-value editor.
-        switch (v.type)
-        {
-            case kScriptVarType::Int:
-                ImGui::SetNextItemWidth(110.0f);
-                if (ImGui::DragInt("##def", &v.defInt, 0.05f))
-                    graph.dirty = true;
-                break;
-            case kScriptVarType::Float:
-                ImGui::SetNextItemWidth(110.0f);
-                if (ImGui::DragFloat("##def", &v.defValue, 0.05f))
-                    graph.dirty = true;
-                break;
-            case kScriptVarType::Bool:
-                if (ImGui::Checkbox("##def", &v.defBool))
-                    graph.dirty = true;
-                break;
-            case kScriptVarType::String:
+            for (int i = 0; i < (int)graph.variables.size(); ++i)
             {
-                char buf[128];
-                strncpy_s(buf, sizeof(buf), v.defStr.c_str(), _TRUNCATE);
-                buf[sizeof(buf) - 1] = '\0';
-                ImGui::SetNextItemWidth(110.0f);
-                if (ImGui::InputText("##def", buf, sizeof(buf)))
+                kScriptGraphVar &v = graph.variables[i];
+                ImGui::PushID(i);
+                ImGui::TableNextRow();
+
+                // --- Name ---
+                ImGui::TableSetColumnIndex(0);
                 {
-                    v.defStr = buf;
-                    graph.dirty = true;
+                    char nameBuf[64];
+                    strncpy_s(nameBuf, sizeof(nameBuf), v.name.c_str(), _TRUNCATE);
+                    nameBuf[sizeof(nameBuf) - 1] = '\0';
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
+                    {
+                        v.name = nameBuf;
+                        graph.dirty = true;
+                    }
                 }
-                break;
+
+                // --- Type ---
+                ImGui::TableSetColumnIndex(1);
+                {
+                    int vt = (int)v.type;
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::Combo("##type", &vt, varTypeNames, IM_ARRAYSIZE(varTypeNames)))
+                    {
+                        v.type = (kScriptVarType)vt;
+                        graph.dirty = true;
+                    }
+                }
+
+                // --- Default value ---
+                ImGui::TableSetColumnIndex(2);
+                switch (v.type)
+                {
+                    case kScriptVarType::Int:
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        if (ImGui::DragInt("##def", &v.defInt, 0.05f))
+                            graph.dirty = true;
+                        break;
+                    case kScriptVarType::Float:
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        if (ImGui::DragFloat("##def", &v.defValue, 0.05f))
+                            graph.dirty = true;
+                        break;
+                    case kScriptVarType::Bool:
+                        if (ImGui::Checkbox("##def", &v.defBool))
+                            graph.dirty = true;
+                        break;
+                    case kScriptVarType::String:
+                    {
+                        char buf[128];
+                        strncpy_s(buf, sizeof(buf), v.defStr.c_str(), _TRUNCATE);
+                        buf[sizeof(buf) - 1] = '\0';
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        if (ImGui::InputText("##def", buf, sizeof(buf)))
+                        {
+                            v.defStr = buf;
+                            graph.dirty = true;
+                        }
+                        break;
+                    }
+                    case kScriptVarType::Vec3:
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        if (ImGui::DragFloat3("##def", v.defVec, 0.05f))
+                            graph.dirty = true;
+                        break;
+                    default:
+                        ImGui::TextDisabled("null");
+                        break;
+                }
+
+                // --- Remove (square, left-aligned; label centered) ---
+                ImGui::TableSetColumnIndex(3);
+                // Zero the frame padding so the "x" glyph truly centers inside
+                // the square. The theme's wide FramePadding inflates the button's
+                // minimum width so it would overflow the cell and clip off-center.
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.5f, 0.5f));
+                if (ImGui::Button("x", ImVec2(xBtn, xBtn)))
+                    removeIndex = i;
+                ImGui::PopStyleVar(2);
+
+                ImGui::PopID();
             }
-            case kScriptVarType::Vec3:
-                ImGui::SetNextItemWidth(52.0f);
-                if (ImGui::DragFloat("X##def", &v.defVec[0], 0.05f)) graph.dirty = true;
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(52.0f);
-                if (ImGui::DragFloat("Y##def", &v.defVec[1], 0.05f)) graph.dirty = true;
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(52.0f);
-                if (ImGui::DragFloat("Z##def", &v.defVec[2], 0.05f)) graph.dirty = true;
-                break;
-            default:
-                ImGui::TextDisabled("default: null");
-                break;
+
+            ImGui::EndTable();
         }
 
-        ImGui::Separator();
-        ImGui::PopID();
-    }
-    if (removeIndex >= 0)
-    {
-        graph.variables.erase(graph.variables.begin() + removeIndex);
-        graph.dirty = true;
+        if (removeIndex >= 0)
+        {
+            graph.variables.erase(graph.variables.begin() + removeIndex);
+            graph.dirty = true;
+        }
+
+        ImGui::Spacing();
     }
 
-    ImGui::TextDisabled("Typed globals are emitted\nin the generated script.");
     ImGui::EndChild();
+}
+
+// ---------------------------------------------------------------------------
+// Splitter between the variables column and the canvas
+// ---------------------------------------------------------------------------
+
+void PanelLogicGraph::drawVariablesSplitter()
+{
+    const float splitterWidth = 6.0f;
+    const float minWidth      = 200.0f;
+    const float maxWidth      = 520.0f;
+
+    ImGui::SameLine();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    if (avail.y < 1.0f) avail.y = 1.0f;
+    ImGui::InvisibleButton("##scriptvarsplit", ImVec2(splitterWidth, avail.y));
+
+    if (ImGui::IsItemActive())
+    {
+        variablesPanelWidth = ImClamp(variablesPanelWidth + ImGui::GetIO().MouseDelta.x,
+                                      minWidth, maxWidth);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+
+    // Draw a subtle vertical grab handle.
+    ImDrawList *dl   = ImGui::GetWindowDrawList();
+    ImVec2      rect = ImGui::GetItemRectMin();
+    ImVec2      max  = ImGui::GetItemRectMax();
+    ImU32       col  = ImGui::IsItemHovered() || ImGui::IsItemActive()
+                          ? IM_COL32(120, 160, 220, 255)
+                          : IM_COL32(70, 70, 70, 255);
+    dl->AddRectFilled(ImVec2(rect.x + 2.0f, rect.y),
+                      ImVec2(max.x - 2.0f, max.y), col);
+
+    ImGui::PopStyleVar();
+    ImGui::SameLine();
 }
 
 // ---------------------------------------------------------------------------
@@ -1534,7 +1627,7 @@ void PanelLogicGraph::draw(bool &isOpened)
     drawToolbar();
     drawVariablesPanel();
     syncVariableNodePins();
-    ImGui::SameLine();
+    drawVariablesSplitter();
     drawCanvas();
 
     ImGui::End();

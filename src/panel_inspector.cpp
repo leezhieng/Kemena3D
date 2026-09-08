@@ -5717,12 +5717,7 @@ void PanelInspector::draw(bool &opened)
                     gui->spacing();
                 }
 
-                gui->spacing();
-                gui->separator();
-                gui->spacing();
-
                 drawTransformSection(gui, obj, manager);
-                gui->spacing();
 
                 // Determine which sections of this prefab instance differ from
                 // the source template, so only actually-modified property labels

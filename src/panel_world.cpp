@@ -7,13 +7,44 @@ PanelWorld::PanelWorld(kGuiManager *setGuiManager, Manager *setManager)
 
     // Disable the hatched/dashed overlay on gizmo axis lines
     ImGuizmo::GetStyle().HatchedAxisLineThickness = 0.0f;
+
+    // Load the viewport toolbar icons (white glyphs on transparent PNGs) from
+    // the embedded resources. Textures are cached by the asset manager, so the
+    // texture IDs stay valid for the lifetime of the app.
+    kAssetManager *am = manager->getAssetManager();
+    if (am)
+    {
+        kTexture2D *tex = am->loadTexture2DFromResource("ICON_PIVOT_INDIVIDUAL_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconPivotIndividual = tex->getTextureID();
+
+        tex = am->loadTexture2DFromResource("ICON_PIVOT_MEDIAN_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconPivotCenter = tex->getTextureID();
+
+        tex = am->loadTexture2DFromResource("ICON_PIVOT_ACTIVE_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconPivotLastSelected = tex->getTextureID();
+
+        tex = am->loadTexture2DFromResource("ICON_ALIGN_LOCAL_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconAlignLocal = tex->getTextureID();
+
+        tex = am->loadTexture2DFromResource("ICON_ALIGN_WORLD_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconAlignWorld = tex->getTextureID();
+
+        tex = am->loadTexture2DFromResource("ICON_CAMERA_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconCamera = tex->getTextureID();
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Pivot toolbar helpers
 // ---------------------------------------------------------------------------
 
-static void pivotButton(kGuiManager *gui, const char *label, PivotMode mode, PivotMode &current)
+static void pivotButton(kGuiManager *gui, const char *id, uint32_t icon, PivotMode mode, PivotMode &current)
 {
     bool active = (current == mode);
     if (active)
@@ -21,7 +52,7 @@ static void pivotButton(kGuiManager *gui, const char *label, PivotMode mode, Piv
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
     }
-    if (gui->button(label))
+    if (gui->imageButton(id, icon, kVec2(24.0f, 24.0f)))
         current = mode;
     if (active)
         gui->popStyleColor(2);
@@ -41,17 +72,22 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     gui->beginDisabled(!enabled);
     gui->windowStart("World", &isOpened);
 
-    pivotButton(gui, "I", PivotMode::Individual, manager->pivotMode);
+    // Pivot mode: individual origins / median centre / last selected.
+    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
+    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon buttons
+    pivotButton(gui, "PivotIndividual", iconPivotIndividual, PivotMode::Individual, manager->pivotMode);
     if (gui->isItemHovered())
         gui->setItemTooltip("Individual pivot");
     gui->sameLine();
-    pivotButton(gui, "C", PivotMode::Center, manager->pivotMode);
+    pivotButton(gui, "PivotCenter", iconPivotCenter, PivotMode::Center, manager->pivotMode);
     if (gui->isItemHovered())
         gui->setItemTooltip("Center pivot");
     gui->sameLine();
-    pivotButton(gui, "L", PivotMode::LastSelected, manager->pivotMode);
+    pivotButton(gui, "PivotLastSelected", iconPivotLastSelected, PivotMode::LastSelected, manager->pivotMode);
     if (gui->isItemHovered())
         gui->setItemTooltip("Last selected pivot");
+    gui->popStyleVar(); // FramePadding
+    gui->popStyleVar(); // ItemSpacing
 
     gui->sameLine();
     gui->dummy(kVec2(8, 0));
@@ -83,8 +119,10 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     gui->sameLine();
 
     // Gizmo space: Local (object orientation) vs World (axis-aligned).
+    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
+    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon buttons
     {
-        auto modeBtn = [&](const char *label, ImGuizmo::MODE m)
+        auto modeBtn = [&](const char *id, uint32_t icon, ImGuizmo::MODE m)
         {
             bool active = (manager->manipulatorMode == m);
             if (active)
@@ -92,27 +130,31 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
                 gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
             }
-            if (gui->button(label))
+            if (gui->imageButton(id, icon, kVec2(24.0f, 24.0f)))
                 manager->manipulatorMode = m;
             if (active)
                 gui->popStyleColor(2);
         };
-        modeBtn("Local", ImGuizmo::LOCAL);
+        modeBtn("GizmoLocal", iconAlignLocal, ImGuizmo::LOCAL);
         if (gui->isItemHovered())
             gui->setItemTooltip("Gizmo aligned to the object's local orientation");
         gui->sameLine();
-        modeBtn("World", ImGuizmo::WORLD);
+        modeBtn("GizmoWorld", iconAlignWorld, ImGuizmo::WORLD);
         if (gui->isItemHovered())
             gui->setItemTooltip("Gizmo aligned to world axes");
     }
+    gui->popStyleVar(); // FramePadding
+    gui->popStyleVar(); // ItemSpacing
 
     gui->sameLine();
     gui->dummy(kVec2(8, 0));
     gui->sameLine();
 
     // Camera settings popup
-    if (gui->button("Camera..."))
+    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon button
+    if (gui->imageButton("CameraSettingsBtn", iconCamera, kVec2(24.0f, 24.0f)))
         ImGui::OpenPopup("CameraSettings");
+    gui->popStyleVar();
     if (gui->isItemHovered())
         gui->setItemTooltip("Adjust editor camera settings");
 

@@ -347,11 +347,11 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 		gui->pushStyleColor(ImGuiCol_ButtonActive, kVec4(0, 0, 0, 0));
 
 		gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
-		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(2, 3)); // compact icon buttons
+		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon buttons
 
 		// Up button
 		{
-			if (ImGui::ImageButton("UpButton", iconUp, ImVec2(16, 16)))
+			if (ImGui::ImageButton("UpButton", iconUp, ImVec2(20, 20)))
 			{
 				manager->closeFolder();
 				needRefreshList = true;
@@ -366,7 +366,7 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 
 		// Add button
 		{
-			if (gui->imageButton("AddButton", iconAdd, kVec2(16, 16), kVec2(0, 0), kVec2(1, 1), addTint))
+			if (gui->imageButton("AddButton", iconAdd, kVec2(20, 20), kVec2(0, 0), kVec2(1, 1), addTint))
 			{
 			}
 			addTint = gui->isItemActive() ? kVec4(1, 1, 1, 0.5f) : kVec4(1, 1, 1, 1);
@@ -384,25 +384,26 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 		gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(0, 0));
 
 		// Search bar
-		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(4, (22 - gui->getFontSize()) * 0.5f));
+		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(4, (26 - gui->getFontSize()) * 0.5f));
 		gui->pushItemWidth(-FLT_MIN);
 
 		gui->popStyleVar();
 
 		gui->groupStart();
 		{
-			float iconSize = gui->getFontSize() * 0.8f;
+			const float searchH = 26.0f; // Search input / toolbar control height.
+			float iconSize = gui->getFontSize(); // Bigger magnifier icon.
 			kVec2 cursor = gui->getCursorScreenPos();
-			float buttonWidth = 18.0f;
+			float buttonWidth = 26.0f; // List/thumbnail button is now larger.
 			float searchWidth = gui->getContentRegionAvail().x - buttonWidth - 15;
 
 			ImGui::GetWindowDrawList()->AddImage(
 				iconMag,
-				ImVec2(cursor.x + 4, cursor.y + (gui->getFrameHeight() - iconSize) * 0.5f),
-				ImVec2(cursor.x + 4 + iconSize, cursor.y + (gui->getFrameHeight() + iconSize) * 0.5f)
+				ImVec2(cursor.x + 4, cursor.y + (searchH - iconSize) * 0.5f),
+				ImVec2(cursor.x + 4 + iconSize, cursor.y + (searchH + iconSize) * 0.5f)
 			);
 
-			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(iconSize + 8, 3));
+			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(iconSize + 8, (searchH - gui->getFontSize()) * 0.5f));
 			gui->setNextItemWidth(searchWidth);
 			ImGui::InputTextWithHint("##SearchProject", "Search...", searchBuffer, IM_ARRAYSIZE(searchBuffer));
 			gui->popStyleVar();
@@ -410,11 +411,11 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 			gui->sameLine(0.0f, 8.0f);
 
 			// List or Thumbnail button
-			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(2, 3)); // compact icon button
+			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon button
 			{
 				if (displayThumbnail)
 				{
-					if (ImGui::ImageButton("ListButton", iconList, ImVec2(16, 16)))
+					if (ImGui::ImageButton("ListButton", iconList, ImVec2(20, 20)))
 						displayThumbnail = false;
 
 					if (gui->isItemHovered())
@@ -422,7 +423,7 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 				}
 				else
 				{
-					if (ImGui::ImageButton("ThumbnailButton", iconThumbnail, ImVec2(16, 16)))
+					if (ImGui::ImageButton("ThumbnailButton", iconThumbnail, ImVec2(20, 20)))
 						displayThumbnail = true;
 
 					if (gui->isItemHovered())
@@ -1328,7 +1329,7 @@ void PanelProject::drawBreadcrumb()
 			acceptDropInto(segPath);
 		}
 
-		gui->dummy(kVec2(0.0f, 4.0f));
+		//gui->dummy(kVec2(0.0f, 0.0f));
 	}
 }
 

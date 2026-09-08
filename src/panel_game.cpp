@@ -1,9 +1,28 @@
 #include "panel_game.h"
 #include <algorithm>
+#include <cstdio>
 
 PanelGame::PanelGame(kGuiManager *setGui, Manager *setManager)
     : gui(setGui), manager(setManager)
 {
+    // Load the transport-control icons (white glyphs on transparent PNGs) from
+    // the embedded resources. Textures are cached by the asset manager, so the
+    // texture IDs stay valid for the lifetime of the app.
+    kAssetManager *am = manager->getAssetManager();
+    if (am)
+    {
+        kTexture2D *texPlay = am->loadTexture2DFromResource("ICON_PLAY_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (texPlay)
+            iconPlay = texPlay->getTextureID();
+
+        kTexture2D *texPause = am->loadTexture2DFromResource("ICON_PAUSE_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (texPause)
+            iconPause = texPause->getTextureID();
+
+        kTexture2D *texStop = am->loadTexture2DFromResource("ICON_STOP_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (texStop)
+            iconStop = texStop->getTextureID();
+    }
 }
 
 PanelGame::~PanelGame()
@@ -288,29 +307,107 @@ void PanelGame::draw(bool &isOpened)
     // keys (and Tab) never move focus between the Play/Pause/Stop buttons.
     gui->windowStart("Game", &isOpened, ImGuiWindowFlags_NoNavInputs);
 
-    // ---- Play button -------------------------------------------------------
+    // ---- Toolbar: status (right) + transport buttons (centred) -------------
+    // While the game is playing, sample a live FPS readout (frames counted over
+    // a rolling half-second window) that is shown in the status label.
+    if (isPlaying)
+    {
+        fpsElapsed += gui->getDeltaTime();
+        ++fpsFrames;
+        if (fpsElapsed >= 0.5f)
+        {
+            currentFps = (fpsFrames > 0) ? (float)fpsFrames / fpsElapsed : 0.0f;
+            fpsElapsed = 0.0f;
+            fpsFrames = 0;
+        }
+    }
+
+    // Status string — "Playing" carries the measured frame rate. Before the
+    // first rolling sample completes, fall back to the instantaneous rate so
+    // the label never flashes "Playing (0 fps)" at startup.
+    char statusText[64];
+    if (isPlaying)
+    {
+        float fpsVal = currentFps;
+        if (fpsVal <= 0.0f)
+        {
+            float dt = gui->getDeltaTime();
+            if (dt > 0.0001f)
+                fpsVal = 1.0f / dt;
+        }
+        snprintf(statusText, sizeof(statusText), "Playing (%.0f fps)", fpsVal);
+    }
+    else if (isPaused)
+        snprintf(statusText, sizeof(statusText), "Paused");
+    else
+        snprintf(statusText, sizeof(statusText), "Stopped");
+
+    // Full toolbar width, measured before any widget is placed on this row.
+    const float rowW    = gui->getContentRegionAvail().x;
+    const float statusW = gui->calcTextSize(statusText).x;
+
+    // Square icon buttons (uniform frame padding so width == height).
+    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
+    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3));
+
+    // Transport geometry.
+    const float iconSize = 24.0f;          // Icon glyph size inside each button.
+    const float btnW     = iconSize + 6.0f; // Button width  = icon + 2 * FramePadding.x (3 px).
+    const float btnH     = iconSize + 6.0f; // Button height = icon + 2 * FramePadding.y (3 px).
+    const float btnGap   = 6.0f;           // Horizontal gap between the buttons.
+    const float buttonsW = btnW * 3.0f + btnGap * 2.0f;
+
+    // The three buttons stay centred; they are only pushed left when they would
+    // otherwise collide with the right-aligned status label on narrow panels.
+    const float statusStartX   = rowW - statusW;        // Right-aligned status.
+    const float maxButtonsEndX = statusStartX - 12.0f;  // 12 px clearance from the status.
+    float centredX = (rowW - buttonsW) * 0.5f;
+    if (centredX + buttonsW > maxButtonsEndX)
+        centredX = maxButtonsEndX - buttonsW;
+    if (centredX < 0.0f)
+        centredX = 0.0f;
+
+    // The status text is shorter than the icon buttons, so nudge it down so
+    // both share the same vertical centre line.
+    const float rowTopY     = gui->getCursorPosY();
+    const float textH       = gui->calcTextSize(statusText).y;
+    const float textOffsetY = (btnH > textH) ? (btnH - textH) * 0.5f : 0.0f;
+
+    // Status text, right-aligned & vertically centred on the toolbar.
+    gui->setCursorPos(kVec2(statusStartX, rowTopY + textOffsetY));
+    if (isPlaying)
+        gui->textColored(kVec4(0.35f, 0.90f, 0.35f, 1.0f), statusText);
+    else if (isPaused)
+        gui->textColored(kVec4(1.00f, 0.80f, 0.20f, 1.0f), statusText);
+    else
+        gui->textDisabled(statusText);
+
+    // Place the centred transport buttons at the row top.
+    gui->setCursorPos(kVec2(centredX, rowTopY));
+
+    // ---- Play button (icon) ------------------------------------------------
     if (isPlaying)
     {
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
     }
-    if (gui->button("Play") && !isPlaying)
+    if (gui->imageButton("GamePlay", iconPlay, kVec2(iconSize, iconSize)) && !isPlaying)
         pressPlay();
     if (isPlaying)
         gui->popStyleColor(2);
     if (gui->isItemHovered())
         gui->setItemTooltip(isPaused ? "Resume" : "Play");
 
-    gui->sameLine();
+    gui->sameLine(0.0f, btnGap);
 
-    // ---- Pause button ------------------------------------------------------
+    // ---- Pause button (icon) -----------------------------------------------
     if (isPaused)
     {
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.85f, 0.65f, 0.10f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.95f, 0.75f, 0.20f, 1.00f));
     }
     gui->beginDisabled(isStopped);
-    if (gui->button("Pause"))
+    if (gui->imageButton("GamePause", iconPause, kVec2(iconSize, iconSize)))
     {
         if (isPlaying)
             pressPause();
@@ -323,16 +420,16 @@ void PanelGame::draw(bool &isOpened)
     if (gui->isItemHovered())
         gui->setItemTooltip(isPaused ? "Resume" : "Pause");
 
-    gui->sameLine();
+    gui->sameLine(0.0f, btnGap);
 
-    // ---- Stop button -------------------------------------------------------
+    // ---- Stop button (icon) ------------------------------------------------
     gui->beginDisabled(isStopped);
     if (!isStopped)
     {
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.72f, 0.16f, 0.16f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.88f, 0.26f, 0.26f, 1.00f));
     }
-    if (gui->button("Stop"))
+    if (gui->imageButton("GameStop", iconStop, kVec2(iconSize, iconSize)))
         pressStop();
     if (!isStopped)
         gui->popStyleColor(2);
@@ -340,17 +437,10 @@ void PanelGame::draw(bool &isOpened)
     if (gui->isItemHovered())
         gui->setItemTooltip("Stop and reset scene");
 
-    // ---- Status text -------------------------------------------------------
-    gui->sameLine();
-    gui->dummy(kVec2(8, 0));
-    gui->sameLine();
+    gui->popStyleVar(); // FramePadding
+    gui->popStyleVar(); // ItemSpacing
 
-    if (isPlaying)
-        gui->textColored(kVec4(0.35f, 0.90f, 0.35f, 1.0f), "Playing");
-    else if (isPaused)
-        gui->textColored(kVec4(1.00f, 0.80f, 0.20f, 1.0f), "Paused");
-    else
-        gui->textDisabled("Stopped");
+    gui->dummy(kVec2(0.0f, 0.0f)); // Vertical gap between toolbar and viewport
 
     // ---- Game viewport -----------------------------------------------------
     kVec2 avail = gui->getContentRegionAvail();

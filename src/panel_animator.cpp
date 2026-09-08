@@ -38,7 +38,6 @@ static const char* animVarTypeName(AnimVariableType t)
         case AnimVariableType::Bool:    return "Bool";
         case AnimVariableType::Float:   return "Float";
         case AnimVariableType::Int:     return "Int";
-        case AnimVariableType::Trigger: return "Trigger";
     }
     return "Unknown";
 }
@@ -47,7 +46,10 @@ static AnimVariableType animVarTypeFromName(const std::string& name)
 {
     if (name == "Bool")    return AnimVariableType::Bool;
     if (name == "Int")     return AnimVariableType::Int;
-    if (name == "Trigger") return AnimVariableType::Trigger;
+    // Older .animator files may store "Trigger". It was a bool that the runtime
+    // never auto-reset, so it was functionally identical to Bool; keep those
+    // files loading by mapping the stored type to Bool.
+    if (name == "Trigger") return AnimVariableType::Bool;
     return AnimVariableType::Float;
 }
 
@@ -1162,8 +1164,7 @@ void PanelAnimator::drawSelectedTransitionInspector()
                 cond.variableName = graph.variables[currentVar].name;
                 condVarType       = graph.variables[currentVar].type;
                 // Reset to a valid default comparison for the new variable type.
-                cond.comparison = (condVarType == AnimVariableType::Bool ||
-                                   condVarType == AnimVariableType::Trigger)
+                cond.comparison = (condVarType == AnimVariableType::Bool)
                                       ? AnimCondition::IsTrue
                                       : AnimCondition::Greater;
                 graph.dirty = true;
@@ -1178,10 +1179,6 @@ void PanelAnimator::drawSelectedTransitionInspector()
             case AnimVariableType::Bool:
                 cmpOptions = { AnimCondition::IsTrue, AnimCondition::IsFalse };
                 cmpLabels  = { "is true", "is false" };
-                break;
-            case AnimVariableType::Trigger:
-                cmpOptions = { AnimCondition::IsTrue };
-                cmpLabels  = { "Trigger" };
                 break;
             case AnimVariableType::Int:
             case AnimVariableType::Float:
@@ -1206,8 +1203,8 @@ void PanelAnimator::drawSelectedTransitionInspector()
             graph.dirty = true;
         }
 
-        // The threshold input matches the variable type. Bool and Trigger
-        // conditions have no threshold value to enter.
+        // The threshold input matches the variable type. Bool conditions have
+        // no threshold value to enter.
         if (condVarType == AnimVariableType::Int)
         {
             int ival = (int)cond.threshold;
@@ -1245,7 +1242,7 @@ void PanelAnimator::drawSelectedTransitionInspector()
         {
             cond.variableName = graph.variables[0].name;
             AnimVariableType t = graph.variables[0].type;
-            cond.comparison = (t == AnimVariableType::Bool || t == AnimVariableType::Trigger)
+            cond.comparison = (t == AnimVariableType::Bool)
                                   ? AnimCondition::IsTrue
                                   : AnimCondition::Greater;
         }
@@ -1435,82 +1432,111 @@ void PanelAnimator::drawVariablesPanel()
         graph.dirty = true;
     }
 
-    ImGui::Separator();
-
     if (graph.variables.empty())
     {
-        ImGui::TextDisabled("No variables defined. Click 'Add Variable' to create one.");
+        // Center the placeholder message in the column.
+        const char* emptyMsg = "No variable defined";
+        const float emptyTw  = ImGui::CalcTextSize(emptyMsg).x;
+        const float emptyAw  = ImGui::GetContentRegionAvail().x;
+        if (emptyAw > emptyTw)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (emptyAw - emptyTw) * 0.5f);
+        ImGui::TextDisabled("%s", emptyMsg);
     }
     else
     {
-        ImGui::Columns(4, "VarColumns");
-        ImGui::Text("Name"); ImGui::NextColumn();
-        ImGui::Text("Type"); ImGui::NextColumn();
-        ImGui::Text("Default"); ImGui::NextColumn();
-        ImGui::Text(""); ImGui::NextColumn();
-        ImGui::Separator();
-
         int removeIdx = -1;
-        for (int i = 0; i < (int)graph.variables.size(); ++i)
+
+        // Square remove button sized to the row height; it sits at the left edge
+        // of its cell so the fixed column never crops it (same as logic graph).
+        const float xBtn = ImGui::GetFrameHeight();
+        const float xCol = xBtn + ImGui::GetStyle().CellPadding.x * 2.0f + 2.0f;
+
+        const char* types[] = { "int", "float", "bool" };
+
+        if (ImGui::BeginTable("##animvarstable", 4,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH))
         {
-            auto& var = graph.variables[i];
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 104.0f);
+            ImGui::TableSetupColumn("Default", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, xCol);
+            ImGui::TableHeadersRow();
 
-            // Name
-            char nameBuf[128];
-            strncpy_s(nameBuf, var.name.c_str(), sizeof(nameBuf));
-            ImGui::PushID(i);
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
+            for (int i = 0; i < (int)graph.variables.size(); ++i)
             {
-                var.name = nameBuf;
-                graph.dirty = true;
-            }
-            ImGui::NextColumn();
+                auto& var = graph.variables[i];
+                ImGui::PushID(i);
+                ImGui::TableNextRow();
 
-            // Type combo
-            const char* types[] = { "Bool", "Float", "Int", "Trigger" };
-            int typeIdx = (int)var.type;
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::Combo("##type", &typeIdx, types, IM_ARRAYSIZE(types)))
-            {
-                var.type = (AnimVariableType)typeIdx;
-                graph.dirty = true;
-            }
-            ImGui::NextColumn();
-
-            // Default value
-            ImGui::SetNextItemWidth(-1);
-            if (var.type == AnimVariableType::Bool)
-            {
-                bool bval = (var.defaultValue != 0.0f);
-                if (ImGui::Checkbox("##def", &bval))
+                // Name
+                ImGui::TableSetColumnIndex(0);
                 {
-                    var.defaultValue = bval ? 1.0f : 0.0f;
-                    graph.dirty = true;
+                    char nameBuf[128];
+                    strncpy_s(nameBuf, var.name.c_str(), sizeof(nameBuf));
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
+                    {
+                        var.name = nameBuf;
+                        graph.dirty = true;
+                    }
                 }
-            }
-            else if (var.type == AnimVariableType::Int)
-            {
-                int ival = (int)var.defaultValue;
-                if (ImGui::DragInt("##def", &ival, 1.0f))
+
+                // Type
+                ImGui::TableSetColumnIndex(1);
                 {
-                    var.defaultValue = (float)ival;
-                    graph.dirty = true;
+                    int typeIdx = (int)var.type;
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::Combo("##type", &typeIdx, types, IM_ARRAYSIZE(types)))
+                    {
+                        var.type = (AnimVariableType)typeIdx;
+                        graph.dirty = true;
+                    }
                 }
-            }
-            else
-            {
-                if (ImGui::DragFloat("##def", &var.defaultValue, 0.1f))
-                    graph.dirty = true;
-            }
-            ImGui::NextColumn();
 
-            // Remove button
-            if (ImGui::Button("X"))
-                removeIdx = i;
-            ImGui::NextColumn();
+                // Default value
+                ImGui::TableSetColumnIndex(2);
+                {
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (var.type == AnimVariableType::Bool)
+                    {
+                        bool bval = (var.defaultValue != 0.0f);
+                        if (ImGui::Checkbox("##def", &bval))
+                        {
+                            var.defaultValue = bval ? 1.0f : 0.0f;
+                            graph.dirty = true;
+                        }
+                    }
+                    else if (var.type == AnimVariableType::Int)
+                    {
+                        int ival = (int)var.defaultValue;
+                        if (ImGui::DragInt("##def", &ival, 1.0f))
+                        {
+                            var.defaultValue = (float)ival;
+                            graph.dirty = true;
+                        }
+                    }
+                    else
+                    {
+                        if (ImGui::DragFloat("##def", &var.defaultValue, 0.1f))
+                            graph.dirty = true;
+                    }
+                }
 
-            ImGui::PopID();
+                // Remove (square, left-aligned; label centered)
+                ImGui::TableSetColumnIndex(3);
+                // Zero the frame padding so the "x" glyph truly centers inside
+                // the square. The theme's wide FramePadding inflates the button's
+                // minimum width so it would overflow the cell and clip off-center.
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.5f, 0.5f));
+                if (ImGui::Button("x", ImVec2(xBtn, xBtn)))
+                    removeIdx = i;
+                ImGui::PopStyleVar(2);
+
+                ImGui::PopID();
+            }
+
+            ImGui::EndTable();
         }
 
         if (removeIdx >= 0)
@@ -1520,8 +1546,6 @@ void PanelAnimator::drawVariablesPanel()
             else if (editingVarIndex > removeIdx) editingVarIndex--;
             graph.dirty = true;
         }
-
-        ImGui::Columns(1);
     }
 
     ImGui::EndChild();

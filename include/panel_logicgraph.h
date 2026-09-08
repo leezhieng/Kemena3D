@@ -105,6 +105,9 @@ private:
     /** @brief Draws the side panel listing the graph's variables. */
     void drawVariablesPanel();
 
+    /** @brief Draggable splitter between the variables column and the canvas. */
+    void drawVariablesSplitter();
+
     /**
      * @brief Keeps Get/Set Variable pin types in sync with their selected
      *        variable's declared type.
@@ -208,6 +211,8 @@ private:
     ///< Throttles re-reading project.json so the input-action picker stays in
     ///< sync with Project Settings without opening the file every frame.
     int inputRefreshCounter = 0;
+
+    float variablesPanelWidth = 227.0f; ///< Current width of the left variables column (matches the animator panel's default).
 };
 
 #endif // PANEL_LOGICGRAPH_H

@@ -20,8 +20,11 @@ enum class AnimVariableType
 {
     Bool,
     Float,
-    Int,
-    Trigger
+    Int
+    // NOTE: a "Trigger" type once existed but behaved identically to Bool —
+    // kAnimator::setTrigger() just stores 1.0f and nothing ever auto-resets it,
+    // so it could not be consumed. Old .animator files that still store
+    // "Trigger" are mapped to Bool on load (see animVarTypeFromName).
 };
 
 /**
@@ -256,7 +259,7 @@ private:
     // -----------------------------------------------------------------------
     // Layout
     // -----------------------------------------------------------------------
-    float  variablesPanelWidth = 340.f; ///< Current width of the left variables column.
+    float  variablesPanelWidth = 227.f; ///< Current width of the left variables column (2/3 of the former 340 px default).
 
     // -----------------------------------------------------------------------
     // Interaction state

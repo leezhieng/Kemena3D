@@ -100,6 +100,16 @@ private:
     int lastRendererW = 0;                      ///< Last offscreen render target width, for resize detection.
     int lastRendererH = 0;                      ///< Last offscreen render target height, for resize detection.
 
+    // Transport-control icon textures (loaded from embedded resources).
+    uint32_t iconPlay = 0;   ///< Play icon texture handle.
+    uint32_t iconPause = 0;  ///< Pause icon texture handle.
+    uint32_t iconStop = 0;   ///< Stop icon texture handle.
+
+    // Live FPS readout, sampled only while the game is Playing.
+    float fpsElapsed = 0.0f; ///< Seconds accumulated in the current FPS sample window.
+    int   fpsFrames = 0;     ///< Frames counted in the current FPS sample window.
+    float currentFps = 0.0f; ///< Most recently measured frames-per-second.
+
     /**
      * @brief Resolve the camera used to render the game view.
      *

@@ -421,11 +421,11 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 		gui->pushStyleColor(ImGuiCol_ButtonActive, kVec4(0, 0, 0, 0));	// Pressed
 
 		gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0)); // smaller gap (2px horizontal, 0 vertical)
-		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(2, 3)); // compact icon button
+		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon button
 
 		// Add button
 		{
-			if (gui->imageButton("AddButton", iconAdd, kVec2(16, 16), kVec2(0, 0), kVec2(1, 1), addTint))
+			if (gui->imageButton("AddButton", iconAdd, kVec2(20, 20), kVec2(0, 0), kVec2(1, 1), addTint))
 			{
 			}
 			addTint = gui->isItemActive() ? kVec4(1, 1, 1, 0.5f) : kVec4(1, 1, 1, 1);
@@ -439,12 +439,12 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 		gui->sameLine(0.0f, 2.0f);
 
 		// Search bar
-		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(4, (22 - gui->getFontSize()) * 0.5f));
+		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(4, (26 - gui->getFontSize()) * 0.5f));
 		gui->pushItemWidth(-FLT_MIN);
 
 		gui->groupStart();
 		{
-			float iconSize = gui->getFontSize() * 0.8f; // scale relative to text height
+			float iconSize = gui->getFontSize(); // scale relative to text height
 			kVec2 cursor = gui->getCursorScreenPos();
 
 			// Draw the icon over the input box (aligned left-center)
@@ -453,7 +453,7 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 				kVec2(cursor.x + 4, cursor.y + (gui->getFrameHeight() - iconSize) * 0.5f),
 				kVec2(cursor.x + 4 + iconSize, cursor.y + (gui->getFrameHeight() + iconSize) * 0.5f));
 
-			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(iconSize + 8, 3));
+			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(iconSize + 8, (26 - gui->getFontSize()) * 0.5f));
 
 			// Input aligned with button height
 			gui->setNextItemWidth(-FLT_MIN);
