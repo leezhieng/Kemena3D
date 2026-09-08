@@ -20,7 +20,7 @@ PanelProject::PanelProject(kGuiManager* setGuiManager, Manager* setManager, kAss
 	iconUp = (ImTextureRef)(intptr_t)tex_up->getTextureID();
 
 	kTexture2D* tex_add = assetManager->loadTexture2DFromResource("ICON_ADD_ROUND_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
-	iconAdd = (ImTextureRef)(intptr_t)tex_add->getTextureID();
+	iconAdd = tex_add->getTextureID();
 
 	kTexture2D* tex_mag = assetManager->loadTexture2DFromResource("ICON_MAGNIFIER_LABEL", "icon", kTextureFormat::TEX_FORMAT_RGBA);
 	iconMag = (ImTextureRef)(intptr_t)tex_mag->getTextureID();
@@ -336,7 +336,10 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 {
 	gui->beginDisabled(!manager->projectOpened);
 
-	gui->windowStart("Project", opened);
+	// The panel header is fixed-height and the assets live in a scrollable
+	// child region below, so disable the panel window's own scrollbars —
+	// only the child asset list should scroll vertically.
+	gui->windowStart("Project", opened, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 	focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 	{
 		gui->pushStyleColor(ImGuiCol_Button, kVec4(0, 0, 0, 0));
@@ -344,6 +347,7 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 		gui->pushStyleColor(ImGuiCol_ButtonActive, kVec4(0, 0, 0, 0));
 
 		gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
+		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(2, 3)); // compact icon buttons
 
 		// Up button
 		{
@@ -362,17 +366,20 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 
 		// Add button
 		{
-			ImGui::ImageButton("AddButton", iconAdd, ImVec2(16, 16));
-			addTint = gui->isItemActive() ? ImVec4(1, 1, 1, 0.5f) : ImVec4(1, 1, 1, 1);
+			if (gui->imageButton("AddButton", iconAdd, kVec2(16, 16), kVec2(0, 0), kVec2(1, 1), addTint))
+			{
+			}
+			addTint = gui->isItemActive() ? kVec4(1, 1, 1, 0.5f) : kVec4(1, 1, 1, 1);
 
 			if (gui->isItemHovered())
 				gui->setItemTooltip("Import assets to project");
 		}
 
-		gui->popStyleVar();
+		gui->popStyleVar();      // FramePadding
+		gui->popStyleVar();      // ItemSpacing
 		gui->popStyleColor(3);
 
-		gui->sameLine();
+		gui->sameLine(0.0f, 2.0f);
 
 		gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(0, 0));
 
@@ -403,6 +410,7 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 			gui->sameLine(0.0f, 8.0f);
 
 			// List or Thumbnail button
+			gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(2, 3)); // compact icon button
 			{
 				if (displayThumbnail)
 				{
@@ -421,13 +429,13 @@ void PanelProject::drawProjectPanel(Node& rootTree, Node& rootThumbnail, bool* o
 						gui->setItemTooltip("Switch to thumbnail view");
 				}
 			}
+			gui->popStyleVar();
 		}
 		gui->groupEnd();
 
 		gui->popItemWidth();
 		gui->popStyleVar();
 
-		gui->spacing();
 		gui->spacing();
 
 		float availableHeight = gui->getContentRegionAvail().y - 4;

@@ -22,6 +22,7 @@
 #include <kemena/kmeshgenerator.h>
 #include <kemena/klight.h>
 #include <kemena/kcamera.h>
+#include <kemena/kdecal.h>
 #include <kemena/kassetmanager.h>
 #include <kemena/koffscreenrenderer.h>
 #include <kemena/kprefab.h>
@@ -150,6 +151,7 @@ class PanelProject;
 class PanelHierarchy;
 class PanelConsole;
 class PanelLogicGraph;
+class PanelShaderGraph;
 class PanelGame;
 class PanelTerrain;
 class PanelAnimator;
@@ -236,6 +238,18 @@ public:
     void createAudio();
     void createAudioListener();
     void createParticle();
+    void createDecal();
+
+    /**
+     * @brief Sets the decal's material to a fresh built-in material of the
+     *        given shader type ("flat", "pbr" or "phong").
+     *
+     * Clears any assigned .mat UUID so the built-in material takes effect.
+     * @param decal Target decal object.
+     * @param type  Shader type marker.
+     * @return true on success.
+     */
+    bool applyDecalShaderType(kDecal *decal, const kString &type);
 
     // --- Publish ------------------------------------------------------------
 
@@ -285,8 +299,22 @@ public:
         std::vector<InputActionBinding> actions;   ///< Ordered list of named actions.
     };
 
+    /** @brief Global object-tag settings for the project (like Unity's tags). */
+    struct TagSettings
+    {
+        std::vector<std::string> tags; ///< Ordered list of user-defined tags.
+    };
+
+    /** @brief Global physics-layer settings for the project (like Unity's layers). */
+    struct LayerSettings
+    {
+        std::vector<std::string> layers; ///< Ordered list of user-defined physics layers.
+    };
+
     PublishSettings publishSettings;
     InputSettings inputSettings;
+    TagSettings tagSettings;
+    LayerSettings layerSettings;
     kInputManager *inputManager = nullptr; ///< Named input manager for Play mode (owned by Manager).
     bool showPublishDialog = false;
     bool showProjectSettings = false;
@@ -346,6 +374,57 @@ public:
 
     /** @brief Advances the input manager (call once per frame while Playing). */
     void stepInput();
+
+    // --- Tags & physics layers --------------------------------------------
+
+    /** @brief Loads the project's object-tag list from config. */
+    void loadTagSettings();
+
+    /** @brief Saves the project's object-tag list to config. */
+    void saveTagSettings();
+
+    /** @brief Loads the project's physics-layer list from config. */
+    void loadLayerSettings();
+
+    /** @brief Saves the project's physics-layer list to config. */
+    void saveLayerSettings();
+
+    /**
+     * @brief Adds a tag to the project's tag list (deduplicated, non-empty).
+     * @param name New tag name.
+     * @return true if the tag was added.
+     */
+    bool addTag(const std::string &name);
+
+    /**
+     * @brief Removes a tag from the project's tag list.
+     * @param name Tag name to remove.
+     */
+    void removeTag(const std::string &name);
+
+    /**
+     * @brief Adds a layer to the project's physics-layer list (deduplicated,
+     *        non-empty, capped at kMaxPhysicsLayers).
+     * @param name New layer name.
+     * @return true if the layer was added.
+     */
+    bool addLayer(const std::string &name);
+
+    /**
+     * @brief Removes a layer from the project's physics-layer list.
+     * The built-in "Default" layer cannot be removed.
+     * @param name Layer name to remove.
+     */
+    void removeLayer(const std::string &name);
+
+    /// True while the Tag editor modal is open.
+    bool showTagEditor = false;
+    /// True while the physics-layer editor modal is open.
+    bool showLayerEditor = false;
+    /// Input buffer for the "new tag" field in the tag editor.
+    char newTagBuf[64] = "";
+    /// Input buffer for the "new layer" field in the layer editor.
+    char newLayerBuf[64] = "";
 
     /// Pending request to show the Cinematic Editor panel.
     bool pendingOpenAnimationEditor = false;
@@ -414,6 +493,23 @@ public:
     void loadDefaultWorldInto(kScene *target);
     void loadDefaultWorkspace();
     void loadProjectWorkspace();
+
+    /**
+     * @brief Writes the files currently open in the graph editor panels
+     *        (Logic Graph, Animator, Shader Graph, Cinematic) to a workspace ini.
+     *
+     * Only panels that are currently visible and have a file loaded are written.
+     * Paths are stored relative to the project so the workspace stays portable.
+     */
+    void saveOpenEditorFiles(const fs::path &workspacePath);
+
+    /**
+     * @brief Re-opens the graph editor files recorded in a workspace ini.
+     *
+     * Called right after a project workspace layout is loaded so the editor
+     * panels show the same files they had when the project was saved.
+     */
+    void restoreOpenEditorFiles(const fs::path &workspacePath);
 
     // --- Prefabs ------------------------------------------------------------
     bool saveSelectedAsPrefab(const kString &prefabName);
@@ -632,6 +728,7 @@ public:
     PanelProject *panelProject = nullptr;
     PanelHierarchy *panelHierarchy = nullptr;
     PanelLogicGraph *panelLogicGraph = nullptr;
+    PanelShaderGraph *panelShaderGraph = nullptr;
     PanelConsole *panelConsole = nullptr;
     PanelGame *panelGame = nullptr;
     PanelTerrain *panelTerrain = nullptr;

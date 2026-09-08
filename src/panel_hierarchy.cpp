@@ -421,6 +421,7 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 		gui->pushStyleColor(ImGuiCol_ButtonActive, kVec4(0, 0, 0, 0));	// Pressed
 
 		gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0)); // smaller gap (2px horizontal, 0 vertical)
+		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(2, 3)); // compact icon button
 
 		// Add button
 		{
@@ -430,11 +431,12 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 			addTint = gui->isItemActive() ? kVec4(1, 1, 1, 0.5f) : kVec4(1, 1, 1, 1);
 		}
 
-		gui->popStyleVar(); // Restore spacing
+		gui->popStyleVar(); // FramePadding
+		gui->popStyleVar(); // ItemSpacing
 		gui->popStyleColor(3);
 
 		// Put search box on the same line
-		gui->sameLine();
+		gui->sameLine(0.0f, 2.0f);
 
 		// Search bar
 		gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(4, (22 - gui->getFontSize()) * 0.5f));
@@ -461,8 +463,6 @@ void PanelHierarchy::drawHierarchyPanel(Node &root, bool *opened)
 
 		gui->popItemWidth();
 		gui->popStyleVar(2);
-
-		gui->spacing();
 
 		// Tree view
 		{
@@ -612,6 +612,9 @@ void PanelHierarchy::refreshList()
 		case kNodeType::NODE_TYPE_CAMERA:
 			outType = "camera";
 			return iconCamera;
+		case kNodeType::NODE_TYPE_DECAL:
+			outType = "decal";
+			return iconMesh;
 		case kNodeType::NODE_TYPE_AUDIO:
 			if (!obj->getAudioListeners().empty() && obj->getAudioSources().empty())
 			{

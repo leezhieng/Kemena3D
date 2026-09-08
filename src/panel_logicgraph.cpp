@@ -67,7 +67,8 @@ namespace
             case kScriptNodeType::ApplyTorque:
             case kScriptNodeType::SetLinearVelocity:
             case kScriptNodeType::SetAngularVelocity:
-            case kScriptNodeType::SetPhysicsGravity: return NodeCategory::Action;
+            case kScriptNodeType::SetPhysicsGravity:
+            case kScriptNodeType::MoveCharacter:     return NodeCategory::Action;
             case kScriptNodeType::GetSelf:
             case kScriptNodeType::GetPosition:
             case kScriptNodeType::GetRotation:
@@ -91,6 +92,7 @@ namespace
             case kScriptNodeType::GetPhysicsPosition:
             case kScriptNodeType::GetPhysicsGravity:
             case kScriptNodeType::IsPhysicsActive: return NodeCategory::Getter;
+            case kScriptNodeType::CompareTag:      return NodeCategory::Getter;
             case kScriptNodeType::LiteralFloat:
             case kScriptNodeType::LiteralBool:
             case kScriptNodeType::LiteralString:
@@ -139,7 +141,8 @@ namespace
             case kScriptNodeType::GetAction:
             case kScriptNodeType::GetActionPressed:
             case kScriptNodeType::GetActionReleased:
-            case kScriptNodeType::GetAxis: return 1;
+            case kScriptNodeType::GetAxis:
+            case kScriptNodeType::CompareTag: return 1;
             case kScriptNodeType::LiteralVec3: return 3;
             case kScriptNodeType::Sequence:    return 1;
             default:                           return 0;
@@ -711,6 +714,44 @@ void PanelLogicGraph::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 or
             }
             break;
         }
+        case kScriptNodeType::CompareTag:
+        {
+            // Pick the tag from the project's tag list (Project Settings → Tags)
+            // instead of free text, so the value always matches a real tag.
+            static const std::vector<std::string> s_emptyTags;
+            const std::vector<std::string> &tags = manager ? manager->tagSettings.tags
+                                                           : s_emptyTags;
+            bool valid = !node.valueStr.empty() &&
+                         std::find(tags.begin(), tags.end(), node.valueStr) != tags.end();
+            if (!node.valueStr.empty() && !valid)
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f), "!");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Tag \"%s\" is not in Project Settings → Tags.\n"
+                        "This node will never match - pick a tag from the list.",
+                        node.valueStr.c_str());
+                ImGui::SameLine();
+            }
+            ImGui::SetNextItemWidth((NODE_W - 24.0f - (valid ? 0.0f : 18.0f)) * z);
+            if (ImGui::BeginCombo("##tag",
+                                  node.valueStr.empty() ? "(select tag)" : node.valueStr.c_str()))
+            {
+                for (const auto &t : tags)
+                {
+                    bool sel = (t == node.valueStr);
+                    if (ImGui::Selectable(t.c_str(), sel))
+                    {
+                        node.valueStr = t;
+                        graph.dirty   = true;
+                    }
+                }
+                if (tags.empty())
+                    ImGui::TextDisabled("No tags defined in Project Settings");
+                ImGui::EndCombo();
+            }
+            break;
+        }
         case kScriptNodeType::GetAction:
         case kScriptNodeType::GetActionPressed:
         case kScriptNodeType::GetActionReleased:
@@ -991,6 +1032,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Get Up", kScriptNodeType::GetUp},
         {"Get Delta Time", kScriptNodeType::GetDeltaTime},
         {"Get Variable", kScriptNodeType::GetVariable},
+        {"Compare Tag", kScriptNodeType::CompareTag},
     };
     static const Entry input[] = {
         {"Get Action", kScriptNodeType::GetAction},
@@ -1031,6 +1073,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Set Physics Gravity", kScriptNodeType::SetPhysicsGravity},
         {"Get Physics Gravity", kScriptNodeType::GetPhysicsGravity},
         {"Is Physics Active", kScriptNodeType::IsPhysicsActive},
+        {"Move Character Controller", kScriptNodeType::MoveCharacter},
     };
     static const Entry values[] = {
         {"Float", kScriptNodeType::LiteralFloat},
@@ -1489,7 +1532,6 @@ void PanelLogicGraph::draw(bool &isOpened)
     }
 
     drawToolbar();
-    ImGui::Separator();
     drawVariablesPanel();
     syncVariableNodePins();
     ImGui::SameLine();

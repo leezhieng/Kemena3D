@@ -21,7 +21,7 @@ static void pivotButton(kGuiManager *gui, const char *label, PivotMode mode, Piv
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
     }
-    if (gui->button(label, kIvec2(26, 22)))
+    if (gui->button(label))
         current = mode;
     if (active)
         gui->popStyleColor(2);
@@ -40,8 +40,6 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
     gui->beginDisabled(!enabled);
     gui->windowStart("World", &isOpened);
-
-    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 2));
 
     pivotButton(gui, "I", PivotMode::Individual, manager->pivotMode);
     if (gui->isItemHovered())
@@ -94,7 +92,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
                 gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
             }
-            if (gui->button(label, kIvec2(54, 22)))
+            if (gui->button(label))
                 manager->manipulatorMode = m;
             if (active)
                 gui->popStyleColor(2);
@@ -113,7 +111,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     gui->sameLine();
 
     // Camera settings popup
-    if (gui->button("Camera...", kIvec2(72, 22)))
+    if (gui->button("Camera..."))
         ImGui::OpenPopup("CameraSettings");
     if (gui->isItemHovered())
         gui->setItemTooltip("Adjust editor camera settings");
@@ -151,10 +149,6 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
         ImGui::EndPopup();
     }
-
-    gui->popStyleVar();
-
-    gui->separator();
 
     // Preview mode indicator (particle / animator only — prefab has its own panel)
     if (manager->activeMode != Manager::EditorMode::GameWorld &&

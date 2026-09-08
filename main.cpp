@@ -108,6 +108,7 @@ int main()
 	PanelHierarchy *panelHierarchy = new PanelHierarchy(gui, manager, assetManager, world);
 	PanelConsole *panelConsole = new PanelConsole(gui, manager);
 	PanelShaderGraph *panelShaderGraph = new PanelShaderGraph(gui, manager);
+	manager->panelShaderGraph = panelShaderGraph;
 	PanelLogicGraph *panelLogicGraph = new PanelLogicGraph(gui, manager);
 	PanelGame *panelGame = new PanelGame(gui, manager);
 	manager->panelGame = panelGame;
@@ -253,6 +254,9 @@ int main()
 			showPanel = ShowPanel();
 			gui->loadIniSettingsFromDisk(layoutFileName);
 			MainMenu::loadPanelStateFromFile(layoutFileName);
+			// Re-open the graph editor files that were saved with the workspace
+			// (Logic Graph, Animator, Shader Graph, Cinematic).
+			manager->restoreOpenEditorFiles(layoutFileName);
 
 			isReloadLayout = false;
 		}

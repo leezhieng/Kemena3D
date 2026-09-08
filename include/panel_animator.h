@@ -203,6 +203,9 @@ public:
     /** @brief Open a .animator file into the editor. */
     void openFile(const std::string& path);
 
+    /** @brief Returns the currently open .animator file path ("" when unsaved). */
+    std::string getFilePath() const { return filePath; }
+
     /** @brief Save the current animator graph. */
     void saveCurrent() { saveGraph(); }
 

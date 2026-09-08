@@ -1,6 +1,7 @@
 #include "manager.h"
 #include "util.h"
 #include "panel_logicgraph.h" // for panelLogicGraph->notifyAssetMoved()
+#include "panel_shadergraph.h" // for panelShaderGraph->getFilePath()
 #include "mainmenu.h" // for showPanel / savedWorkspaceFileName
 
 #include <kemena/kpackage.h>
@@ -15,6 +16,7 @@
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>
 #include <kemena/kcamera.h>
+#include <kemena/kdecal.h>
 #include <kemena/kmeshgenerator.h>
 #include <kemena/kshadernode.h>
 #include <kemena/kscriptgraph.h>
@@ -87,6 +89,10 @@ Manager::Manager(kWindow *setWindow, kWorld *setWorld, kRenderer *setRenderer)
     // and logic-graph scripts can query getAction()/getAxis().
     inputManager = new kInputManager();
     inputManager->init();
+
+    // Default tag / physics-layer lists (refreshed from config on project open).
+    loadTagSettings();
+    loadLayerSettings();
 }
 
 Manager::~Manager()
@@ -337,6 +343,12 @@ bool Manager::executeNewProject(const kString& name, const fs::path& dir, bool c
     }
     savePublishSettings();
 
+    // Initialize tag / physics-layer settings with sensible defaults.
+    loadTagSettings();
+    loadLayerSettings();
+    saveTagSettings();
+    saveLayerSettings();
+
     // Clear any previously opened world and start fresh.
     resetToFreshWorld();
 
@@ -547,6 +559,10 @@ bool Manager::openProjectFromPath(const kString &path)
 
     // Load this project's workspace layout (falls back to the default).
     loadProjectWorkspace();
+
+    // Load project-level tag / physics-layer settings.
+    loadTagSettings();
+    loadLayerSettings();
 
     std::error_code ec;
     fs::create_directories(fullPath / "Assets", ec);
@@ -2174,6 +2190,86 @@ void Manager::createEmpty()
 }
 
 // ---------------------------------------------------------------------------
+// Primitive auto-physics — when a procedural primitive (cube / sphere /
+// capsule / cylinder / plane) is created we attach a physics descriptor whose
+// shape and size match the generated mesh, so the object already behaves as a
+// rigid body / collider when the scene is played, without the user having to
+// add a physics component manually.
+// ---------------------------------------------------------------------------
+static void configurePrimitivePhysics(kMesh *mesh)
+{
+    const kString type = mesh->getPrimitiveType();
+    if (type.empty())
+        return;
+
+    // Compute the object-space bounds from the generated vertices so the
+    // collider always matches the actual geometry (works for any generator
+    // size argument, not just the defaults).
+    const std::vector<kVec3> &verts = mesh->getVerticesRef();
+    if (verts.empty())
+        return;
+
+    float minX = verts[0].x, minY = verts[0].y, minZ = verts[0].z;
+    float maxX = verts[0].x, maxY = verts[0].y, maxZ = verts[0].z;
+    for (const kVec3 &v : verts)
+    {
+        minX = std::min(minX, v.x);
+        minY = std::min(minY, v.y);
+        minZ = std::min(minZ, v.z);
+        maxX = std::max(maxX, v.x);
+        maxY = std::max(maxY, v.y);
+        maxZ = std::max(maxZ, v.z);
+    }
+    const float extX = std::max(0.0f, (maxX - minX) * 0.5f);
+    const float extY = std::max(0.0f, (maxY - minY) * 0.5f);
+    const float extZ = std::max(0.0f, (maxZ - minZ) * 0.5f);
+    const float radius = std::max(extX, extZ);
+
+    kPhysicsObjectDesc &desc = mesh->getPhysicsDesc();
+    // Solid primitives spawn dynamic so they fall and collide at play time.
+    desc.type = kPhysicsObjectType::Dynamic;
+    desc.mass = 1.0f;
+
+    if (type == "cube")
+    {
+        desc.shape.type        = kPhysicsShapeType::Box;
+        desc.shape.halfExtents = kVec3(extX, extY, extZ);
+    }
+    else if (type == "sphere")
+    {
+        desc.shape.type   = kPhysicsShapeType::Sphere;
+        desc.shape.radius = radius;
+    }
+    else if (type == "cylinder")
+    {
+        desc.shape.type   = kPhysicsShapeType::Cylinder;
+        desc.shape.radius = radius;
+        desc.shape.height = extY * 2.0f; // total height
+    }
+    else if (type == "capsule")
+    {
+        desc.shape.type = kPhysicsShapeType::Capsule;
+        desc.shape.radius = radius;
+        // Descriptor height is the cylindrical-segment length: the mesh's
+        // total tip-to-tip height (2*extY) minus its two hemispherical caps
+        // (2*radius), matching how kPhysicsObject builds the Jolt capsule.
+        desc.shape.height = std::max(0.001f, extY * 2.0f - 2.0f * radius);
+    }
+    else if (type == "plane")
+    {
+        desc.shape.type        = kPhysicsShapeType::Plane;
+        desc.type              = kPhysicsObjectType::Static; // Jolt planes are static-only
+        desc.shape.halfExtents = kVec3(extX, extY, extZ);    // x/z drive the broadphase rect
+    }
+    else
+    {
+        return; // Unknown marker — leave the object without a physics body.
+    }
+
+    mesh->setHasPhysicsDesc(true);
+}
+
+// ---------------------------------------------------------------------------
 // Create Mesh Primitive
 // ---------------------------------------------------------------------------
 
@@ -2188,6 +2284,10 @@ void Manager::createMeshPrimitive(kMesh *mesh, const kString &name)
         applyDefaultMaterial(mesh, am);
 
     mesh->setName(name);
+
+    // New primitives get a matching physics body automatically (shape + size).
+    configurePrimitivePhysics(mesh);
+
     s->addMesh(mesh);
     kString uuid = mesh->getUuid();
 
@@ -2528,6 +2628,93 @@ void Manager::createParticle()
                  {
             scene->addObject(obj, uuid);
             selectedObject = obj;
+            selectObject(uuid, true);
+            if (panelHierarchy) panelHierarchy->refreshList(); });
+}
+
+// ---------------------------------------------------------------------------
+// Decal helpers
+// ---------------------------------------------------------------------------
+
+// Build a fresh material for a decal from one of the built-in shaders.
+//   "flat"  -> Unlit (not affected by scene lighting)  [SHADER_MESH_FLAT]
+//   "pbr"   -> Physically-based (lit)                  [SHADER_MESH_PBR]
+//   "phong" -> Phong (lit)                             [SHADER_MESH_PHONG]
+static void applyDecalShaderMaterial(kDecal *decal, kAssetManager *am,
+                                     const kString &type)
+{
+    if (!decal || !am)
+        return;
+
+    const char *res = "SHADER_MESH_FLAT";
+    if (type == "pbr")
+        res = "SHADER_MESH_PBR";
+    else if (type == "phong")
+        res = "SHADER_MESH_PHONG";
+
+    kShader *shader = am->loadGlslFromResource(res);
+    if (!shader)
+        return;
+
+    kMaterial *mat = am->createMaterial(shader);
+    mat->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
+    mat->setDiffuseColor(kVec3(1.0f, 1.0f, 1.0f));
+    mat->setSpecularColor(kVec3(1.0f, 1.0f, 1.0f));
+    mat->setShininess(32.0f);
+    mat->setMetallic(0.0f);
+    mat->setRoughness(0.6f);
+    // Stickers are alpha-blended so RGBA artwork composites over the surface.
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+
+    decal->setMaterial(mat);
+    decal->setMaterialUuid("");
+    decal->setShaderType(type);
+}
+
+bool Manager::applyDecalShaderType(kDecal *decal, const kString &type)
+{
+    if (!decal)
+        return false;
+    if (type != "flat" && type != "pbr" && type != "phong")
+        return false;
+    applyDecalShaderMaterial(decal, getAssetManager(), type);
+    projectSaved = false;
+    refreshWindowTitle();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Create Decal
+// ---------------------------------------------------------------------------
+
+void Manager::createDecal()
+{
+    kScene *s = getCreationScene();
+    if (!s)
+        return;
+
+    kDecal *decal = new kDecal();
+    decal->setName("Decal");
+    s->addObject(decal);
+    kString uuid = decal->getUuid();
+
+    // Give the decal a flat, unlit, alpha-blended default material so it shows
+    // as a plain white sticker immediately. The user can later switch the shader
+    // type (flat/pbr/phong) or assign a .mat whose albedo map carries the decal
+    // artwork.
+    if (kAssetManager *am = getAssetManager())
+        applyDecalShaderMaterial(decal, am, decal->getShaderType());
+
+    finishCreate(this, decal, s, [this, s, decal, uuid]()
+                 {
+            s->removeObject(decal);
+            selectedObjects.erase(std::remove(selectedObjects.begin(), selectedObjects.end(), uuid),
+                                  selectedObjects.end());
+            if (selectedObject == decal) selectedObject = nullptr;
+            if (panelHierarchy) panelHierarchy->refreshList(); }, [this, s, decal, uuid]()
+                 {
+            s->addObject(decal, uuid);
+            selectedObject = decal;
             selectObject(uuid, true);
             if (panelHierarchy) panelHierarchy->refreshList(); });
 }
@@ -3612,6 +3799,176 @@ void Manager::saveInputSettings()
     if (f.is_open()) f << cfg.dump(4);
 }
 
+void Manager::loadTagSettings()
+{
+    tagSettings.tags.clear();
+    // Default: a minimal Unity-style set. "(Untagged)" is the built-in empty
+    // tag handled by the inspector directly, so it is not listed here.
+    tagSettings.tags = { "Player", "Enemy", "MainCamera", "Ground", "Respawn" };
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    if (!fs::exists(cfgPath)) return;
+    std::ifstream f(cfgPath);
+    if (!f.is_open()) return;
+    json cfg;
+    try { cfg = json::parse(f); } catch (...) { return; }
+    f.close();
+
+    if (cfg.contains("tag_settings") && cfg["tag_settings"].is_object())
+    {
+        const json &ts = cfg["tag_settings"];
+        if (ts.contains("tags") && ts["tags"].is_array())
+        {
+            tagSettings.tags.clear();
+            for (const auto &t : ts["tags"])
+                if (t.is_string())
+                    tagSettings.tags.push_back(t.get<std::string>());
+        }
+    }
+}
+
+void Manager::saveTagSettings()
+{
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    json cfg;
+    if (fs::exists(cfgPath))
+    {
+        std::ifstream f(cfgPath);
+        if (f.is_open()) { try { cfg = json::parse(f); } catch (...) { cfg = json::object(); } f.close(); }
+    }
+
+    json tagsJson = json::array();
+    for (const auto &t : tagSettings.tags)
+        tagsJson.push_back(t);
+    json ts = json::object();
+    ts["tags"] = tagsJson;
+    cfg["tag_settings"] = ts;
+
+    std::ofstream f(cfgPath);
+    if (f.is_open()) f << cfg.dump(4);
+}
+
+void Manager::loadLayerSettings()
+{
+    layerSettings.layers.clear();
+    // The "Default" layer is always present (index 0).
+    layerSettings.layers.push_back("Default");
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    if (!fs::exists(cfgPath)) return;
+    std::ifstream f(cfgPath);
+    if (!f.is_open()) return;
+    json cfg;
+    try { cfg = json::parse(f); } catch (...) { return; }
+    f.close();
+
+    if (cfg.contains("layer_settings") && cfg["layer_settings"].is_object())
+    {
+        const json &ls = cfg["layer_settings"];
+        if (ls.contains("layers") && ls["layers"].is_array())
+        {
+            layerSettings.layers.clear();
+            for (const auto &l : ls["layers"])
+                if (l.is_string())
+                    layerSettings.layers.push_back(l.get<std::string>());
+        }
+    }
+    // Guarantee "Default" is first.
+    bool hasDefault = false;
+    for (const auto &l : layerSettings.layers)
+        if (l == "Default") { hasDefault = true; break; }
+    if (!hasDefault)
+        layerSettings.layers.insert(layerSettings.layers.begin(), "Default");
+}
+
+void Manager::saveLayerSettings()
+{
+    if (!projectOpened) return;
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    json cfg;
+    if (fs::exists(cfgPath))
+    {
+        std::ifstream f(cfgPath);
+        if (f.is_open()) { try { cfg = json::parse(f); } catch (...) { cfg = json::object(); } f.close(); }
+    }
+
+    json layersJson = json::array();
+    for (const auto &l : layerSettings.layers)
+        layersJson.push_back(l);
+    json ls = json::object();
+    ls["layers"] = layersJson;
+    cfg["layer_settings"] = ls;
+
+    std::ofstream f(cfgPath);
+    if (f.is_open()) f << cfg.dump(4);
+}
+
+bool Manager::addTag(const std::string &name)
+{
+    std::string trimmed = name;
+    // trim whitespace
+    size_t b = trimmed.find_first_not_of(" \t\r\n");
+    size_t e = trimmed.find_last_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    trimmed = trimmed.substr(b, e - b + 1);
+    if (trimmed.empty()) return false;
+
+    for (const auto &t : tagSettings.tags)
+        if (t == trimmed) return false;
+
+    tagSettings.tags.push_back(trimmed);
+    saveTagSettings();
+    return true;
+}
+
+void Manager::removeTag(const std::string &name)
+{
+    for (size_t i = 0; i < tagSettings.tags.size(); ++i)
+    {
+        if (tagSettings.tags[i] == name)
+        {
+            tagSettings.tags.erase(tagSettings.tags.begin() + i);
+            break;
+        }
+    }
+    saveTagSettings();
+}
+
+bool Manager::addLayer(const std::string &name)
+{
+    std::string trimmed = name;
+    size_t b = trimmed.find_first_not_of(" \t\r\n");
+    size_t e = trimmed.find_last_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    trimmed = trimmed.substr(b, e - b + 1);
+    if (trimmed.empty()) return false;
+
+    for (const auto &l : layerSettings.layers)
+        if (l == trimmed) return false;
+
+    if ((int)layerSettings.layers.size() >= kMaxPhysicsLayers)
+        return false;
+
+    layerSettings.layers.push_back(trimmed);
+    saveLayerSettings();
+    return true;
+}
+
+void Manager::removeLayer(const std::string &name)
+{
+    if (name == "Default") return; // never remove the built-in layer
+    for (size_t i = 0; i < layerSettings.layers.size(); ++i)
+    {
+        if (layerSettings.layers[i] == name)
+        {
+            layerSettings.layers.erase(layerSettings.layers.begin() + i);
+            break;
+        }
+    }
+    saveLayerSettings();
+}
+
 // ---------------------------------------------------------------------------
 // Create New Material asset file
 // ---------------------------------------------------------------------------
@@ -4455,6 +4812,9 @@ void Manager::saveWorld()
         worldPath = chosen;
     }
 
+    // Persist the project's physics layers into the world file so the
+    // standalone runtime can restore same-layer-only collision.
+    world->setPhysicsLayers(layerSettings.layers);
     json data = world->serialize(1); // skip editor scene at index 0
 
     // --- Save terrain data alongside the world ---
@@ -4966,6 +5326,29 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         }
         result = audioObj;
     }
+    else if (type == "decal")
+    {
+        kDecal *decal = new kDecal();
+        decal->setName(name);
+        decal->setActive(active);
+        decal->setStatic(obj.value("static", false));
+        decal->setShaderType(obj.value("decal_shader", std::string("flat")));
+        decal->setSurfaceOffset(obj.value("decal_offset", 0.01f));
+        if (topLevel)
+        {
+            scene->addObject(decal, uuid);
+        }
+        else
+        {
+            decal->setUuid(uuid.empty() ? generateUuid() : uuid);
+            decal->setParent(parent);
+        }
+        // No .mat assigned (no material_uuid key): rebuild the built-in default
+        // material from the saved shader type so the decal is visible right away.
+        if (am && !obj.contains("material_uuid"))
+            applyDecalShaderMaterial(decal, am, decal->getShaderType());
+        result = decal;
+    }
     else
     {
         // Fallback: if the saved type is "object" but the JSON carries
@@ -5021,6 +5404,10 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         result->setPositionForced(pos);
         result->setRotationForced(kQuat(glm::radians(rotEu)));
         result->setScaleForced(scale);
+
+        // User-defined tag (like Unity's tags).
+        if (obj.contains("tag") && obj["tag"].is_string())
+            result->setTag(obj["tag"].get<std::string>());
 
         // Prefab linkage — only set when present in JSON, otherwise stays empty.
         if (obj.contains("prefab_ref"))
@@ -5101,6 +5488,7 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             desc.linearDamping = phys.value("linear_damping", 0.05f);
             desc.angularDamping = phys.value("angular_damping", 0.05f);
             desc.gravityFactor = phys.value("gravity_factor", 1.0f);
+            desc.layer = phys.value("layer", std::string("Default"));
             result->setHasPhysicsDesc(true);
         }
 
@@ -5116,6 +5504,7 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             cd.gravityFactor = ch.value("gravity_factor", 1.0f);
             cd.slopeLimit = ch.value("slope_limit", 45.0f);
             cd.stepHeight = ch.value("step_height", 0.3f);
+            cd.layer = ch.value("layer", std::string("Default"));
             result->setHasCharacterDesc(true);
         }
 
@@ -5329,6 +5718,22 @@ void Manager::loadWorld(const kString &path)
 
     kAssetManager *am = getAssetManager();
 
+    // Restore the physics layers stored in the world file (fall back to the
+    // project's layer settings when the world predates layer support).
+    if (data.contains("physics_layers") && data["physics_layers"].is_array())
+    {
+        std::vector<std::string> layers;
+        for (const auto &l : data["physics_layers"])
+            if (l.is_string())
+                layers.push_back(l.get<std::string>());
+        if (!layers.empty())
+        {
+            layerSettings.layers = layers;
+            saveLayerSettings();
+        }
+    }
+    world->setPhysicsLayers(layerSettings.layers);
+
     if (!data.contains("scenes") || !data["scenes"].is_array())
     {
         std::cerr << "loadWorld: no scenes array in file\n";
@@ -5505,6 +5910,141 @@ void Manager::loadProjectWorkspace()
     {
         isReloadDefaultLayout = true;
         isReloadLayout = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Open graph-editor file persistence (workspace.ini [OpenFiles] section)
+// ---------------------------------------------------------------------------
+
+void Manager::saveOpenEditorFiles(const fs::path &workspacePath)
+{
+    if (!projectOpened)
+        return;
+
+    // Collect the file loaded in each graph editor panel, but only when that
+    // panel is currently visible (matching the user's "panel is opened" rule).
+    std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile;
+    if (showPanel.scriptEditor && panelLogicGraph)
+        logicGraphFile = panelLogicGraph->getFilePath();
+    if (showPanel.animatorEditor && panelAnimator)
+        animatorFile = panelAnimator->getFilePath();
+    if (showPanel.shaderEditor && panelShaderGraph)
+        shaderGraphFile = panelShaderGraph->getFilePath();
+    if (showPanel.animationEditor && panelAnimation)
+        animationFile = panelAnimation->getFilePath();
+
+    if (logicGraphFile.empty() && animatorFile.empty() &&
+        shaderGraphFile.empty() && animationFile.empty())
+        return;
+
+    // Store paths relative to the project so the workspace stays portable.
+    auto relPath = [&](const std::string &p) -> std::string
+    {
+        if (p.empty())
+            return "";
+        std::error_code ec;
+        fs::path abs = fs::absolute(p, ec);
+        if (ec || abs.empty())
+            return p;
+        fs::path rel = fs::relative(abs, projectPath, ec);
+        return ec ? abs.generic_string() : rel.generic_string();
+    };
+
+    std::ofstream f(workspacePath, std::ios::app);
+    if (!f.is_open())
+        return;
+
+    f << "\n[OpenFiles]\n";
+    if (!logicGraphFile.empty())  f << "LogicGraphFile="  << relPath(logicGraphFile)  << "\n";
+    if (!animatorFile.empty())    f << "AnimatorFile="    << relPath(animatorFile)    << "\n";
+    if (!shaderGraphFile.empty()) f << "ShaderGraphFile=" << relPath(shaderGraphFile) << "\n";
+    if (!animationFile.empty())   f << "CinematicFile="   << relPath(animationFile)   << "\n";
+    f << "\n";
+    f.close();
+}
+
+void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
+{
+    if (!projectOpened)
+        return;
+
+    std::ifstream f(workspacePath);
+    if (!f.is_open())
+        return;
+
+    std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile;
+    bool inOpenFiles = false;
+    std::string line;
+    while (std::getline(f, line))
+    {
+        // Strip surrounding whitespace.
+        size_t b = line.find_first_not_of(" \t\r");
+        size_t e = line.find_last_not_of(" \t\r");
+        if (b == std::string::npos)
+            continue;
+        line = line.substr(b, e - b + 1);
+
+        if (line.size() >= 2 && line.front() == '[' && line.back() == ']')
+        {
+            inOpenFiles = (line == "[OpenFiles]");
+            continue;
+        }
+        if (!inOpenFiles)
+            continue;
+
+        size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        if (val.empty())
+            continue;
+
+        if      (key == "LogicGraphFile")  logicGraphFile  = val;
+        else if (key == "AnimatorFile")    animatorFile    = val;
+        else if (key == "ShaderGraphFile") shaderGraphFile = val;
+        else if (key == "CinematicFile")   animationFile   = val;
+    }
+    f.close();
+
+    // Resolve stored (possibly relative) paths against the project directory.
+    auto resolvePath = [&](const std::string &p) -> fs::path
+    {
+        fs::path cand(p);
+        if (cand.is_absolute())
+            return cand;
+        return projectPath / p;
+    };
+
+    // Re-open each saved file through the same route a project-panel
+    // double-click uses (shows the panel, loads the file, sets editor mode).
+    if (panelProject && panelProject->onFileDoubleClicked)
+    {
+        if (!logicGraphFile.empty())
+        {
+            fs::path p = resolvePath(logicGraphFile);
+            if (fs::exists(p))
+                panelProject->onFileDoubleClicked(p.string());
+        }
+        if (!shaderGraphFile.empty())
+        {
+            fs::path p = resolvePath(shaderGraphFile);
+            if (fs::exists(p))
+                panelProject->onFileDoubleClicked(p.string());
+        }
+        if (!animatorFile.empty())
+        {
+            fs::path p = resolvePath(animatorFile);
+            if (fs::exists(p))
+                panelProject->onFileDoubleClicked(p.string());
+        }
+        if (!animationFile.empty())
+        {
+            fs::path p = resolvePath(animationFile);
+            if (fs::exists(p))
+                panelProject->onFileDoubleClicked(p.string());
+        }
     }
 }
 
@@ -5872,13 +6412,22 @@ void Manager::startPhysicsSimulation()
     if (!physicsManager)
     {
         physicsManager = createPhysicsManager();
-        if (!physicsManager || !physicsManager->init())
+        if (!physicsManager)
         {
-            std::cerr << "Physics: failed to initialise kPhysicsManager\n";
-            physicsManager = nullptr;
+            std::cerr << "Physics: failed to create kPhysicsManager\n";
             return;
         }
     }
+    // init() is idempotent — always run it so a previously created but
+    // uninitialised manager can never silently swallow body/character creation.
+    if (!physicsManager->init())
+    {
+        std::cerr << "Physics: failed to initialise kPhysicsManager\n";
+        physicsManager = nullptr;
+        return;
+    }
+    // Apply the project's named physics layers (same-layer-only collision).
+    physicsManager->setLayerNames(layerSettings.layers);
 
     physicsBodies.clear();
     characterBodies.clear();

@@ -288,15 +288,13 @@ void PanelGame::draw(bool &isOpened)
     // keys (and Tab) never move focus between the Play/Pause/Stop buttons.
     gui->windowStart("Game", &isOpened, ImGuiWindowFlags_NoNavInputs);
 
-    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(4, 2));
-
     // ---- Play button -------------------------------------------------------
     if (isPlaying)
     {
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
     }
-    if (gui->button("Play", kIvec2(54, 22)) && !isPlaying)
+    if (gui->button("Play") && !isPlaying)
         pressPlay();
     if (isPlaying)
         gui->popStyleColor(2);
@@ -312,7 +310,7 @@ void PanelGame::draw(bool &isOpened)
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.95f, 0.75f, 0.20f, 1.00f));
     }
     gui->beginDisabled(isStopped);
-    if (gui->button("Pause", kIvec2(54, 22)))
+    if (gui->button("Pause"))
     {
         if (isPlaying)
             pressPause();
@@ -334,7 +332,7 @@ void PanelGame::draw(bool &isOpened)
         gui->pushStyleColor(ImGuiCol_Button, kVec4(0.72f, 0.16f, 0.16f, 1.00f));
         gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.88f, 0.26f, 0.26f, 1.00f));
     }
-    if (gui->button("Stop", kIvec2(54, 22)))
+    if (gui->button("Stop"))
         pressStop();
     if (!isStopped)
         gui->popStyleColor(2);
@@ -353,9 +351,6 @@ void PanelGame::draw(bool &isOpened)
         gui->textColored(kVec4(1.00f, 0.80f, 0.20f, 1.0f), "Paused");
     else
         gui->textDisabled("Stopped");
-
-    gui->popStyleVar();
-    gui->separator();
 
     // ---- Game viewport -----------------------------------------------------
     kVec2 avail = gui->getContentRegionAvail();

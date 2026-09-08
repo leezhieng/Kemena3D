@@ -12,6 +12,7 @@
 #include <GL/glew.h>
 #include <kemena/kanimator.h>
 #include <kemena/kskelanimation.h>
+#include <kemena/kdecal.h>
 
 using namespace kemena;
 namespace fs = std::filesystem;
@@ -19,6 +20,14 @@ namespace fs = std::filesystem;
 // Forward declarations for file-local helpers used by drawShaderPreview()
 static bool beginPropTable(kGuiManager *gui, const char *id);
 static void propLabel(kGuiManager *gui, const char *label);
+
+// Tag / Layer editor modals (defined at the bottom of this file).
+static void drawListEditorModal(Manager *manager, const char *title, bool &open,
+                                std::vector<std::string> &list, char *newBuf,
+                                size_t newBufSize, bool (*addFn)(Manager *, const std::string &),
+                                void (*removeFn)(Manager *, const std::string &),
+                                bool lockFirst);
+static void drawTagLayerEditorModals(Manager *manager);
 
 PanelInspector::PanelInspector(kGuiManager *setGuiManager, Manager *setManager)
 {
@@ -1190,6 +1199,174 @@ static void drawTransformSection(kGuiManager *gui, kObject *obj, Manager *mgr)
     }
 
     gui->tableEnd();
+}
+
+// ---------------------------------------------------------------------------
+// Decal section
+// ---------------------------------------------------------------------------
+static void drawDecalSection(kGuiManager *gui, kDecal *decal, Manager *mgr, bool isDirtyPrefab = false)
+{
+    if (!sectionHeader(gui, "Decal", isDirtyPrefab))
+        return;
+
+    if (!beginPropTable(gui, "DecalTable"))
+        return;
+
+    // --- Shader type (built-in Flat / PBR / Phong) ---------------------------
+    // Sets the decal's material to a fresh built-in material of the selected
+    // type. The choice is persisted on the object so it can be rebuilt on load.
+    {
+        propLabel(gui, "Shader");
+
+        const char *shaderItems[] = {"Flat", "PBR", "Phong"};
+        std::string shaderType = decal->getShaderType();
+        int shaderSel = 0;
+        if (shaderType == "pbr")       shaderSel = 1;
+        else if (shaderType == "phong") shaderSel = 2;
+
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##DecalShader", &shaderSel, shaderItems, 3))
+        {
+            const char *newType = (shaderSel == 1) ? "pbr" : ((shaderSel == 2) ? "phong" : "flat");
+            std::vector<MaterialSnapshot> before = mgr->captureMaterialSubtree(decal);
+            if (mgr->applyDecalShaderType(decal, newType))
+            {
+                auto cmd = std::make_unique<MaterialCommand>();
+                cmd->manager = mgr;
+                cmd->before = before;
+                cmd->after = mgr->captureMaterialSubtree(decal);
+                mgr->undoRedo.push(std::move(cmd));
+                mgr->projectSaved = false;
+                mgr->refreshWindowTitle();
+            }
+        }
+    }
+
+    // --- Surface offset ------------------------------------------------------
+    // How far the flat quad floats above its pivot (along the face normal) so
+    // the sticker does not z-fight with the surface it is stamped on.
+    {
+        propLabel(gui, "Surface Offset");
+        float offset = decal->getSurfaceOffset();
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat("##DecalOffset", &offset, 0.001f, 0.0f, 1.0f, "%.3f"))
+        {
+            float before = decal->getSurfaceOffset();
+            float after = offset;
+            decal->setSurfaceOffset(after);
+            kDecal *cap = decal;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]()
+                { cap->setSurfaceOffset(before); },
+                [cap, after]()
+                { cap->setSurfaceOffset(after); }));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
+    }
+
+    // --- Material picker -----------------------------------------------------
+    // The decal's appearance comes from its material. Pick a .mat whose albedo
+    // map carries the decal artwork; an "Unlit" material with alpha blending is
+    // recommended so the sticker ignores scene lighting.
+    {
+        propLabel(gui, "Material");
+
+        std::vector<std::string> matUuids = {""}; // index 0 = "(None)"
+        std::vector<std::string> matNames = {"(None)"};
+        for (const auto &kv : mgr->fileMap)
+        {
+            if (kv.second.type == "material")
+            {
+                matUuids.push_back(kv.first);
+                matNames.push_back(fs::path(kv.second.path).stem().string());
+            }
+        }
+        std::vector<const char *> matNamePtrs;
+        matNamePtrs.reserve(matNames.size());
+        for (auto &n : matNames)
+            matNamePtrs.push_back(n.c_str());
+
+        // Current selection comes from the object's stored material UUID.
+        std::string assignedUuid = decal->getMaterialUuid();
+        int current = 0;
+        for (size_t i = 0; i < matUuids.size(); ++i)
+            if (matUuids[i] == assignedUuid)
+            {
+                current = (int)i;
+                break;
+            }
+
+        auto applyByIndex = [&](int idx)
+        {
+            if (idx < 0 || idx >= (int)matUuids.size())
+                return;
+            std::vector<MaterialSnapshot> before = mgr->captureMaterialSubtree(decal);
+            bool ok = false;
+            if (idx == 0)
+            {
+                // "(None)" — drop the .mat and rebuild the built-in material of
+                // the currently selected shader type (Flat/PBR/Phong) so the
+                // decal stays visible.
+                ok = mgr->applyDecalShaderType(decal, decal->getShaderType());
+            }
+            else
+            {
+                auto it = mgr->fileMap.find(matUuids[idx]);
+                if (it == mgr->fileMap.end())
+                    return;
+                fs::path matPath = mgr->projectPath / "Assets" / it->second.path;
+                ok = mgr->applyMaterialToObject(decal, matPath, matUuids[idx]);
+            }
+            if (ok)
+            {
+                auto cmd = std::make_unique<MaterialCommand>();
+                cmd->manager = mgr;
+                cmd->before = before;
+                cmd->after = mgr->captureMaterialSubtree(decal);
+                mgr->undoRedo.push(std::move(cmd));
+                mgr->projectSaved = false;
+                mgr->refreshWindowTitle();
+            }
+        };
+
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##DecalMaterial", &current, matNamePtrs.data(), (int)matNamePtrs.size()))
+            applyByIndex(current);
+
+        // Accept a material asset dropped directly onto the combo.
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload *payload =
+                    ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+            {
+                std::string dropped((const char *)payload->Data);
+                {
+                    auto nl = dropped.find('\n');
+                    if (nl != std::string::npos)
+                        dropped = dropped.substr(0, nl);
+                }
+                auto it = mgr->fileMap.find(dropped);
+                if (it != mgr->fileMap.end() && it->second.type == "material")
+                {
+                    for (size_t i = 0; i < matUuids.size(); ++i)
+                        if (matUuids[i] == dropped)
+                        {
+                            applyByIndex((int)i);
+                            break;
+                        }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
+
+    gui->tableEnd();
+
+    gui->spacing();
+    gui->textDisabled("Renders as a flat quad.");
+    gui->textDisabled("Rotate to face the surface, scale to size it.");
+    gui->spacing();
 }
 
 // ---------------------------------------------------------------------------
@@ -2643,6 +2820,41 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                     ImGui::EndCombo();
                 }
 
+                // Layer — bodies only interact with other bodies on the same
+                // named layer. An "Edit Layers..." item manages the project list.
+                {
+                    std::string currentLayer = desc.layer;
+                    if (currentLayer.empty()) currentLayer = "Default";
+                    // Fall back to "Default" if the stored layer no longer exists.
+                    bool found = false;
+                    for (const auto &l : manager->layerSettings.layers)
+                        if (l == currentLayer) { found = true; break; }
+                    if (!found)
+                    {
+                        currentLayer = "Default";
+                        desc.layer = "Default";
+                    }
+                    propLabel(gui, "Layer");
+                    if (ImGui::BeginCombo("##PhysLayer", currentLayer.c_str()))
+                    {
+                        for (const auto &l : manager->layerSettings.layers)
+                        {
+                            bool selected = (l == currentLayer);
+                            if (ImGui::Selectable(l.c_str(), selected))
+                            {
+                                desc.layer = l;
+                                manager->projectSaved = false;
+                            }
+                        }
+                        ImGui::Separator();
+                        if (ImGui::Selectable("Edit Layers..."))
+                            manager->showLayerEditor = true;
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Objects only collide with other objects on the same physics layer.");
+                }
+
                 // Shape
                 const char *shapeNames[] = {
                     "Sphere", "Box", "Capsule", "Cylinder", "Convex Hull", "Mesh", "Plane"};
@@ -3117,14 +3329,18 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
         gui->spacing();
     }
 
-    // ── "Add Animator" button ───────────────────────────────────────────────
+    // ── "Add" button ─────────────────────────────────────────────────────────
+    // A single button opens a context menu offering "Animator" and "Script" so
+    // the user can attach either component type. Each entry cascades into a
+    // submenu listing the matching assets (.animator / .as / .logic).
     {
         gui->spacing();
-        if (ImGui::Button("Add Animator", ImVec2(-1, 0)))
-            ImGui::OpenPopup("AddAnimatorPopup");
+        if (ImGui::Button("Add", ImVec2(-1, 0)))
+            ImGui::OpenPopup("AddComponentPopup");
 
-        if (ImGui::BeginPopup("AddAnimatorPopup"))
+        if (ImGui::BeginPopup("AddComponentPopup"))
         {
+            // ── Animator (submenu listing .animator assets) ──
             std::vector<std::string> animUuids;
             std::vector<std::string> animNames;
             for (const auto &kv : manager->fileMap)
@@ -3136,54 +3352,97 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 }
             }
 
-            if (animUuids.empty())
+            if (ImGui::BeginMenu("Animator"))
             {
-                ImGui::TextDisabled("No .animator in Assets/");
-            }
-            else
-            {
-                for (size_t i = 0; i < animUuids.size(); ++i)
+                if (animUuids.empty())
                 {
-                    if (ImGui::MenuItem(animNames[i].c_str()))
+                    ImGui::TextDisabled("No .animator in Assets/");
+                }
+                else
+                {
+                    for (size_t i = 0; i < animUuids.size(); ++i)
                     {
-                        obj->setAnimatorRef(animUuids[i]);
-                        manager->projectSaved = false;
-                        manager->refreshWindowTitle();
+                        if (ImGui::MenuItem(animNames[i].c_str()))
+                        {
+                            obj->setAnimatorRef(animUuids[i]);
+                            manager->projectSaved = false;
+                            manager->refreshWindowTitle();
+                        }
                     }
                 }
+                ImGui::EndMenu();
             }
 
-            ImGui::EndPopup();
-        }
-    }
-
-    // ── "Add Script" button ──────────────────────────────────────────────────
-    {
-        gui->spacing();
-        if (ImGui::Button("Add Script", ImVec2(-1, 0)))
-            ImGui::OpenPopup("AddScriptPopup");
-
-        if (ImGui::BeginPopup("AddScriptPopup"))
-        {
+            // ── Script (submenu listing .as / .logic assets) ──
             auto entries = collectProjectScripts(manager);
-            if (entries.empty())
+            if (ImGui::BeginMenu("Script"))
             {
-                ImGui::TextDisabled("No .as or .logic in Assets/");
-            }
-            else
-            {
-                for (const auto &e : entries)
+                if (entries.empty())
                 {
-                    if (ImGui::MenuItem(e.displayName.c_str()))
+                    ImGui::TextDisabled("No .as or .logic in Assets/");
+                }
+                else
+                {
+                    for (const auto &e : entries)
                     {
-                        kScript s;
-                        s.uuid = generateUuid();
-                        s.fileName = e.asPath.string();
-                        s.isActive = true;
-                        obj->addScript(s);
-                        manager->projectSaved = false;
+                        if (ImGui::MenuItem(e.displayName.c_str()))
+                        {
+                            kScript s;
+                            s.uuid = generateUuid();
+                            s.fileName = e.asPath.string();
+                            s.isActive = true;
+                            obj->addScript(s);
+                            manager->projectSaved = false;
+                        }
                     }
                 }
+                ImGui::EndMenu();
+            }
+
+            // ── Physics Shape (submenu adding a rigid body / character) ──
+            // Adds a physics descriptor configured with the chosen collision
+            // shape so the "Physics" section appears for fine-tuning. Picking
+            // "Character Controller" enables the independent character
+            // descriptor instead (its own section in the inspector).
+            if (ImGui::BeginMenu("Physics Shape"))
+            {
+                auto addShape = [&](kPhysicsShapeType st)
+                {
+                    kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
+                    desc.shape.type = st;
+                    // Mesh & Plane shapes are static-only in Jolt; force a
+                    // static body so the runtime can actually build them.
+                    if (st == kPhysicsShapeType::Mesh ||
+                        st == kPhysicsShapeType::Plane)
+                        desc.type = kPhysicsObjectType::Static;
+                    obj->setHasPhysicsDesc(true);
+                    manager->projectSaved = false;
+                };
+
+                if (ImGui::MenuItem("Sphere"))
+                    addShape(kPhysicsShapeType::Sphere);
+                if (ImGui::MenuItem("Box"))
+                    addShape(kPhysicsShapeType::Box);
+                if (ImGui::MenuItem("Capsule"))
+                    addShape(kPhysicsShapeType::Capsule);
+                if (ImGui::MenuItem("Cylinder"))
+                    addShape(kPhysicsShapeType::Cylinder);
+                if (ImGui::MenuItem("ConvexHull"))
+                    addShape(kPhysicsShapeType::ConvexHull);
+                if (ImGui::MenuItem("Mesh"))
+                    addShape(kPhysicsShapeType::Mesh);
+                if (ImGui::MenuItem("Plane"))
+                    addShape(kPhysicsShapeType::Plane);
+
+                ImGui::Separator();
+
+                if (ImGui::MenuItem("Character Controller"))
+                {
+                    obj->setHasCharacterDesc(true);
+                    manager->projectSaved = false;
+                }
+
+                ImGui::EndMenu();
             }
 
             ImGui::EndPopup();
@@ -5351,6 +5610,11 @@ void PanelInspector::draw(bool &opened)
                         typeIcon = iconObjTerrain;
                         typeLabel = "Terrain";
                     }
+                    else if (type == NODE_TYPE_DECAL)
+                    {
+                        typeIcon = iconObjMesh;
+                        typeLabel = "Decal";
+                    }
                 }
 
                 drawInlineIcon(typeIcon, typeLabel);
@@ -5418,6 +5682,41 @@ void PanelInspector::draw(bool &opened)
                     }
                 }
 
+                // --- Tag dropdown (like Unity's tag selector) ----------------
+                {
+                    kString currentTag = obj->getTag();
+                    if (currentTag.empty()) currentTag = "(Untagged)";
+                    gui->alignTextToFramePadding();
+                    gui->text("Tag");
+                    gui->sameLine(0, 8.0f);
+                    gui->setNextItemWidth(180.0f);
+                    if (ImGui::BeginCombo("##ObjTag", currentTag.c_str()))
+                    {
+                        // Built-in "no tag" option.
+                        if (ImGui::Selectable("(Untagged)", currentTag == "(Untagged)"))
+                        {
+                            obj->setTag("");
+                            manager->projectSaved = false;
+                        }
+                        for (const auto &t : manager->tagSettings.tags)
+                        {
+                            bool selected = (currentTag == t);
+                            if (ImGui::Selectable(t.c_str(), selected))
+                            {
+                                obj->setTag(t);
+                                manager->projectSaved = false;
+                            }
+                        }
+                        ImGui::Separator();
+                        if (ImGui::Selectable("Edit Tags..."))
+                            manager->showTagEditor = true;
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Assign a project-defined tag to this object.");
+                    gui->spacing();
+                }
+
                 gui->spacing();
                 gui->separator();
                 gui->spacing();
@@ -5461,6 +5760,8 @@ void PanelInspector::draw(bool &opened)
                     drawCameraSection(gui, static_cast<kCamera *>(obj), manager, dirtySections.camera);
                 else if (type == NODE_TYPE_AUDIO && !obj->getAudioSources().empty())
                     drawAudioSection(gui, obj, manager, dirtySections.audio, iconFileAudio);
+                else if (type == NODE_TYPE_DECAL)
+                    drawDecalSection(gui, static_cast<kDecal *>(obj), manager);
 
                 drawParticleSection(gui, obj, manager, dirtySections.particle);
 
@@ -5529,4 +5830,91 @@ void PanelInspector::draw(bool &opened)
 
     if (!manager->projectOpened)
         gui->endDisabled();
+
+    // --- Tag / Layer editor modals (drawn outside the inspector window) -----
+    drawTagLayerEditorModals(manager);
+}
+
+// ---------------------------------------------------------------------------
+// Tag / Layer editor modals
+// ---------------------------------------------------------------------------
+static void drawListEditorModal(Manager *manager, const char *title, bool &open,
+                                std::vector<std::string> &list, char *newBuf,
+                                size_t newBufSize, bool (*addFn)(Manager *, const std::string &),
+                                void (*removeFn)(Manager *, const std::string &),
+                                bool lockFirst)
+{
+    if (!open) return;
+    if (!ImGui::Begin(title, &open, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::End();
+        return;
+    }
+
+    // List existing entries with a remove button (first/locked entries cannot
+    // be removed). Defer removal until after the loop to avoid iterator
+    // invalidation while iterating.
+    int removeIndex = -1;
+    int idx = 0;
+    for (const auto &entry : list)
+    {
+        bool locked = (lockFirst && idx == 0);
+        ImGui::PushID(idx);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(entry.c_str());
+        if (!locked)
+        {
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 40.0f);
+            if (ImGui::SmallButton("X##Remove"))
+                removeIndex = idx;
+        }
+        else
+        {
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120.0f);
+            ImGui::TextDisabled("(built-in)");
+        }
+        ImGui::PopID();
+        ++idx;
+    }
+
+    if (removeIndex >= 0 && removeIndex < (int)list.size())
+        removeFn(manager, list[removeIndex]);
+
+    ImGui::Separator();
+
+    // Add a new entry.
+    ImGui::SetNextItemWidth(200.0f);
+    if (ImGui::InputTextWithHint("##NewEntry", "New name...", newBuf, newBufSize,
+                                 ImGuiInputTextFlags_EnterReturnsTrue))
+    {
+        std::string name = newBuf;
+        addFn(manager, name);
+        newBuf[0] = '\0';
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add"))
+    {
+        std::string name = newBuf;
+        addFn(manager, name);
+        newBuf[0] = '\0';
+    }
+
+    ImGui::End();
+}
+
+static void drawTagLayerEditorModals(Manager *manager)
+{
+    drawListEditorModal(manager, "Edit Tags", manager->showTagEditor,
+                        manager->tagSettings.tags, manager->newTagBuf,
+                        sizeof(manager->newTagBuf),
+                        [](Manager *m, const std::string &n) { return m->addTag(n); },
+                        [](Manager *m, const std::string &n) { m->removeTag(n); },
+                        false);
+
+    drawListEditorModal(manager, "Edit Layers", manager->showLayerEditor,
+                        manager->layerSettings.layers, manager->newLayerBuf,
+                        sizeof(manager->newLayerBuf),
+                        [](Manager *m, const std::string &n) { return m->addLayer(n); },
+                        [](Manager *m, const std::string &n) { m->removeLayer(n); },
+                        true);
 }

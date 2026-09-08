@@ -42,6 +42,9 @@ MODEL_SHAPE_TORUS RCDATA "res/models/shape/torus.obj"
 // Button icons
 ICON_FOLDER_UP_BUTTON RCDATA "res/icons/button/folder_up.png"
 ICON_ADD_ROUND_BUTTON RCDATA "res/icons/button/add.png"
+ICON_DETACH_BUTTON RCDATA "res/icons/button/detach.png"
+ICON_MAXIMIZE_BUTTON RCDATA "res/icons/button/scalability.png"
+ICON_CLOSE_BUTTON RCDATA "res/icons/button/close.png"
 
 // Label icons
 ICON_MAGNIFIER_LABEL RCDATA "res/icons/label/magnifier.png"
@@ -79,13 +82,7 @@ ICON_OBJECT_AUDIO_LISTENER RCDATA "res/icons/label/listener.png"
 ICON_OBJECT_PREFAB RCDATA "res/icons/label/cube-white.png"
 ICON_OBJECT_PREFAB_EDITED RCDATA "res/icons/label/cube-orange.png"
 ICON_OBJECT_TERRAIN RCDATA "res/icons/label/mountain.png"
-
-ICON_DETACH_BUTTON RCDATA "res/icons/button/detach.png"
-ICON_MAXIMIZE_BUTTON RCDATA "res/icons/button/scalability.png"
-ICON_CLOSE_BUTTON RCDATA "res/icons/button/close.png"
-
-ICON_PLAY_BUTTON ICON "res/icons/button/play.ico"
-ICON_SETTINGS_BUTTON ICON "res/icons/button/gear.ico"
+ICON_OBJECT_DECAL RCDATA "res/icons/label/decal.png"
 
 ICON_FOLDER_LABEL RCDATA "res/icons/label/folder.png"
 ICON_INFO_LABEL RCDATA "res/icons/label/info.png"

@@ -554,6 +554,92 @@ static void drawProjectSettingsDialog(Manager *manager)
 			ImGui::EndTabItem();
 		}
 
+		// ---- Tags ------------------------------------------------------
+		if (ImGui::BeginTabItem("Tags"))
+		{
+			manager->loadTagSettings();
+			ImGui::TextUnformatted("Object tags (like Unity):");
+			ImGui::Spacing();
+
+			int removeIdx = -1;
+			int idx = 0;
+			for (const auto &t : manager->tagSettings.tags)
+			{
+				ImGui::PushID(idx);
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted(t.c_str());
+				ImGui::SameLine(ImGui::GetContentRegionAvail().x - 40.0f);
+				if (ImGui::SmallButton("X##remove"))
+					removeIdx = idx;
+				ImGui::PopID();
+				++idx;
+			}
+			if (removeIdx >= 0)
+				manager->removeTag(manager->tagSettings.tags[removeIdx]);
+
+			ImGui::Separator();
+			ImGui::TextUnformatted("Add new tag:");
+			ImGui::SetNextItemWidth(200.0f);
+			bool enterAdd = ImGui::InputTextWithHint("##newtag", "Tag name...",
+				manager->newTagBuf, sizeof(manager->newTagBuf),
+				ImGuiInputTextFlags_EnterReturnsTrue);
+			ImGui::SameLine();
+			bool clickedAdd = ImGui::Button("Add");
+			if (clickedAdd || enterAdd)
+			{
+				manager->addTag(manager->newTagBuf);
+				manager->newTagBuf[0] = '\0';
+			}
+			ImGui::EndTabItem();
+		}
+
+		// ---- Layers ----------------------------------------------------
+		if (ImGui::BeginTabItem("Layers"))
+		{
+			manager->loadLayerSettings();
+			ImGui::TextUnformatted("Physics layers (objects only collide within the same layer):");
+			ImGui::Spacing();
+
+			int removeIdx = -1;
+			int idx = 0;
+			for (const auto &l : manager->layerSettings.layers)
+			{
+				ImGui::PushID(idx);
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted(l.c_str());
+				if (l == "Default")
+				{
+					ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120.0f);
+					ImGui::TextDisabled("(built-in)");
+				}
+				else
+				{
+					ImGui::SameLine(ImGui::GetContentRegionAvail().x - 40.0f);
+					if (ImGui::SmallButton("X##remove"))
+						removeIdx = idx;
+				}
+				ImGui::PopID();
+				++idx;
+			}
+			if (removeIdx >= 0)
+				manager->removeLayer(manager->layerSettings.layers[removeIdx]);
+
+			ImGui::Separator();
+			ImGui::TextUnformatted("Add new layer:");
+			ImGui::SetNextItemWidth(200.0f);
+			bool enterAdd = ImGui::InputTextWithHint("##newlayer", "Layer name...",
+				manager->newLayerBuf, sizeof(manager->newLayerBuf),
+				ImGuiInputTextFlags_EnterReturnsTrue);
+			ImGui::SameLine();
+			bool clickedAdd = ImGui::Button("Add");
+			if (clickedAdd || enterAdd)
+			{
+				manager->addLayer(manager->newLayerBuf);
+				manager->newLayerBuf[0] = '\0';
+			}
+			ImGui::EndTabItem();
+		}
+
 		ImGui::EndTabBar();
 	}
 
@@ -563,6 +649,8 @@ static void drawProjectSettingsDialog(Manager *manager)
 	{
 		manager->savePublishSettings();
 		manager->saveInputSettings();
+		manager->saveTagSettings();
+		manager->saveLayerSettings();
 		ImGui::CloseCurrentPopup();
 		manager->showProjectSettings = false;
 	}
@@ -616,6 +704,10 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				fs::create_directories(workspacePath.parent_path(), ec);
 				gui->saveIniSettingsToDisk(workspacePath.string());
 				savePanelStateToFile(workspacePath.string());
+				// Persist the file open in each visible graph editor panel
+				// (Logic Graph, Animator, Shader Graph, Cinematic) so it can be
+				// restored when the project is opened again.
+				manager->saveOpenEditorFiles(workspacePath);
 				SDL_Log("Saved workspace to: %s", workspacePath.string().c_str());
 			}
 			gui->separator();
@@ -811,6 +903,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			{
 				if (gui->menuItem("Particle", "", false, manager->projectOpened))
 					manager->createParticle();
+				if (gui->menuItem("Decal", "", false, manager->projectOpened))
+					manager->createDecal();
 				gui->menuEnd();
 			}
 

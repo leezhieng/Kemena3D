@@ -33,7 +33,7 @@ class PanelProject
 {
 	private:
 		ImTextureRef iconUp;   ///< Toolbar icon for navigating up one folder.
-		ImTextureRef iconAdd;  ///< Toolbar icon for the create/add menu.
+		uint32_t iconAdd;  ///< Toolbar icon for the create/add menu.
 		ImTextureRef iconMag;  ///< Search (magnifier) icon.
 
 		ImTextureRef iconFolder;   ///< Default icon for folders.
@@ -57,7 +57,7 @@ class PanelProject
 		char searchBuffer[128] = ""; ///< Backing buffer for the search/filter text field.
 
 		ImVec4 upTint = ImVec4(1, 1, 1, 1);  ///< Tint applied to the "up" toolbar button.
-		ImVec4 addTint = ImVec4(1, 1, 1, 1); ///< Tint applied to the "add" toolbar button.
+		kVec4 addTint = kVec4(1, 1, 1, 1); ///< Tint applied to the "add" toolbar button.
 
 		ImTextureRef iconList;      ///< Icon for the list-view toggle.
 		ImTextureRef iconThumbnail; ///< Icon for the thumbnail-view toggle.

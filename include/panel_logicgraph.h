@@ -43,6 +43,9 @@ public:
     /** @brief Save the current graph (Ctrl+S target). No-op when nothing loaded. */
     void saveCurrent() { saveGraph(); }
 
+    /** @brief Returns the currently loaded .logic file path ("" when untitled). */
+    std::string getFilePath() const { return filePath; }
+
     /**
      * @brief Notifies the editor that an asset was renamed/moved on disk.
      *

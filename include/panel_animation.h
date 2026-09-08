@@ -147,6 +147,9 @@ public:
 
     void saveCurrent() { saveDoc(); }
 
+    /** @brief Returns the currently open .cinematic file path ("" when unsaved). */
+    std::string getFilePath() const { return filePath; }
+
 private:
     kGuiManager* gui     = nullptr;
     Manager*     manager = nullptr;

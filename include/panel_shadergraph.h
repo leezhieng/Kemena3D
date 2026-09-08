@@ -50,6 +50,9 @@ public:
      */
     void saveCurrent() { saveGraph(); }
 
+    /** @brief Returns the currently open .shader file path ("" when unsaved). */
+    std::string getFilePath() const { return filePath; }
+
 private:
     // -----------------------------------------------------------------------
     // Core state

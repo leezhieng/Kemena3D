@@ -2089,7 +2089,6 @@ void PanelAnimator::draw(bool& isOpened)
     focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     drawToolbar();
-    ImGui::Separator();
     drawVariablesPanel();
     drawVariablesSplitter();
     drawCanvas();
