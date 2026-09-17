@@ -51,6 +51,32 @@ set(MINIAUDIO_DECODER_SRC
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${MINIAUDIO_DECODER_SRC})
 
+# ---------------------------------------------------------------------------
+# DirectX 11 backend
+#
+# Set this to ON when the SDK the studio links was itself configured with
+# -DKEMENA_D3D11=ON.  The two must agree: kGuiManager and the engine headers are
+# compiled with KEMENA_D3D11, so the studio has to see the same definition to
+# drive the matching ImGui backend, and it needs NOMINMAX/WIN32_LEAN_AND_MEAN
+# before any Windows or d3d11 header is pulled in.
+#
+# With KEMENA_D3D11 defined, kemena::createRenderer() creates a D3D11 renderer
+# and the studio loads the *_HLSL shader resources registered in resources.rc
+# (the GLSL entries stay in use for every other configuration).
+#
+# Note: DXGI only supports one presented swap chain per HWND, while the studio
+# creates several kRenderer instances on a single window; on D3D11 they share
+# the HWND, so only the primary renderer's presentation is reliable.  This
+# option is therefore opt-in and off by default.
+# ---------------------------------------------------------------------------
+option(KEMENA3D_USE_D3D11 "Build the studio against a DirectX 11 SDK (must match the SDK's KEMENA_D3D11)" OFF)
+
+if(KEMENA3D_USE_D3D11 AND WIN32)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE KEMENA_D3D11 WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(${PROJECT_NAME} PRIVATE d3d11 dxgi d3dcompiler)
+    message(STATUS "Kemena3D Studio: DirectX 11 backend enabled")
+endif()
+
 # Release builds use the GUI subsystem (no console window); Debug keeps the console
 # Use generator expression so this works with both single-config and multi-config generators
 set_target_properties(${PROJECT_NAME} PROPERTIES

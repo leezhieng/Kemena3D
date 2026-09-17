@@ -22,7 +22,7 @@ TEXTURE_SKYBOX_BACK RCDATA "res/textures/skybox/back.tga"
 TEXTURE_SKYBOX_TOP RCDATA "res/textures/skybox/top.tga"
 TEXTURE_SKYBOX_BOTTOM RCDATA "res/textures/skybox/bottom.tga"
 
-// Shaders (GLSL 330)
+// Shaders (GLSL 330) — used by the OpenGL / OpenGL ES backends.
 SHADER_MESH_FLAT   RCDATA "res/shaders/mesh_flat.glsl"
 SHADER_MESH_PHONG  RCDATA "res/shaders/mesh_phong.glsl"
 SHADER_MESH_PBR    RCDATA "res/shaders/mesh_pbr.glsl"
@@ -33,6 +33,24 @@ SHADER_TERRAIN_PBR RCDATA "res/shaders/TerrainPBR.glsl"
 SHADER_OFFSCREEN_PREVIEW RCDATA "res/shaders/offscreen_preview.glsl"
 SHADER_OFFSCREEN_SHADOW  RCDATA "res/shaders/offscreen_shadow.glsl"
 SHADER_OFFSCREEN_WHITE   RCDATA "res/shaders/offscreen_white.glsl"
+
+// Shaders (HLSL / DXBC) — used by the DirectX 11 backend.
+//
+// Shader source is never translated by the engine: each backend loads its own
+// variant.  kAssetManager::loadGlslFromResource() resolves the <NAME>_HLSL entry
+// when the active renderer is RENDERER_D3D11, and the GLSL entry above otherwise
+// (both files keep the same uniforms and the same `// @var` annotations, so the
+// material inspector and .mat files work unchanged).
+SHADER_MESH_FLAT_HLSL   RCDATA "res/shaders/mesh_flat.hlsl"
+SHADER_MESH_PHONG_HLSL  RCDATA "res/shaders/mesh_phong.hlsl"
+SHADER_MESH_PBR_HLSL    RCDATA "res/shaders/mesh_pbr.hlsl"
+SHADER_GRID_HLSL        RCDATA "res/shaders/grid.hlsl"
+SHADER_ICON_HLSL        RCDATA "res/shaders/icon.hlsl"
+SHADER_SKYBOX_HLSL      RCDATA "res/shaders/skybox.hlsl"
+SHADER_TERRAIN_PBR_HLSL RCDATA "res/shaders/TerrainPBR.hlsl"
+SHADER_OFFSCREEN_PREVIEW_HLSL RCDATA "res/shaders/offscreen_preview.hlsl"
+SHADER_OFFSCREEN_SHADOW_HLSL  RCDATA "res/shaders/offscreen_shadow.hlsl"
+SHADER_OFFSCREEN_WHITE_HLSL   RCDATA "res/shaders/offscreen_white.hlsl"
 
 // Shapes
 MODEL_SHAPE_CONE RCDATA "res/models/shape/cone.obj"

@@ -8841,13 +8841,34 @@ kShader *Manager::getRawShader(const kString &shaderUuid)
     if (fit != fileMap.end() && fit->second.type == "shader")
     {
         fs::path path = projectPath / "Assets" / fit->second.path;
+
+        // Shader source is never translated by the engine: each backend loads its
+        // own variant.  On DirectX 11 the .hlsl sibling of the raw shader asset is
+        // used when it exists; otherwise the GLSL file is loaded and the D3D11
+        // driver reports that it cannot compile GLSL.
+        kDriver *activeDriver = kDriver::getCurrent();
+        const bool backendIsD3D11 =
+            (activeDriver != nullptr &&
+             activeDriver->getRendererType() == kRendererType::RENDERER_D3D11);
+
+        if (backendIsD3D11)
+        {
+            fs::path hlslPath = path;
+            hlslPath.replace_extension(".hlsl");
+            if (fs::exists(hlslPath))
+                path = hlslPath;
+        }
+
         std::ifstream f(path);
         if (f)
         {
             std::stringstream ss;
             ss << f.rdbuf();
             shader = new kShader();
-            shader->loadGlslCode(ss.str());
+            if (backendIsD3D11)
+                shader->loadHlslCodeDX11(ss.str());
+            else
+                shader->loadGlslCode(ss.str());
             if (shader->getShaderProgram() == 0)
             {
                 delete shader;
