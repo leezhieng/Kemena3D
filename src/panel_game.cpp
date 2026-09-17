@@ -382,6 +382,34 @@ void PanelGame::draw(bool &isOpened)
     else
         gui->textDisabled(statusText);
 
+    // ---- Aspect-ratio preset (left-aligned on the transport row) -----------
+    // Height-matched to the transport buttons and vertically centred on the same
+    // row, with a small left margin so it doesn't hug the panel edge.
+    {
+        const float aspectPadY = ImMax(0.0f, (btnH - gui->getFontSize()) * 0.5f);
+        gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(8.0f, aspectPadY));
+        gui->setCursorPos(kVec2(8.0f, rowTopY)); // 8 px left margin, same row top
+
+        static const char *kAspectNames[] = { "Free Aspect", "3:2", "4:3", "5:4", "16:9", "16:10", "Custom" };
+        int aspectIdx = (int)aspectRatio;
+        gui->setNextItemWidth(140.0f);
+        if (ImGui::Combo("##gameAspect", &aspectIdx, kAspectNames, IM_ARRAYSIZE(kAspectNames)))
+            aspectRatio = (GameAspectRatio)aspectIdx;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Game viewport aspect ratio");
+
+        if (aspectRatio == GameAspectRatio::Custom)
+        {
+            gui->sameLine(0.0f, 4.0f);
+            gui->setNextItemWidth(84.0f);
+            ImGui::DragFloat("##gameAspectW", &customAspectW, 0.1f, 0.1f, 100.0f, "W %.1f");
+            gui->sameLine(0.0f, 4.0f);
+            gui->setNextItemWidth(84.0f);
+            ImGui::DragFloat("##gameAspectH", &customAspectH, 0.1f, 0.1f, 100.0f, "H %.1f");
+        }
+        gui->popStyleVar();
+    }
+
     // Place the centred transport buttons at the row top.
     gui->setCursorPos(kVec2(centredX, rowTopY));
 
@@ -442,12 +470,49 @@ void PanelGame::draw(bool &isOpened)
 
     gui->dummy(kVec2(0.0f, 0.0f)); // Vertical gap between toolbar and viewport
 
+    // Resolve the requested aspect ratio (0 = free / fill the panel).
+    float targetAspect = 0.0f;
+    switch (aspectRatio)
+    {
+        case GameAspectRatio::Ratio3_2:   targetAspect = 3.0f / 2.0f;   break;
+        case GameAspectRatio::Ratio4_3:   targetAspect = 4.0f / 3.0f;   break;
+        case GameAspectRatio::Ratio5_4:   targetAspect = 5.0f / 4.0f;   break;
+        case GameAspectRatio::Ratio16_9:  targetAspect = 16.0f / 9.0f;  break;
+        case GameAspectRatio::Ratio16_10: targetAspect = 16.0f / 10.0f; break;
+        case GameAspectRatio::Custom:
+            if (customAspectW > 0.0f && customAspectH > 0.0f)
+                targetAspect = customAspectW / customAspectH;
+            break;
+        case GameAspectRatio::Free:
+        default:
+            break;
+    }
+
     // ---- Game viewport -----------------------------------------------------
     kVec2 avail = gui->getContentRegionAvail();
     if (avail.x > 0 && avail.y > 0)
     {
         int newW = (int)avail.x;
         int newH = (int)avail.y;
+
+        // Letterbox to the requested aspect ratio when one is selected.
+        float imgOffX = 0.0f;
+        if (targetAspect > 0.0f)
+        {
+            if (avail.x / avail.y > targetAspect)
+            {
+                newH = (int)avail.y;
+                newW = (int)((float)newH * targetAspect);
+            }
+            else
+            {
+                newW = (int)avail.x;
+                newH = (int)((float)newW / targetAspect);
+            }
+            if (newW < 1) newW = 1;
+            if (newH < 1) newH = 1;
+            imgOffX = (avail.x - (float)newW) * 0.5f;
+        }
 
         // Create or resize the offscreen renderer to match this panel
         if (!gameRenderer)
@@ -500,9 +565,47 @@ void PanelGame::draw(bool &isOpened)
             // Render scene only — no editor overlay, no outlines, no debug shapes
             gameRenderer->render(manager->getWorld(), gameScene, gameCamera);
 
+            // Centre the (possibly letterboxed) view inside the panel.
+            if (imgOffX > 0.0f)
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + imgOffX);
+
+            ImVec2 imgMin = ImGui::GetCursorScreenPos();
             ImTextureRef tex((ImTextureID)(uintptr_t)gameRenderer->getTexture());
             gui->setNextItemAllowOverlap();
             ImGui::Image(tex, ImVec2((float)newW, (float)newH), ImVec2(0, 1), ImVec2(1, 0));
+
+            // ---- Ingame UI (.ui) overlays -----------------------------------
+            // Every active scene object created from a .ui asset (dragged in
+            // from the Project panel) draws its layout over the game view.
+            {
+                ImDrawList *fg = ImGui::GetWindowDrawList();
+                ImVec2 imgMax(imgMin.x + (float)newW, imgMin.y + (float)newH);
+                for (const auto &entry : manager->getObjectUiAssets())
+                {
+                    kObject *uiObj = manager->findObjectByUuid(entry.first);
+                    if (!uiObj || !uiObj->getActive())
+                        continue;
+                    if (auto layout = manager->getGuiLayoutForAsset(entry.second))
+                    {
+                        // Resolve .ui image widgets to their project textures so
+                        // the overlay draws the real images, fitted per widget.
+                        auto resolveTex = [this](const std::string& uuid) -> GuiTextureInfo
+                        {
+                            GuiTextureInfo info;
+                            if (kTexture2D* t = manager->getProjectTexture(uuid, "uiImage"))
+                            {
+                                if (t->getTextureID() != 0)
+                                {
+                                    info.glId = t->getTextureID();
+                                    info.size = ImVec2((float)t->getWidth(), (float)t->getHeight());
+                                }
+                            }
+                            return info;
+                        };
+                        renderGuiLayout(fg, *layout, imgMin, imgMax, resolveTex);
+                    }
+                }
+            }
         }
         else
         {

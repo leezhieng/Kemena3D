@@ -1604,19 +1604,73 @@ void PanelAnimator::drawToolbar()
         newGraph();
     }
     ImGui::SameLine();
+    if (ImGui::Button("Open") && hasProject)
+    {
+        fs::path animDir = fs::path(manager->projectPath.c_str()) / "Assets" / "Animations";
+        if (!fs::exists(animDir))
+            fs::create_directories(animDir);
+
+        SDL_DialogFileFilter filters[] = {
+            { "Animator files", "animator" },
+            { "All files",      "*"        }
+        };
+
+        SDL_ShowOpenFileDialog(
+            [](void* userdata, const char* const* filelist, int) {
+                if (!filelist || !*filelist) return;
+                static_cast<PanelAnimator*>(userdata)->openFile(filelist[0]);
+            },
+            this,
+            manager->getWindow()->getSdlWindow(),
+            filters,
+            SDL_arraysize(filters),
+            animDir.string().c_str(),
+            false);
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Save") && hasProject)
         saveGraph();
     ImGui::SameLine();
     if (ImGui::Button("Save As...") && hasProject)
         saveGraphAs();
 
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
+    // Opened file name centered across the whole toolbar width.
+    std::string title = filePath.empty() ? std::string("untitled")
+                                         : fs::path(filePath).filename().string();
+    if (graph.dirty)
+        title += " *";
 
-    // Zoom controls
-    ImGui::SetNextItemWidth(80.f);
-    ImGui::SliderFloat("Zoom", &canvasZoom, 0.25f, 2.f, "%.2f");
+    const float titleWidth   = ImGui::CalcTextSize(title.c_str()).x;
+    const float contentMinX  = ImGui::GetWindowContentRegionMin().x;
+    const float contentMaxX  = ImGui::GetWindowContentRegionMax().x;
+    const float contentWidth = contentMaxX - contentMinX;
+    ImGui::SameLine();
+    if (contentWidth > titleWidth)
+    {
+        float centeredX = contentMinX + (contentWidth - titleWidth) * 0.5f;
+        // Never slide back over the buttons.
+        if (centeredX < ImGui::GetCursorPosX())
+            centeredX = ImGui::GetCursorPosX();
+        ImGui::SetCursorPosX(centeredX);
+    }
+    ImGui::TextUnformatted(title.c_str());
+
+    // Zoom controls pinned to the right edge. The "Zoom" caption is dropped so
+    // the slider stays compact beside the Reset View button.
+    const float titleEndLocal = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+    const float sliderW       = 120.f;
+    const float resetW        = ImGui::CalcTextSize("Reset View").x +
+                                ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float controlsW     = sliderW + ImGui::GetStyle().ItemSpacing.x + resetW;
+
+    float startX = contentMaxX - controlsW;
+    const float minX = titleEndLocal + ImGui::GetStyle().ItemSpacing.x;
+    if (startX < minX)
+        startX = minX;
+
+    ImGui::SameLine(startX);
+    ImGui::SetNextItemWidth(sliderW);
+    ImGui::SliderFloat("##animzoom", &canvasZoom, 0.25f, 2.f, "%.2f");
     ImGui::SameLine();
     if (ImGui::Button("Reset View"))
     {

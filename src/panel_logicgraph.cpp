@@ -2,6 +2,7 @@
 #include "panel_logicgraph.h"
 
 #include "imgui.h"
+#include "panel_console.h"
 #include "imgui_internal.h"
 #include "portable-file-dialogs.h"
 
@@ -39,7 +40,13 @@ namespace
             case kScriptNodeType::EventUpdate:
             case kScriptNodeType::EventFixedUpdate:
             case kScriptNodeType::EventLateUpdate:
-            case kScriptNodeType::EventOnDestroy:  return NodeCategory::Event;
+            case kScriptNodeType::EventOnDestroy:
+            case kScriptNodeType::EventCollisionEnter:
+            case kScriptNodeType::EventCollisionStay:
+            case kScriptNodeType::EventCollisionExit:
+            case kScriptNodeType::EventTriggerEnter:
+            case kScriptNodeType::EventTriggerStay:
+            case kScriptNodeType::EventTriggerExit:  return NodeCategory::Event;
             case kScriptNodeType::Branch:
             case kScriptNodeType::Sequence:        return NodeCategory::Flow;
             case kScriptNodeType::Print:
@@ -68,7 +75,8 @@ namespace
             case kScriptNodeType::SetLinearVelocity:
             case kScriptNodeType::SetAngularVelocity:
             case kScriptNodeType::SetPhysicsGravity:
-            case kScriptNodeType::MoveCharacter:     return NodeCategory::Action;
+            case kScriptNodeType::MoveCharacter:
+            case kScriptNodeType::CompareTag:      return NodeCategory::Action;
             case kScriptNodeType::GetSelf:
             case kScriptNodeType::GetPosition:
             case kScriptNodeType::GetRotation:
@@ -91,11 +99,12 @@ namespace
             case kScriptNodeType::GetPhysicsVelocity:
             case kScriptNodeType::GetPhysicsPosition:
             case kScriptNodeType::GetPhysicsGravity:
+            case kScriptNodeType::GetTag:
             case kScriptNodeType::IsPhysicsActive: return NodeCategory::Getter;
-            case kScriptNodeType::CompareTag:      return NodeCategory::Getter;
             case kScriptNodeType::LiteralFloat:
             case kScriptNodeType::LiteralBool:
             case kScriptNodeType::LiteralString:
+            case kScriptNodeType::LiteralInt:
             case kScriptNodeType::LiteralVec3:     return NodeCategory::Value;
             default:                               return NodeCategory::Math;
         }
@@ -136,6 +145,7 @@ namespace
             case kScriptNodeType::LiteralFloat:
             case kScriptNodeType::LiteralBool:
             case kScriptNodeType::LiteralString:
+            case kScriptNodeType::LiteralInt:
             case kScriptNodeType::GetVariable:
             case kScriptNodeType::SetVariable: return 1;
             case kScriptNodeType::GetAction:
@@ -198,7 +208,7 @@ void PanelLogicGraph::notifyAssetMoved(const std::string &oldPath, const std::st
     {
         filePath   = newPath;
         graph.name = fs::path(newPath).stem().string();
-        statusLine = "Renamed to " + fs::path(newPath).filename().string();
+        logStatus(LogLevel::Info, "Renamed to " + fs::path(newPath).filename().string());
     }
 }
 
@@ -226,7 +236,7 @@ bool PanelLogicGraph::loadGraph(const std::string &path)
     std::ifstream in(path);
     if (!in.is_open())
     {
-        statusLine = "Failed to open: " + path;
+        logStatus(LogLevel::Error, "Failed to open: " + path);
         return false;
     }
     try
@@ -237,13 +247,13 @@ bool PanelLogicGraph::loadGraph(const std::string &path)
     }
     catch (const std::exception &e)
     {
-        statusLine = std::string("Parse error: ") + e.what();
+        logStatus(LogLevel::Error, std::string("Parse error: ") + e.what());
         return false;
     }
     filePath     = path;
     canvasOffset = ImVec2(0.0f, 0.0f);
     selectedNode = 0;
-    statusLine   = "Loaded " + fs::path(path).filename().string();
+    logStatus(LogLevel::Info, "Loaded " + fs::path(path).filename().string());
     return true;
 }
 
@@ -277,7 +287,7 @@ bool PanelLogicGraph::saveGraph()
     std::ofstream out(filePath);
     if (!out.is_open())
     {
-        statusLine = "Cannot write: " + filePath;
+        logStatus(LogLevel::Error, "Cannot write: " + filePath);
         return false;
     }
     out << graph.toJson().dump(2);
@@ -292,14 +302,14 @@ void PanelLogicGraph::regenerateScript()
 {
     if (!manager || graph.uuid.empty())
     {
-        statusLine = "Cannot generate script: missing project or graph UUID";
+        logStatus(LogLevel::Error, "Cannot generate script: missing project or graph UUID");
         return;
     }
 
     kScriptGraphResult res = kScriptGraphCompiler::compile(graph);
     if (!res.success)
     {
-        statusLine = "Compile error: " + res.error;
+        logStatus(LogLevel::Error, "Compile error: " + res.error);
         return;
     }
 
@@ -314,7 +324,7 @@ void PanelLogicGraph::regenerateScript()
     std::ofstream out(asPath);
     if (!out.is_open())
     {
-        statusLine = "Cannot write generated script: " + asPath.string();
+        logStatus(LogLevel::Error, "Cannot write generated script: " + asPath.string());
         return;
     }
     out << res.code;
@@ -323,7 +333,12 @@ void PanelLogicGraph::regenerateScript()
     // Refresh bytecode for any object already using this generated script.
     manager->buildScripts();
 
-    statusLine = "Saved + compiled -> " + asPath.filename().string();
+    // Report the asset the user actually saved (.logic) rather than the
+    // internal uuid-keyed generated script, which never appears in Assets/.
+    const std::string assetName = filePath.empty()
+                                      ? graph.name
+                                      : fs::path(filePath).filename().string();
+    logStatus(LogLevel::Info, "Saved + compiled -> " + assetName);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +399,15 @@ namespace
 // Toolbar
 // ---------------------------------------------------------------------------
 
+void PanelLogicGraph::logStatus(LogLevel level, const std::string &msg)
+{
+    // The console is the single sink for save/load feedback; statusLine is only
+    // kept as a fallback for callers that run before the console exists.
+    statusLine = msg;
+    if (manager && manager->panelConsole)
+        manager->panelConsole->addLog(level, "%s", msg.c_str());
+}
+
 void PanelLogicGraph::drawToolbar()
 {
     if (ImGui::Button("New"))
@@ -402,28 +426,29 @@ void PanelLogicGraph::drawToolbar()
     if (ImGui::Button("Save"))
         saveGraph();
     ImGui::SameLine();
-    if (ImGui::Button("Compile"))
-    {
-        if (filePath.empty())
-            saveGraphAs();
-        else
-            regenerateScript();
-    }
+    if (ImGui::Button("Save As..."))
+        saveGraphAs();
 
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
+    // Opened file name centered across the whole toolbar width (not just the
+    // space right of the buttons, which would push it too far right).
     std::string title = filePath.empty() ? std::string("untitled")
                                          : fs::path(filePath).filename().string();
     if (graph.dirty)
         title += " *";
-    ImGui::TextUnformatted(title.c_str());
 
-    if (!statusLine.empty())
+    const float titleWidth   = ImGui::CalcTextSize(title.c_str()).x;
+    const float contentMinX  = ImGui::GetWindowContentRegionMin().x;
+    const float contentWidth = ImGui::GetWindowContentRegionMax().x - contentMinX;
+    ImGui::SameLine();
+    if (contentWidth > titleWidth)
     {
-        ImGui::SameLine();
-        ImGui::TextDisabled("   %s", statusLine.c_str());
+        float centeredX = contentMinX + (contentWidth - titleWidth) * 0.5f;
+        // Never slide back over the buttons.
+        if (centeredX < ImGui::GetCursorPosX())
+            centeredX = ImGui::GetCursorPosX();
+        ImGui::SetCursorPosX(centeredX);
     }
+    ImGui::TextUnformatted(title.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +788,16 @@ void PanelLogicGraph::drawNode(ImDrawList *dl, kScriptGraphNode &node, ImVec2 or
             if (ImGui::DragFloat("##lf", &node.valueFloat[0], 0.05f))
                 graph.dirty = true;
             break;
+        case kScriptNodeType::LiteralInt:
+        {
+            int iv = (int)node.valueFloat[0];
+            if (ImGui::DragInt("##li", &iv, 1.0f))
+            {
+                node.valueFloat[0] = (float)iv;
+                graph.dirty = true;
+            }
+            break;
+        }
         case kScriptNodeType::LiteralBool:
             if (ImGui::Checkbox("Value##lb", &node.valueBool))
                 graph.dirty = true;
@@ -1100,6 +1135,12 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"On Fixed Update", kScriptNodeType::EventFixedUpdate},
         {"On Late Update", kScriptNodeType::EventLateUpdate},
         {"On Destroy", kScriptNodeType::EventOnDestroy},
+        {"On Collision Enter", kScriptNodeType::EventCollisionEnter},
+        {"On Collision Stay", kScriptNodeType::EventCollisionStay},
+        {"On Collision Exit", kScriptNodeType::EventCollisionExit},
+        {"On Trigger Enter", kScriptNodeType::EventTriggerEnter},
+        {"On Trigger Stay", kScriptNodeType::EventTriggerStay},
+        {"On Trigger Exit", kScriptNodeType::EventTriggerExit},
     };
     static const Entry flow[] = {
         {"Branch", kScriptNodeType::Branch},
@@ -1114,6 +1155,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Rotate", kScriptNodeType::Rotate},
         {"Set Active", kScriptNodeType::SetActive},
         {"Set Variable", kScriptNodeType::SetVariable},
+        {"Compare Tag", kScriptNodeType::CompareTag},
     };
     static const Entry getters[] = {
         {"Get Self", kScriptNodeType::GetSelf},
@@ -1125,7 +1167,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Get Up", kScriptNodeType::GetUp},
         {"Get Delta Time", kScriptNodeType::GetDeltaTime},
         {"Get Variable", kScriptNodeType::GetVariable},
-        {"Compare Tag", kScriptNodeType::CompareTag},
+        {"Get Tag", kScriptNodeType::GetTag},
     };
     static const Entry input[] = {
         {"Get Action", kScriptNodeType::GetAction},
@@ -1152,7 +1194,6 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Set Boolean", kScriptNodeType::SetAnimatorBool},
         {"Set Float", kScriptNodeType::SetAnimatorFloat},
         {"Set Integer", kScriptNodeType::SetAnimatorInt},
-        {"Set Trigger", kScriptNodeType::SetAnimatorTrigger},
     };
     static const Entry physics[] = {
         {"Get Physics Object", kScriptNodeType::GetPhysicsObject},
@@ -1170,6 +1211,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
     };
     static const Entry values[] = {
         {"Float", kScriptNodeType::LiteralFloat},
+        {"Int", kScriptNodeType::LiteralInt},
         {"Bool", kScriptNodeType::LiteralBool},
         {"String", kScriptNodeType::LiteralString},
         {"Vector3", kScriptNodeType::LiteralVec3},
@@ -1180,6 +1222,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Subtract", kScriptNodeType::Subtract},
         {"Multiply", kScriptNodeType::Multiply},
         {"Divide", kScriptNodeType::Divide},
+        {"Concat String", kScriptNodeType::ConcatString},
         {"Make Vector3", kScriptNodeType::MakeVec3},
         {"Break Vector3", kScriptNodeType::BreakVec3},
         {"Scale Vector3", kScriptNodeType::ScaleVec3},
@@ -1289,7 +1332,7 @@ void PanelLogicGraph::copySelectedNode()
         return;
     clipboardNode = *n;
     hasClipboard   = true;
-    statusLine     = "Copied " + n->name;
+    logStatus(LogLevel::Info, "Copied " + n->name);
 }
 
 void PanelLogicGraph::pasteClipboard()
@@ -1342,7 +1385,7 @@ void PanelLogicGraph::pasteClipboard()
     graph.nodes.push_back(n);
     selectedNode = n.id;
     graph.dirty  = true;
-    statusLine   = "Pasted " + n.name;
+    logStatus(LogLevel::Info, "Pasted " + n.name);
 }
 
 // ---------------------------------------------------------------------------

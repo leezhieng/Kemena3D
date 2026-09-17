@@ -35,9 +35,11 @@ struct ShowPanel
 	bool animatorEditor = false;///< Show the Animator editor panel.
 	bool animationEditor = false;///< Show the Animation editor panel.
 	bool particleEditor = false; ///< Show the Particle editor panel.
+	bool guiEditor = false;      ///< Show the Ingame UI editor panel.
 };
 
 inline ShowPanel showPanel;                       ///< Global panel-visibility state shared across the editor UI.
+inline kString pendingFocusWindow;                ///< ImGui window to focus on the next draw (empty = none). Set when an asset is opened from the project panel so the owning editor panel is shown and brought to the front.
 inline ImGuiSettingsHandler ini_handler;          ///< ImGui settings handler used to persist panel state in the layout .ini.
 inline bool isReloadLayout = false;               ///< When true, the editor reloads the layout from @ref layoutFileName next frame.
 inline bool isReloadDefaultLayout = false;        ///< When true, the editor reloads the embedded default layout next frame.

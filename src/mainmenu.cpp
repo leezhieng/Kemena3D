@@ -835,6 +835,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					manager->createNewAnimation();
 				if (ImGui::MenuItem("Particle"))
 					manager->createNewParticle();
+				if (ImGui::MenuItem("Ingame UI"))
+					manager->createNewGui();
 				ImGui::EndMenu();
 			}
 			if (gui->menuItem("Show In Explorer", "", false, manager->projectOpened))
@@ -932,6 +934,11 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			}
 			if (gui->menuItem("UI", "", false, manager->projectOpened))
 			{
+				// In-game UI has no scene object yet — author the .ui document
+				// and open the Ingame UI editor for it.
+				manager->createNewGui();
+				showPanel.guiEditor = true;
+				pendingFocusWindow = "IngameUI";
 			}
 			if (gui->menuItem("Camera", "", false, manager->projectOpened))
 				manager->createCamera();
@@ -966,6 +973,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					showPanel.animatorEditor = !showPanel.animatorEditor;
 				if (gui->menuItem("Cinematic Editor", "", showPanel.animationEditor))
 					showPanel.animationEditor = !showPanel.animationEditor;
+				if (gui->menuItem("Ingame UI Editor", "", showPanel.guiEditor))
+					showPanel.guiEditor = !showPanel.guiEditor;
 				ImGui::EndMenu();
 			}
 
@@ -1220,6 +1229,8 @@ static void applyPanelStateLine(const char *line)
 		showPanel.animatorEditor = (tmp != 0);
 	else if (sscanf_s(line, "AnimationEditorOpened=%d", &tmp) == 1)
 		showPanel.animationEditor = (tmp != 0);
+	else if (sscanf_s(line, "PanelGuiEditorOpened=%d", &tmp) == 1)
+		showPanel.guiEditor = (tmp != 0);
 }
 
 void MainMenu::readLine(ImGuiContext *, ImGuiSettingsHandler *, void *, const char *line)
@@ -1240,6 +1251,7 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("GameOpened=%d\n", showPanel.game ? 1 : 0);
 	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
 	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
+	out_buf->appendf("PanelGuiEditorOpened=%d\n", showPanel.guiEditor ? 1 : 0);
 	out_buf->append("\n");
 }
 
@@ -1260,6 +1272,7 @@ void MainMenu::savePanelStateToFile(const kString &path)
 	f << "GameOpened=" << (showPanel.game ? 1 : 0) << "\n";
 	f << "AnimatorEditorOpened=" << (showPanel.animatorEditor ? 1 : 0) << "\n";
 	f << "AnimationEditorOpened=" << (showPanel.animationEditor ? 1 : 0) << "\n";
+	f << "PanelGuiEditorOpened=" << (showPanel.guiEditor ? 1 : 0) << "\n";
 	f << "\n";
 }
 

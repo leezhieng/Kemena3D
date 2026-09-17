@@ -57,3 +57,26 @@ void OnDisable()
 void OnDestroy()
 {
 }
+
+// ---- Physics collision / trigger events -------------------------------------
+// Each receives the OTHER object involved in the contact/overlap as "other".
+// They fire when a rigid body (or character controller) collides with this
+// object's collider, or enters a Trigger-type collider owned by this object.
+
+// Called when a physics body starts colliding with this object.
+// void OnCollisionEnter(kObject@ other) { }
+
+// Called every physics step while a body is colliding with this object.
+// void OnCollisionStay(kObject@ other) { }
+
+// Called when a physics body stops colliding with this object.
+// void OnCollisionExit(kObject@ other) { }
+
+// Called when a dynamic body enters a trigger volume owned by this object.
+// void OnTriggerEnter(kObject@ other) { }
+
+// Called every physics step while a body is inside this object's trigger.
+// void OnTriggerStay(kObject@ other) { }
+
+// Called when a dynamic body leaves this object's trigger volume.
+// void OnTriggerExit(kObject@ other) { }

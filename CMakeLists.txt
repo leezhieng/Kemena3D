@@ -32,6 +32,7 @@ set(SOURCES
     src/panel_animator.cpp
     src/panel_animation.cpp
     src/panel_particle.cpp
+    src/panel_gui.cpp
     src/splash_screen.cpp
     src/crashhandler.cpp
     src/util.cpp

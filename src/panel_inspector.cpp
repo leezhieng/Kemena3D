@@ -5344,6 +5344,20 @@ void PanelInspector::draw(bool &opened)
     gui->windowStart("Inspector", &opened);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
+    // Ingame UI editing takes priority while the UI editor is the last focused
+    // panel, or it currently owns focus, and a widget is selected.
+    if (manager->panelGui != nullptr && manager->panelGui->visible &&
+        (manager->lastFocusedPanel == Manager::FocusedPanel::Gui ||
+         manager->panelGui->focused) &&
+        manager->panelGui->hasSelectedWidget())
+    {
+        manager->panelGui->drawSelectedInspector();
+        gui->windowEnd();
+        if (!manager->projectOpened)
+            gui->endDisabled();
+        return;
+    }
+
     // Animator editing takes priority while the animator editor is the last
     // focused panel, it currently owns focus, or its animation picker popup is
     // open. The Inspector's own focus is deliberately excluded so that clicking

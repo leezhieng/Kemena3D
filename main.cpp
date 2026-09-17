@@ -16,8 +16,11 @@
 #include "panel_animator.h"
 #include "panel_animation.h"
 #include "panel_particle.h"
+#include "panel_gui.h"
 #include "splash_screen.h"
 #include "crashhandler.h"
+
+#include <cstring>
 
 #include "imgui_internal.h" // <-- required for ImGuiSettingsHandler
 
@@ -120,44 +123,83 @@ int main()
 	manager->panelAnimation = panelAnimation;
 	PanelParticle *panelParticle = new PanelParticle(gui, manager);
 	manager->panelParticle = panelParticle;
+	PanelGui *panelGui = new PanelGui(gui, manager);
+	manager->panelGui = panelGui;
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
 
-	// Route .shader and .prefab double-clicks from the project panel.
+	// Route file double-clicks from the project panel to the editor panel that
+	// owns that file type: show the panel if it is hidden and record it in
+	// `pendingFocusWindow` so the render loop brings it to the front (via
+	// ImGui::SetNextWindowFocus) right before it is drawn. Generic asset types
+	// with no dedicated editor surface (mesh, image, audio, ...) are previewed
+	// by the Inspector, so they focus that instead.
 	panelProject->onFileDoubleClicked = [&](const std::string &path)
 	{
-		if (path.size() >= 7 && path.substr(path.size() - 7) == ".shader")
+		auto endsWith = [&path](const char *ext) -> bool
+		{
+			const size_t n = std::strlen(ext);
+			return path.size() >= n && path.compare(path.size() - n, n, ext) == 0;
+		};
+
+		if (endsWith(".shader"))
 		{
 			showPanel.shaderEditor = true;
 			panelShaderGraph->openFile(path);
+			pendingFocusWindow = "Shader";
 		}
-		else if (path.size() >= 6 && path.substr(path.size() - 6) == ".logic")
+		else if (endsWith(".logic"))
 		{
 			showPanel.scriptEditor = true;
 			panelLogicGraph->openFile(path);
+			pendingFocusWindow = "Logic Graph";
 		}
-		else if (path.size() >= 7 && path.substr(path.size() - 7) == ".prefab")
+		else if (endsWith(".prefab") || endsWith(".pfb"))
 		{
 			showPanel.prefab = true;
 			manager->setEditorMode(Manager::EditorMode::PrefabPreview, path, ".prefab");
 			manager->editPrefab(path);
 			showPanel.prefab = manager->prefabEditing;
+			if (showPanel.prefab)
+				pendingFocusWindow = "Prefab";
 		}
-		else if (path.size() >= 9 && path.substr(path.size() - 9) == ".animator")
+		else if (endsWith(".animator"))
 		{
 			showPanel.animatorEditor = true;
 			panelAnimator->openFile(path);
 			manager->setEditorMode(Manager::EditorMode::AnimatorPreview, path, ".animator");
+			pendingFocusWindow = "AnimatorEditor";
 		}
-		else if (path.size() >= 10 && path.substr(path.size() - 10) == ".cinematic")
+		else if (endsWith(".cinematic"))
 		{
 			showPanel.animationEditor = true;
 			panelAnimation->openFile(path);
+			pendingFocusWindow = "CinematicEditor";
 		}
-		else if (path.size() >= 9 && path.substr(path.size() - 9) == ".particle")
+		else if (endsWith(".particle"))
 		{
 			showPanel.particleEditor = true;
 			panelParticle->openFile(path);
 			manager->setEditorMode(Manager::EditorMode::ParticlePreview, path, ".particle");
+			pendingFocusWindow = "Particle Editor";
+		}
+		else if (endsWith(".ui"))
+		{
+			showPanel.guiEditor = true;
+			panelGui->openFile(path);
+			pendingFocusWindow = "IngameUI";
+		}
+		else if (endsWith(".world"))
+		{
+			// Load the world into the viewport, then show and focus the World panel.
+			manager->loadWorld(path);
+			showPanel.world = true;
+			pendingFocusWindow = "World";
+		}
+		else
+		{
+			// No dedicated editor for this type — the Inspector previews it.
+			showPanel.inspector = true;
+			pendingFocusWindow = "Inspector";
 		}
 	};
 
@@ -695,6 +737,8 @@ int main()
 						panelAnimation->saveCurrent();
 					else if (panelParticle->focused)
 						panelParticle->saveCurrent();
+					else if (panelGui->focused)
+						panelGui->saveCurrent();
 					else if (manager->projectOpened)
 						manager->saveWorld();
 				}
@@ -1090,17 +1134,37 @@ int main()
 
 		manager->shaderPreview.active = showPanel.shaderEditor;
 
+		// Bring a panel opened from the project panel (see onFileDoubleClicked)
+		// to the front. SetNextWindowFocus targets the very next Begin(), so it
+		// must be called immediately before the owning panel's draw — and only
+		// when that panel is actually visible, or it would focus the wrong
+		// window. `pendingFocusWindow` is cleared once consumed, so panels drawn
+		// earlier in the frame are focused on the following frame.
+		auto applyPendingFocus = [&](const char *windowId, bool visible)
+		{
+			if (visible && !pendingFocusWindow.empty() && pendingFocusWindow == windowId)
+			{
+				ImGui::SetNextWindowFocus();
+				pendingFocusWindow.clear();
+			}
+		};
+
 		// The World panel stays visible even while the prefab editor is open —
 		// the two now render to separate targets.
 		bool worldVisible = showPanel.world;
+		applyPendingFocus("World", worldVisible);
 		panelWorld->draw(worldVisible, renderer, cameraEditor);
+		applyPendingFocus("Inspector", showPanel.inspector);
 		panelInspector->draw(showPanel.inspector);
 		panelHierarchy->draw(showPanel.hierarchy);
 		panelProject->draw(showPanel.project);
 		panelConsole->draw(showPanel.console);
+		applyPendingFocus("Shader", showPanel.shaderEditor);
 		panelShaderGraph->draw(showPanel.shaderEditor);
+		applyPendingFocus("Logic Graph", showPanel.scriptEditor);
 		panelLogicGraph->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
+		applyPendingFocus("Prefab", showPanel.prefab);
 		panelPrefab->draw(showPanel.prefab);
 		// Consume pending Cinematic Editor open request from inspector
 		if (manager->pendingOpenAnimationEditor)
@@ -1109,9 +1173,14 @@ int main()
 			manager->pendingOpenAnimationEditor = false;
 		}
 
+		applyPendingFocus("AnimatorEditor", showPanel.animatorEditor);
 		panelAnimator->draw(showPanel.animatorEditor);
+		applyPendingFocus("CinematicEditor", showPanel.animationEditor);
 		panelAnimation->draw(showPanel.animationEditor);
+		applyPendingFocus("Particle Editor", showPanel.particleEditor);
 		panelParticle->draw(showPanel.particleEditor);
+		applyPendingFocus("IngameUI", showPanel.guiEditor);
+		panelGui->draw(showPanel.guiEditor);
 
 		// Track which panel was last focused to drive the hierarchy panel.
 		// When the world panel is focused, the hierarchy shows the game world's
@@ -1148,6 +1217,8 @@ int main()
 				manager->lastFocusedPanel = Manager::FocusedPanel::Shader;
 			else if (panelAnimation->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Animation;
+			else if (panelGui->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Gui;
 		}
 
 		// If there's a need to import assets
@@ -1177,6 +1248,7 @@ int main()
 	// Clean up
 	delete panelAnimation;
 	delete panelParticle;
+	delete panelGui;
 	delete panelAnimator;
 	delete panelTerrain;
 	delete splashScreen;

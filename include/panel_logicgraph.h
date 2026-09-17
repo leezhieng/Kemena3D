@@ -81,6 +81,18 @@ private:
     /** @brief Compiles the graph and writes the generated .as. */
     void regenerateScript();
 
+    /**
+     * @brief Reports a save/load status message to the Console panel.
+     *
+     * Status output intentionally goes to the console instead of the toolbar so
+     * the Logic Graph header stays limited to its file name. When no console
+     * panel exists (headless / early start-up) the message is kept in
+     * @c statusLine as a fallback.
+     * @param level Severity used for the console entry's text colour.
+     * @param msg   Message text.
+     */
+    void logStatus(LogLevel level, const std::string &msg);
+
     // Canvas <-> screen coordinate mapping (pan only; zoom is fixed at 1:1).
 
     /**
@@ -99,7 +111,7 @@ private:
      */
     ImVec2 screenToCanvas(ImVec2 screenPos, ImVec2 origin) const;
 
-    /** @brief Draws the top toolbar (New/Open/Save buttons and status line). */
+    /** @brief Draws the top toolbar (New/Open/Save/Save As, centered file name). */
     void drawToolbar();
 
     /** @brief Draws the side panel listing the graph's variables. */
@@ -206,7 +218,7 @@ private:
     bool            hasClipboard  = false;
     kScriptGraphNode clipboardNode;
 
-    std::string statusLine; ///< Last save/compile result shown in the toolbar.
+    std::string statusLine; ///< Last status message (fallback when no console exists).
 
     ///< Throttles re-reading project.json so the input-action picker stays in
     ///< sync with Project Settings without opening the file every frame.

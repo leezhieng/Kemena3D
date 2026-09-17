@@ -1142,6 +1142,9 @@ void Manager::clearWorld(bool forced)
     {
         terrainManager->clear();
     }
+
+    // Drop stale Ingame UI (.ui) object links (their objects are gone).
+    clearObjectUiAssets();
 }
 
 bool Manager::newWorld()
@@ -1296,6 +1299,8 @@ kString Manager::checkAssetType(const fs::path &p)
         return "animation";
     else if (ext == ".cinematic")
         return "animation";
+    else if (ext == ".ui")
+        return "ui";
 
     return "unknown"; // Unknown
 }
@@ -1847,6 +1852,45 @@ std::vector<TransformState> Manager::captureSelectedTransforms()
     return states;
 }
 
+// ---------------------------------------------------------------------------
+// Ingame UI (.ui) object registry
+//
+// The engine's kObject has no generic metadata slot, so the mapping from a
+// scene object to the .ui asset it displays lives here (not on the object).
+// It is round-tripped through the world file as an extra "ui" key per object.
+// ---------------------------------------------------------------------------
+static std::unordered_map<kString, kString> g_objectUiAssets; // object uuid -> .ui asset uuid
+
+// Injects the "ui" key into every serialized object node that has a registered
+// .ui reference, so the link survives save/load, duplication and undo snapshots.
+//
+// NOTE: the walk must visit *every* nested value, not just a node's "children"
+// array — a serialized world stores objects under scenes[].objects[], which is
+// an ordinary keyed array, so descending only through "children" would miss them
+// and the .ui link would be lost on save/reload.
+static void injectUiRefsIntoJson(nlohmann::json &node)
+{
+    if (node.is_array())
+    {
+        for (auto &child : node)
+            injectUiRefsIntoJson(child);
+        return;
+    }
+    if (!node.is_object())
+        return;
+
+    if (node.contains("uuid") && node["uuid"].is_string())
+    {
+        kString uuid = node["uuid"].get<std::string>();
+        auto it = g_objectUiAssets.find(uuid);
+        if (it != g_objectUiAssets.end() && !it->second.empty())
+            node["ui"] = it->second;
+    }
+
+    for (auto it = node.begin(); it != node.end(); ++it)
+        injectUiRefsIntoJson(it.value());
+}
+
 // Forward decls — defined further down in this file but needed by
 // duplicateSelectedObjects below.
 static kObject *loadObjectFromJson(const nlohmann::json &obj, kScene *scene, kWorld *world,
@@ -1906,6 +1950,7 @@ void Manager::duplicateSelectedObjects()
 
         nlohmann::json j = src->serialize();
         regenerateUuidsRecursive(j);
+        injectUiRefsIntoJson(j); // carry the .ui link onto the duplicate
 
         kObject *clone = loadObjectFromJson(j, s, w, am,
                                             projectPath, editorCamera, nullptr);
@@ -4337,6 +4382,97 @@ void Manager::createNewParticle()
     selectProjectAssetByPath(filePath);
 }
 
+void Manager::createNewGui()
+{
+    if (!projectOpened)
+        return;
+
+    fs::path dir = getCurrentDirPath();
+    kString baseName = "New Ingame UI";
+    fs::path filePath = dir / (baseName + ".ui");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".ui");
+
+    // Minimal .ui document: one full-canvas panel with a centred title label.
+    // Matches the schema written by PanelGui (see GuiLayout::toJson).
+    const int canvasW = 1920;
+    const int canvasH = 1080;
+
+    nlohmann::json panel;
+    panel["id"] = 1;
+    panel["parentId"] = -1;
+    panel["type"] = "Panel";
+    panel["name"] = "Root Panel";
+    panel["x"] = 0.0f; panel["y"] = 0.0f;
+    panel["width"] = (float)canvasW; panel["height"] = (float)canvasH;
+    panel["anchor"] = 0;
+    panel["rotation"] = 0.0f; panel["scale"] = 1.0f;
+    panel["visible"] = true; panel["interactable"] = true;
+    panel["color"] = nlohmann::json::array({ 0.0f, 0.0f, 0.0f, 0.0f });
+    panel["textColor"] = nlohmann::json::array({ 1.0f, 1.0f, 1.0f, 1.0f });
+    panel["borderColor"] = nlohmann::json::array({ 0.35f, 0.38f, 0.42f, 1.0f });
+    panel["borderWidth"] = 0.0f; panel["cornerRadius"] = 0.0f;
+    panel["fillBackground"] = true; panel["showBorder"] = false;
+    panel["sliceLeft"] = 8.0f; panel["sliceRight"] = 8.0f;
+    panel["sliceTop"] = 8.0f; panel["sliceBottom"] = 8.0f;
+    panel["showCorners"] = true;
+    panel["text"] = "Text"; panel["fontSize"] = 16.0f;
+    panel["textAlign"] = 1; panel["wordWrap"] = false;
+    panel["textureUuid"] = ""; panel["imageMode"] = 0; panel["fillAmount"] = 1.0f;
+    panel["scrollDirection"] = 0; panel["showScrollbar"] = true; panel["scrollPosition"] = 0.0f;
+    panel["minValue"] = 0.0f; panel["maxValue"] = 1.0f; panel["value"] = 0.5f;
+    panel["checked"] = true; panel["vertical"] = false;
+
+    nlohmann::json title;
+    title["id"] = 2;
+    title["parentId"] = 1;
+    title["type"] = "Text";
+    title["name"] = "Title";
+    title["x"] = 0.0f; title["y"] = 40.0f;
+    title["width"] = (float)canvasW; title["height"] = 64.0f;
+    title["anchor"] = 1; // Top
+    title["rotation"] = 0.0f; title["scale"] = 1.0f;
+    title["visible"] = true; title["interactable"] = true;
+    title["color"] = nlohmann::json::array({ 0.2f, 0.22f, 0.26f, 1.0f });
+    title["textColor"] = nlohmann::json::array({ 1.0f, 1.0f, 1.0f, 1.0f });
+    title["borderColor"] = nlohmann::json::array({ 0.35f, 0.38f, 0.42f, 1.0f });
+    title["borderWidth"] = 0.0f; title["cornerRadius"] = 0.0f;
+    title["fillBackground"] = false; title["showBorder"] = false;
+    title["sliceLeft"] = 8.0f; title["sliceRight"] = 8.0f;
+    title["sliceTop"] = 8.0f; title["sliceBottom"] = 8.0f;
+    title["showCorners"] = true;
+    title["text"] = "New Ingame UI"; title["fontSize"] = 40.0f;
+    title["textAlign"] = 1; title["wordWrap"] = false;
+    title["textureUuid"] = ""; title["imageMode"] = 0; title["fillAmount"] = 1.0f;
+    title["scrollDirection"] = 0; title["showScrollbar"] = true; title["scrollPosition"] = 0.0f;
+    title["minValue"] = 0.0f; title["maxValue"] = 1.0f; title["value"] = 0.5f;
+    title["checked"] = true; title["vertical"] = false;
+
+    nlohmann::json j;
+    j["uuid"] = generateUuid();
+    j["name"] = filePath.stem().string();
+    j["version"] = 1;
+    j["canvasWidth"] = canvasW;
+    j["canvasHeight"] = canvasH;
+    j["canvasColor"] = nlohmann::json::array({ 0.10f, 0.11f, 0.13f, 1.0f });
+    j["showCanvasGrid"] = true;
+    j["nextId"] = 3;
+    j["widgets"] = nlohmann::json::array({ panel, title });
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create UI file: " << filePath << "\n";
+        return;
+    }
+    f << j.dump(4);
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
 void Manager::createNewAnimationFromMesh(const kString &meshUuid, const fs::path &meshPath)
 {
     if (!projectOpened)
@@ -4816,6 +4952,9 @@ void Manager::saveWorld()
     // standalone runtime can restore same-layer-only collision.
     world->setPhysicsLayers(layerSettings.layers);
     json data = world->serialize(1); // skip editor scene at index 0
+
+    // Stamp the editor-side Ingame UI (.ui) object links onto their objects.
+    injectUiRefsIntoJson(data);
 
     // --- Save terrain data alongside the world ---
     // Walk the scene graph to find terrain meshes and save their
@@ -5656,6 +5795,14 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         }
     }
 
+    // Restore the editor-side Ingame UI (.ui) link carried by this object.
+    if (result && obj.contains("ui") && obj["ui"].is_string())
+    {
+        kString uiUuid = obj["ui"].get<std::string>();
+        if (!uiUuid.empty())
+            g_objectUiAssets[result->getUuid()] = uiUuid;
+    }
+
     return result;
 }
 
@@ -5674,6 +5821,9 @@ void Manager::loadWorld(const kString &path)
     // Old baked nav meshes are keyed by now-stale object UUIDs — drop them.
     clearAllNavMeshes();
     stopAnimators();
+
+    // Rebuilt from the world file below; drop stale Ingame UI (.ui) links.
+    clearObjectUiAssets();
 
     json data;
     try
@@ -5924,7 +6074,7 @@ void Manager::saveOpenEditorFiles(const fs::path &workspacePath)
 
     // Collect the file loaded in each graph editor panel, but only when that
     // panel is currently visible (matching the user's "panel is opened" rule).
-    std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile;
+    std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile, guiFile;
     if (showPanel.scriptEditor && panelLogicGraph)
         logicGraphFile = panelLogicGraph->getFilePath();
     if (showPanel.animatorEditor && panelAnimator)
@@ -5933,9 +6083,11 @@ void Manager::saveOpenEditorFiles(const fs::path &workspacePath)
         shaderGraphFile = panelShaderGraph->getFilePath();
     if (showPanel.animationEditor && panelAnimation)
         animationFile = panelAnimation->getFilePath();
+    if (showPanel.guiEditor && panelGui)
+        guiFile = panelGui->getFilePath();
 
     if (logicGraphFile.empty() && animatorFile.empty() &&
-        shaderGraphFile.empty() && animationFile.empty())
+        shaderGraphFile.empty() && animationFile.empty() && guiFile.empty())
         return;
 
     // Store paths relative to the project so the workspace stays portable.
@@ -5960,6 +6112,7 @@ void Manager::saveOpenEditorFiles(const fs::path &workspacePath)
     if (!animatorFile.empty())    f << "AnimatorFile="    << relPath(animatorFile)    << "\n";
     if (!shaderGraphFile.empty()) f << "ShaderGraphFile=" << relPath(shaderGraphFile) << "\n";
     if (!animationFile.empty())   f << "CinematicFile="   << relPath(animationFile)   << "\n";
+    if (!guiFile.empty())         f << "GuiFile="         << relPath(guiFile)         << "\n";
     f << "\n";
     f.close();
 }
@@ -5973,7 +6126,7 @@ void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
     if (!f.is_open())
         return;
 
-    std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile;
+    std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile, guiFile;
     bool inOpenFiles = false;
     std::string line;
     while (std::getline(f, line))
@@ -6005,6 +6158,7 @@ void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
         else if (key == "AnimatorFile")    animatorFile    = val;
         else if (key == "ShaderGraphFile") shaderGraphFile = val;
         else if (key == "CinematicFile")   animationFile   = val;
+        else if (key == "GuiFile")         guiFile         = val;
     }
     f.close();
 
@@ -6045,7 +6199,17 @@ void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
             if (fs::exists(p))
                 panelProject->onFileDoubleClicked(p.string());
         }
+        if (!guiFile.empty())
+        {
+            fs::path p = resolvePath(guiFile);
+            if (fs::exists(p))
+                panelProject->onFileDoubleClicked(p.string());
+        }
     }
+
+    // Restoring the workspace re-opens editor files but must not steal focus
+    // from the default layout, so drop any focus request the open calls queued.
+    pendingFocusWindow.clear();
 }
 
 void Manager::loadDefaultWorldInto(kScene *target)
@@ -6519,6 +6683,11 @@ void Manager::stepPhysics(float dt)
     for (kObject *obj : characterBodies)
         if (obj->getCharacterController())
             obj->syncFromCharacter();
+
+    // Fire OnCollision*/OnTrigger* events captured during the step to the
+    // world's running script instances (kWorld::dispatchPhysicsContactEvents).
+    if (world)
+        world->dispatchPhysicsContactEvents(physicsManager, physicsBodies, characterBodies);
 }
 
 // ---------------------------------------------------------------------------
@@ -6906,8 +7075,101 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
         return obj;
     }
 
+    else if (info.type == "ui")
+    {
+        // Ingame UI: a plain scene object that displays the referenced .ui
+        // layout in the Game panel while the object is active. The asset link
+        // is kept in the editor-side registry (see g_objectUiAssets) and is
+        // written to the world file as an extra "ui" key on the object.
+        kObject *obj = new kObject();
+        obj->setName(fs::path(info.path).stem().string());
+        scene->addObject(obj);
+        obj->setPosition(positionHint);
+        setObjectUiAsset(obj->getUuid(), assetUuid);
+
+        // Parse (and cache) the layout now so invalid files are flagged early
+        // and the Game panel picks it up on the very next frame.
+        getGuiLayoutForAsset(assetUuid);
+
+        if (panelHierarchy)
+            panelHierarchy->refreshList();
+        selectedObject = obj;
+        selectObject(obj->getUuid(), true);
+        projectSaved = false;
+        refreshWindowTitle();
+        pushInstantiateCommand(this, obj);
+        return obj;
+    }
+
     // Unknown / unsupported asset type — silently no-op.
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Ingame UI (.ui) object registry accessors
+// ---------------------------------------------------------------------------
+
+const std::unordered_map<kString, kString> &Manager::getObjectUiAssets() const
+{
+    return g_objectUiAssets;
+}
+
+void Manager::setObjectUiAsset(const kString &objectUuid, const kString &uiAssetUuid)
+{
+    if (objectUuid.empty())
+        return;
+    if (uiAssetUuid.empty())
+        g_objectUiAssets.erase(objectUuid);
+    else
+        g_objectUiAssets[objectUuid] = uiAssetUuid;
+}
+
+kString Manager::getObjectUiAsset(const kString &objectUuid) const
+{
+    auto it = g_objectUiAssets.find(objectUuid);
+    return (it == g_objectUiAssets.end()) ? kString("") : it->second;
+}
+
+void Manager::clearObjectUiAssets()
+{
+    g_objectUiAssets.clear();
+    guiLayoutCache.clear();
+    guiLayoutCacheMtime.clear();
+}
+
+std::shared_ptr<GuiLayout> Manager::getGuiLayoutForAsset(const kString &uiAssetUuid)
+{
+    if (uiAssetUuid.empty())
+        return nullptr;
+
+    fs::path path = findAssetPathByUuid(uiAssetUuid);
+    if (path.empty() || !fs::exists(path))
+    {
+        guiLayoutCache.erase(uiAssetUuid);
+        guiLayoutCacheMtime.erase(uiAssetUuid);
+        return nullptr;
+    }
+
+    std::error_code ec;
+    fs::file_time_type mtime = fs::last_write_time(path, ec);
+
+    // Serve the cached parse while the file is unchanged.
+    auto cached = guiLayoutCache.find(uiAssetUuid);
+    if (cached != guiLayoutCache.end() && !ec)
+    {
+        auto mt = guiLayoutCacheMtime.find(uiAssetUuid);
+        if (mt != guiLayoutCacheMtime.end() && mt->second == mtime)
+            return cached->second;
+    }
+
+    auto layout = std::make_shared<GuiLayout>();
+    if (!loadGuiLayoutFromFile(path.string(), *layout))
+        return nullptr;
+
+    guiLayoutCache[uiAssetUuid] = layout;
+    if (!ec)
+        guiLayoutCacheMtime[uiAssetUuid] = mtime;
+    return layout;
 }
 
 // Returns the sibling immediately following `obj` in its parent's children

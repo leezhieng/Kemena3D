@@ -632,7 +632,10 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 
 	if (gui->isItemHovered() && gui->isMouseDoubleClicked(ImGuiMouseButton_Left))
 	{
-		std::cout << "Double-clicked: " << node.uuid.c_str() << " ,Level:" << level << std::endl;
+		// Files open in their owning editor panel (World, Animator, Logic
+		// Graph, ...). Folders keep ImGui's default tree-node toggle.
+		if (node.type == 1 && !node.fullPath.empty() && onFileDoubleClicked)
+			onFileDoubleClicked(node.fullPath.string());
 	}
 
 	// Selection. A plain click on an already-selected row is deferred to release
@@ -806,7 +809,7 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 				icon = iconShaderScript;
 			else if (ext == ".shader")
 				icon = iconShader;
-			else if (ext == ".gui")
+			else if (ext == ".ui")
 				icon = iconGui;
 			else if (ext == ".animator")
 				icon = iconLogic;    // Graph-editor visual, use logic icon
@@ -948,7 +951,7 @@ void PanelProject::refreshThumbnailList()
 								icon = iconShaderScript;
 							else if (ext == ".shader")
 								icon = iconShader;
-							else if (ext == ".gui")
+							else if (ext == ".ui")
 								icon = iconGui;
 							else if (ext == ".animator")
 								icon = iconLogic;
@@ -1142,6 +1145,8 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					{ manager->createNewAnimator();   needRefreshList = true; }
 				if (ImGui::MenuItem("Cinematic Clip"))
 					{ manager->createNewAnimation();  needRefreshList = true; }
+				if (ImGui::MenuItem("UI"))
+					{ manager->createNewGui();        needRefreshList = true; }
 				ImGui::EndMenu();
 			}
 			ImGui::Separator();

@@ -24,6 +24,23 @@ enum class GamePlayState
 };
 
 /**
+ * @brief Viewport aspect-ratio presets for the game view.
+ *
+ * Non-free presets letterbox the rendered image inside the panel so the game
+ * sees the chosen aspect ratio regardless of how the panel is docked/resized.
+ */
+enum class GameAspectRatio
+{
+    Free = 0,   ///< Fill the whole panel (free aspect).
+    Ratio3_2,   ///< 3:2 letterboxed.
+    Ratio4_3,   ///< 4:3 letterboxed.
+    Ratio5_4,   ///< 5:4 letterboxed.
+    Ratio16_9,  ///< 16:9 letterboxed.
+    Ratio16_10, ///< 16:10 letterboxed.
+    Custom      ///< User-defined width:height ratio.
+};
+
+/**
  * @brief Snapshot of a single object's full state.
  *
  * Captured for every scene node when play begins so the original editor scene
@@ -93,6 +110,9 @@ public:
 
 private:
     GamePlayState playState = GamePlayState::Stopped;        ///< Current play state.
+    GameAspectRatio aspectRatio = GameAspectRatio::Free;     ///< Viewport aspect-ratio preset.
+    float customAspectW = 16.0f;                             ///< Custom preset width part.
+    float customAspectH = 9.0f;                              ///< Custom preset height part.
     std::vector<ObjectTransformSnapshot> sceneSnapshot;      ///< Saved transforms for restore on stop.
     bool projectSavedBeforePlay = true;                      ///< projectSaved value captured when Play was pressed.
 

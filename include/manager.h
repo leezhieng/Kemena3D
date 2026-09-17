@@ -44,6 +44,7 @@
 #include "panel_animator.h"
 #include "panel_animation.h"
 #include "panel_particle.h"
+#include "panel_gui.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -123,6 +124,11 @@ struct ObjectInfo
 // included from panel_animator.h without exposing the mutual-include cycle.
 struct AnimatorGraph;
 
+// Defined in panel_gui.h. Kept incomplete here for the same reason: manager.h
+// is included *from* panel_gui.h (before GuiLayout is defined), so the UI
+// layout cache can only refer to it through the forward declaration.
+struct GuiLayout;
+
 /**
  * @brief Runtime instance of an .animator controller attached to a scene object.
  *
@@ -157,6 +163,7 @@ class PanelTerrain;
 class PanelAnimator;
 class PanelAnimation;
 class PanelParticle;
+class PanelGui;
 
 /**
  * @brief Central editor controller for a Kemena3D Studio project.
@@ -447,6 +454,7 @@ public:
     void createNewAnimator();
     void createNewAnimation();
     void createNewParticle();
+    void createNewGui();
     void createNewAnimationFromMesh(const kString &meshUuid, const fs::path &meshPath);
     void deleteAssets(const std::vector<fs::path> &paths);
     void reimportAsset(const kString &uuid);
@@ -592,6 +600,39 @@ public:
 
     std::vector<RuntimeAnimator> runtimeAnimators; ///< Active animator controllers for the current play session.
 
+    // --- Ingame UI (.ui) objects ---------------------------------------------
+    /**
+     * @brief Returns the scene-object UUID -> .ui asset UUID registry.
+     *
+     * Populated when a .ui asset is dropped into the Hierarchy or World panel
+     * (see instantiateAssetFromUuid) and restored when a world file is loaded.
+     * The Game panel renders the referenced layout for every *active* object
+     * that has an entry here.
+     */
+    const std::unordered_map<kString, kString>& getObjectUiAssets() const;
+
+    /** @brief Records (or clears, with an empty UUID) the .ui asset shown by an object. */
+    void setObjectUiAsset(const kString& objectUuid, const kString& uiAssetUuid);
+
+    /** @brief Returns the .ui asset UUID shown by a scene object ("" when none). */
+    kString getObjectUiAsset(const kString& objectUuid) const;
+
+    /** @brief Clears the whole .ui object registry (called on world load/reset). */
+    void clearObjectUiAssets();
+
+    /**
+     * @brief Loads (and caches) the parsed .ui layout for a .ui asset UUID.
+     *
+     * The cache re-reads the file when its modification time changes, so edits
+     * made in the Ingame UI editor show up live in the Game panel.
+     *
+     * @return Shared layout, or nullptr when the asset cannot be resolved/parsed.
+     */
+    std::shared_ptr<GuiLayout> getGuiLayoutForAsset(const kString& uiAssetUuid);
+
+    std::unordered_map<kString, std::shared_ptr<GuiLayout>> guiLayoutCache; ///< Parsed .ui layouts, keyed by asset UUID.
+    std::unordered_map<kString, fs::file_time_type> guiLayoutCacheMtime;     ///< File mtime per cached .ui asset (live reload).
+
     // --- Drag-and-drop helpers ----------------------------------------------
     kObject *instantiateAssetFromUuid(const kString &assetUuid, const kVec3 &positionHint = kVec3(0));
     fs::path findAssetPathByUuid(const kString &assetUuid);
@@ -700,6 +741,7 @@ public:
         Particle,    ///< Particle system editor.
         Shader,      ///< Shader node-graph editor.
         Animation,   ///< Cinematic / animation timeline editor.
+        Gui,         ///< In-game GUI (PanelGui) editor.
     };
 
     // Editor mode — controls what the World panel renders
@@ -735,6 +777,7 @@ public:
     PanelAnimator *panelAnimator = nullptr;
     PanelAnimation *panelAnimation = nullptr;
     PanelParticle  *panelParticle  = nullptr;
+    PanelGui       *panelGui       = nullptr;
 
     kTerrainManager *terrainManager = nullptr;
     kCamera *editorCamera = nullptr;
