@@ -26,7 +26,7 @@
 
 using namespace kemena;
 
-const kString windowTitle = "Kemena3D Studio";
+const kString windowTitle = "Kemena3D";
 
 // Project config
 kString projectName = "New Game";
@@ -36,13 +36,13 @@ kString projectVersion = "0.0.1";
 int main()
 {
 	// Install the crash reporter before anything else so an early fault still
-	// produces kemena3d_crash.log (the Release GUI build has no console).
+	// produces Kemena3D_crash.log (the Release GUI build has no console).
 	installCrashHandler();
 
 	{
 		std::ofstream f("D:\\Projects\\Kemena3D\\animator_debug.log", std::ios::app);
 		if (f.is_open())
-			f << "[startup] Kemena3DStudio launched" << std::endl;
+			f << "[startup] Kemena3D launched" << std::endl;
 	}
 
 	// Create window and renderers.

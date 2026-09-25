@@ -30,7 +30,7 @@ public:
     /**
      * @brief Constructs the editor and starts with an empty graph.
      * @param setGui     GUI manager used for ImGui rendering context.
-     * @param setManager Studio manager (project paths, script build pipeline).
+     * @param setManager Kemena3D manager (project paths, script build pipeline).
      */
     PanelLogicGraph(kGuiManager *setGui, Manager *setManager);
 

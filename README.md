@@ -1,8 +1,8 @@
-# Kemena3D Studio
+# Kemena3D
 
-Kemena3D Studio is an open-source, cross-platform 3D game engine built with C++, powered by the underlying Kemena3D SDK rendering engine.
+Kemena3D is an open-source, cross-platform 3D game engine built with C++, powered by the underlying Kemena3D SDK rendering engine.
 
-If you're looking for the core 3D rendering engine - Kemena3D SDK, please visit the following page instead: https://github.com/leezhieng/kemena3d
+If you're looking for the core 3D rendering engine - Kemena3D SDK, please visit the following page instead: https://github.com/leezhieng/Kemena3D-SDK
 
 ## Website
 
@@ -26,12 +26,12 @@ graph. Attach a script to any object in the Inspector; pressing **Play**
 compiles scripts to bytecode (under the project's `Library/Scripts` folder) and
 runs their lifecycle functions. Use **Run → Build Scripts** to compile manually.
 
-See the SDK's [Scripting guide](https://github.com/leezhieng/kemena3d/blob/main/Documentation/Scripting.md)
+See the SDK's [Scripting guide](https://github.com/leezhieng/Kemena3D-SDK/blob/main/Documentation/Scripting.md)
 for the host API and node-graph reference.
 
 ## Game Export & Asset Packaging
 
-Kemena3D Studio can export your project as a standalone distributable game.
+Kemena3D can export your project as a standalone distributable game.
 The export process:
 
 1. Compiles all scripts to bytecode

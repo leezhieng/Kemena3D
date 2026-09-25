@@ -115,7 +115,7 @@ namespace
 
     LONG WINAPI crashFilter(EXCEPTION_POINTERS *ep)
     {
-        const std::string path = exeDir() + "\\kemena3d_crash.log";
+        const std::string path = exeDir() + "\\Kemena3D_crash.log";
 
         if (std::FILE *f = std::fopen(path.c_str(), "w"))
         {
@@ -125,7 +125,7 @@ namespace
 
             const DWORD code = ep->ExceptionRecord->ExceptionCode;
 
-            std::fprintf(f, "Kemena3D Studio - crash report\n");
+            std::fprintf(f, "Kemena3D - crash report\n");
             std::fprintf(f, "==============================\n");
             std::fprintf(f, "Time:              %s\n", ts);
             std::fprintf(f, "Exception code:    0x%08lx\n", (unsigned long)code);
@@ -149,11 +149,11 @@ namespace
             std::fclose(f);
 
             const std::string msg =
-                "Kemena3D Studio has crashed.\n\n"
+                "Kemena3D has crashed.\n\n"
                 "A crash report was written to:\n" + path +
                 "\n\nPlease share that file to help diagnose the problem.";
             MessageBoxA(nullptr, msg.c_str(),
-                        "Kemena3D Studio - Crash", MB_OK | MB_ICONERROR);
+                        "Kemena3D - Crash", MB_OK | MB_ICONERROR);
         }
 
         return EXCEPTION_EXECUTE_HANDLER; // let the process terminate

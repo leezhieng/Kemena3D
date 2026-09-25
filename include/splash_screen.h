@@ -7,7 +7,7 @@
 using namespace kemena;
 
 /**
- * @brief Modal start-up splash window for the Kemena3D Studio editor.
+ * @brief Modal start-up splash window for the Kemena3D editor.
  *
  * Renders a centered ImGui overlay that dims the rest of the editor and
  * presents the branding splash image, logo, "New Project"/"Open Project"

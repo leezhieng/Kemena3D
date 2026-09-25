@@ -19,7 +19,7 @@ class Manager;
 /**
  * @brief Editor "World" viewport panel.
  *
- * Hosts the main 3D scene viewport in the studio editor. Draws the rendered
+ * Hosts the main 3D scene viewport in the Kemena3D editor. Draws the rendered
  * scene, the ImGuizmo transform gizmo (with undo support), a pivot-mode and
  * render-mode toolbar, and an offscreen camera-preview overlay when a kCamera
  * node is selected.

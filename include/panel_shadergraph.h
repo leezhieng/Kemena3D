@@ -25,7 +25,7 @@ public:
     /**
      * @brief Construct the shader editor panel.
      * @param setGui GUI/ImGui manager used for drawing.
-     * @param setManager Studio manager providing project state and paths.
+     * @param setManager Kemena3D manager providing project state and paths.
      */
     PanelShaderGraph(kGuiManager* setGui, Manager* setManager);
 
@@ -58,7 +58,7 @@ private:
     // Core state
     // -----------------------------------------------------------------------
     kGuiManager* gui     = nullptr;        ///< GUI/ImGui manager used for drawing.
-    Manager*     manager = nullptr;        ///< Studio manager providing project state and paths.
+    Manager*     manager = nullptr;        ///< Kemena3D manager providing project state and paths.
 
     kShaderGraph graph;                    ///< The shader node graph currently being edited.
     std::string  filePath;                 ///< Current .shader file path (empty = unsaved).

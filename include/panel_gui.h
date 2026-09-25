@@ -97,6 +97,31 @@ struct GuiTextureInfo
  */
 using GuiTextureResolver = std::function<GuiTextureInfo(const std::string& assetUuid)>;
 
+/**
+ * @brief 2D affine transform used to rotate/scale a widget's rendered subtree.
+ *
+ * Stored row-major as `x' = m[0]*x + m[1]*y + m[2]` and
+ * `y' = m[3]*x + m[4]*y + m[5]`, which keeps composition and inversion trivial.
+ * A widget's own transform is applied about its rectangle centre so rotation and
+ * scale never move the widget's authored anchor position.
+ */
+struct GuiAffine
+{
+    float m[6] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
+
+    /** @brief Build a scale-then-rotate transform about @p pivot. */
+    static GuiAffine fromRotScale(ImVec2 pivot, float scale, float rotationDeg);
+
+    /** @brief Compose transforms; the result applies @p rhs first, then `*this`. */
+    GuiAffine compose(const GuiAffine& rhs) const;
+
+    /** @brief Apply the transform to a point. */
+    ImVec2 transform(ImVec2 p) const;
+
+    /** @brief Inverse transform (identity when the matrix is singular). */
+    GuiAffine inverse() const;
+};
+
 /** @brief Which axes a scroll view scrolls along. */
 enum class GuiScrollDirection { Vertical, Horizontal, Both };
 
@@ -314,13 +339,22 @@ private:
     void drawHierarchySplitter();
     void drawPreview();
 
-    /** @brief Recursively draw a widget (and its children) into the preview. */
+    /**
+     * @brief Recursively draw a widget (and its children) into the preview.
+     * @param accWorld Transform accumulated from the widget's ancestors (applied
+     *                 after this widget's own rotation/scale).
+     */
     void drawWidget(ImDrawList* dl, const GuiWidget& w,
-                    ImVec2 parentRefPos, ImVec2 parentSize);
+                    ImVec2 parentRefPos, ImVec2 parentSize,
+                    const GuiAffine& accWorld = GuiAffine{});
 
-    /** @brief Recursively hit-test widgets, returning the topmost id under @p mouse. */
+    /**
+     * @brief Recursively hit-test widgets, returning the topmost id under @p mouse.
+     * @param accWorld Transform accumulated from the widget's ancestors, used to
+     *                 map the mouse back into the widget's untransformed rect.
+     */
     int hitTestWidgets(const GuiWidget& w, ImVec2 parentRefPos, ImVec2 parentSize,
-                       ImVec2 mouse) const;
+                       ImVec2 mouse, const GuiAffine& accWorld = GuiAffine{}) const;
 
     /** @brief Compute a widget's top-left in reference space, honouring its anchor. */
     ImVec2 widgetRefPos(const GuiWidget& w, ImVec2 parentRefPos, ImVec2 parentSize) const;

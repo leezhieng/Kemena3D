@@ -542,7 +542,7 @@ static void drawProjectSettingsDialog(Manager *manager)
 			ImGui::Separator();
 
 			browseFolder("Runtime Template Folder", ps.templateDir);
-			ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
+			ImGui::TextDisabled("  Folder with the built Kemena3D-Runtime + its libs.");
 
 			ImGui::EndTabItem();
 		}
@@ -1088,7 +1088,7 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			auto sel = pfd::select_folder("Choose runtime template folder").result();
 			if (!sel.empty()) es.templateDir = sel;
 		}
-		ImGui::TextDisabled("  Folder with the built kemena3d-runtime + its libs.");
+		ImGui::TextDisabled("  Folder with the built Kemena3D-Runtime + its libs.");
 
 		if (es.platform == 0)
 			browseFile("Icon (.ico)", es.iconPath, "Icon (*.ico)");
@@ -1177,7 +1177,7 @@ void MainMenu::drawAbout()
 			SDL_OpenURL("https://discord.gg/eNCZAzAntF");
 		ImGui::SameLine(0.0f, GAP);
 		if (ImGui::Button("GitHub", ImVec2(btnW, BTN_H)))
-			SDL_OpenURL("https://github.com/leezhieng/kemena3d");
+			SDL_OpenURL("https://github.com/leezhieng/Kemena3D-SDK");
 
 		ImGui::PopStyleColor(3);
 

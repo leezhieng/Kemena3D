@@ -166,7 +166,7 @@ class PanelParticle;
 class PanelGui;
 
 /**
- * @brief Central editor controller for a Kemena3D Studio project.
+ * @brief Central editor controller for a Kemena3D project.
  *
  * Owns and coordinates the editor's project, world, scene and selection state.
  * Acts as the hub for project lifecycle (new/open/save), asset management and

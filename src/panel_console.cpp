@@ -2,7 +2,7 @@
 
 PanelConsole::PanelConsole(kGuiManager *setGuiManager, Manager *setManager)
 {
-    addLog(LogLevel::Info, "Welcome to Kemena3D Studio. Create or open a project to get started.", inputBuf);
+    addLog(LogLevel::Info, "Welcome to Kemena3D. Create or open a project to get started.", inputBuf);
 
     gui = setGuiManager;
     manager = setManager;

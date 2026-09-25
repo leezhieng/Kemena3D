@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 
 namespace fs = std::filesystem;
@@ -208,12 +209,138 @@ static void computeGuiImageRect(GuiImageFit fit, ImVec2 rectMin, ImVec2 rectMax,
         s = (fit == GuiImageFit::Cover) ? ImMax(sx, sy) : ImMin(sx, sy);
         if (fit == GuiImageFit::ScaleDown)
             s = ImMin(s, 1.0f);
+        }
+    
+        const float dw = texSize.x * s;
+        const float dh = texSize.y * s;
+        outMin = ImVec2(rectMin.x + (rw - dw) * 0.5f, rectMin.y + (rh - dh) * 0.5f);
+        outMax = ImVec2(outMin.x + dw, outMin.y + dh);
     }
 
-    const float dw = texSize.x * s;
-    const float dh = texSize.y * s;
-    outMin = ImVec2(rectMin.x + (rw - dw) * 0.5f, rectMin.y + (rh - dh) * 0.5f);
-    outMax = ImVec2(outMin.x + dw, outMin.y + dh);
+// ===========================================================================
+// Rotation / scale helpers
+//
+// ImDrawList has no transform stack, so a widget's subtree is drawn normally and
+// the vertices it emitted are transformed afterwards. An ancestor's transform is
+// applied by its own (outer) call once the subtree returns, which composes into
+// the expected parent -> child hierarchy.
+// ===========================================================================
+
+GuiAffine GuiAffine::fromRotScale(ImVec2 pivot, float scale, float rotationDeg)
+{
+    const float rad = rotationDeg * (IM_PI / 180.0f);
+    const float c = cosf(rad) * scale;
+    const float s = sinf(rad) * scale;
+
+    GuiAffine a;
+    a.m[0] = c;  a.m[1] = -s;
+    a.m[3] = s;  a.m[4] = c;
+    a.m[2] = pivot.x - c * pivot.x + s * pivot.y;
+    a.m[5] = pivot.y - s * pivot.x - c * pivot.y;
+    return a;
+}
+
+GuiAffine GuiAffine::compose(const GuiAffine& rhs) const
+{
+    GuiAffine r;
+    r.m[0] = m[0] * rhs.m[0] + m[1] * rhs.m[3];
+    r.m[1] = m[0] * rhs.m[1] + m[1] * rhs.m[4];
+    r.m[2] = m[0] * rhs.m[2] + m[1] * rhs.m[5] + m[2];
+    r.m[3] = m[3] * rhs.m[0] + m[4] * rhs.m[3];
+    r.m[4] = m[3] * rhs.m[1] + m[4] * rhs.m[4];
+    r.m[5] = m[3] * rhs.m[2] + m[4] * rhs.m[5] + m[5];
+    return r;
+}
+
+ImVec2 GuiAffine::transform(ImVec2 p) const
+{
+    return ImVec2(m[0] * p.x + m[1] * p.y + m[2],
+                  m[3] * p.x + m[4] * p.y + m[5]);
+}
+
+GuiAffine GuiAffine::inverse() const
+{
+    const float det = m[0] * m[4] - m[1] * m[3];
+    if (det > -1e-9f && det < 1e-9f)
+        return GuiAffine{};
+
+    GuiAffine r;
+    const float inv = 1.0f / det;
+    r.m[0] =  m[4] * inv;
+    r.m[1] = -m[1] * inv;
+    r.m[3] = -m[3] * inv;
+    r.m[4] =  m[0] * inv;
+    r.m[2] = -(r.m[0] * m[2] + r.m[1] * m[5]);
+    r.m[5] = -(r.m[3] * m[2] + r.m[4] * m[5]);
+    return r;
+}
+
+/** @brief True when a widget has a non-identity local rotation/scale. */
+static bool hasGuiTransform(const GuiWidget& w)
+{
+    return w.rotation != 0.0f || w.scale != 1.0f;
+}
+
+/** @brief True when an accumulated transform is not the identity. */
+static bool isIdentityXf(const GuiAffine& xf)
+{
+    return xf.m[0] == 1.0f && xf.m[1] == 0.0f &&
+           xf.m[3] == 0.0f && xf.m[4] == 1.0f;
+}
+
+/** @brief Rotate/scale every vertex in [vtxBegin, vtxEnd) about @p pivot. */
+static void transformDrawVertices(ImDrawList* dl, int vtxBegin, int vtxEnd,
+                                  ImVec2 pivot, float scale, float rotationDeg)
+{
+    if (!dl || vtxEnd <= vtxBegin)
+        return;
+    if (rotationDeg == 0.0f && scale == 1.0f)
+        return;
+
+    const float rad = rotationDeg * (IM_PI / 180.0f);
+    const float c = cosf(rad) * scale;
+    const float s = sinf(rad) * scale;
+
+    ImDrawVert* verts = dl->VtxBuffer.Data;
+    for (int i = vtxBegin; i < vtxEnd; ++i)
+    {
+        const float dx = verts[i].pos.x - pivot.x;
+        const float dy = verts[i].pos.y - pivot.y;
+        verts[i].pos.x = pivot.x + dx * c - dy * s;
+        verts[i].pos.y = pivot.y + dx * s + dy * c;
+    }
+}
+
+/**
+ * @brief Clip rect enclosing a widget rect after its transform.
+ *
+ * Clip rects are stored axis-aligned in the command list and are not affected by
+ * the vertex transform, so a rotated/scaled widget uses the bounding box of its
+ * transformed corners.
+ */
+static void guiClipRect(ImVec2 p0, ImVec2 p1, const GuiAffine& xf,
+                        bool transformed, ImVec2& outMin, ImVec2& outMax)
+{
+    outMin = p0;
+    outMax = p1;
+    if (!transformed)
+        return;
+
+    const ImVec2 corners[4] = {
+        xf.transform(p0),
+        xf.transform(ImVec2(p1.x, p0.y)),
+        xf.transform(p1),
+        xf.transform(ImVec2(p0.x, p1.y))
+    };
+    outMin = corners[0];
+    outMax = corners[0];
+    for (int i = 1; i < 4; ++i)
+    {
+        outMin.x = ImMin(outMin.x, corners[i].x);
+        outMin.y = ImMin(outMin.y, corners[i].y);
+        outMax.x = ImMax(outMax.x, corners[i].x);
+        outMax.y = ImMax(outMax.y, corners[i].y);
+    }
 }
 
 static GuiWidgetType widgetTypeFromDisplayName(const char* name)
@@ -723,20 +850,36 @@ ImVec2 PanelGui::widgetRefPos(const GuiWidget& w, ImVec2 parentRefPos, ImVec2 pa
 // ===========================================================================
 
 void PanelGui::drawWidget(ImDrawList* dl, const GuiWidget& w,
-                          ImVec2 parentRefPos, ImVec2 parentSize)
+                          ImVec2 parentRefPos, ImVec2 parentSize,
+                          const GuiAffine& accWorld)
 {
     if (!w.visible) return;
+
+    // Everything emitted from here until the end of this call belongs to this
+    // widget's subtree, so its own rotation/scale can be baked in afterwards.
+    const int vtxBegin = dl->VtxBuffer.Size;
 
     const float scale = previewScale;
     const ImVec2 refPos = widgetRefPos(w, parentRefPos, parentSize);
     const ImVec2 p0 = refToScreen(refPos);
     const ImVec2 p1 = refToScreen(ImVec2(refPos.x + w.width, refPos.y + w.height));
 
+    // Rotation/scale pivot the widget rectangle about its own centre; the
+    // accumulated transform lets clip rects stay in sync with the geometry.
+    const ImVec2 pivot((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    const bool transformed = hasGuiTransform(w) || !isIdentityXf(accWorld);
+    const GuiAffine ownXf = accWorld.compose(
+        GuiAffine::fromRotScale(pivot, w.scale, w.rotation));
+
     const float cr = w.cornerRadius * scale;
     const float bw = ImMax(1.0f, w.borderWidth * scale);
     const ImU32 bgCol     = colorU32(w.color);
     const ImU32 borderCol = colorU32(w.borderColor);
     const ImU32 textCol   = colorU32(w.textColor);
+    // Images keep their source colours but honour the widget colour's alpha, so
+    // the Image/Button "Color" alpha acts as an opacity control.
+    const ImU32 imageTint = IM_COL32(255, 255, 255,
+                                     (int)(ImClamp(w.color[3], 0.0f, 1.0f) * 255.0f + 0.5f));
 
     const float fontPx = ImMax(1.0f, w.fontSize * scale);
     const float fscale = fontPx / ImGui::GetFontSize();
@@ -783,8 +926,14 @@ void PanelGui::drawWidget(ImDrawList* dl, const GuiWidget& w,
 
         // Cover / None can overflow the widget — crop to its rect.
         const bool clip = (w.imageFit == GuiImageFit::Cover || w.imageFit == GuiImageFit::None);
-        if (clip) dl->PushClipRect(p0, p1, true);
-        dl->AddImage((ImTextureRef)(intptr_t)tex.glId, dmin, dmax);
+        if (clip)
+        {
+            ImVec2 cmin, cmax;
+            guiClipRect(p0, p1, ownXf, transformed, cmin, cmax);
+            dl->PushClipRect(cmin, cmax, true);
+        }
+        dl->AddImage((ImTextureRef)(intptr_t)tex.glId, dmin, dmax,
+                     ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), imageTint);
         if (clip) dl->PopClipRect();
         return true;
     };
@@ -983,7 +1132,12 @@ void PanelGui::drawWidget(ImDrawList* dl, const GuiWidget& w,
 
     // Children (clip inside scroll views so overflow stays contained).
     bool clip = (w.type == GuiWidgetType::ScrollView);
-    if (clip) dl->PushClipRect(p0, p1, true);
+    if (clip)
+    {
+        ImVec2 cmin, cmax;
+        guiClipRect(p0, p1, ownXf, transformed, cmin, cmax);
+        dl->PushClipRect(cmin, cmax, true);
+    }
     for (int cid : w.children)
     {
         if (const GuiWidget* child = layout.findWidget(cid))
@@ -998,7 +1152,7 @@ void PanelGui::drawWidget(ImDrawList* dl, const GuiWidget& w,
                 if (w.scrollDirection != GuiScrollDirection::Vertical)
                     childParentPos.x -= w.scrollPosition * w.width * 0.5f;
             }
-            drawWidget(dl, *child, childParentPos, ImVec2(w.width, w.height));
+            drawWidget(dl, *child, childParentPos, ImVec2(w.width, w.height), ownXf);
         }
     }
     if (clip) dl->PopClipRect();
@@ -1009,10 +1163,15 @@ void PanelGui::drawWidget(ImDrawList* dl, const GuiWidget& w,
         dl->AddRect(ImVec2(p0.x - 2.0f, p0.y - 2.0f), ImVec2(p1.x + 2.0f, p1.y + 2.0f),
                     IM_COL32(255, 170, 40, 255), cr, 0, 2.0f);
     }
+
+    // Bake this widget's rotation/scale into its whole subtree (own geometry and
+    // children). Ancestors do the same once this call returns.
+    if (hasGuiTransform(w))
+        transformDrawVertices(dl, vtxBegin, dl->VtxBuffer.Size, pivot, w.scale, w.rotation);
 }
 
 int PanelGui::hitTestWidgets(const GuiWidget& w, ImVec2 parentRefPos, ImVec2 parentSize,
-                             ImVec2 mouse) const
+                             ImVec2 mouse, const GuiAffine& accWorld) const
 {
     if (!w.visible) return -1;
 
@@ -1020,17 +1179,26 @@ int PanelGui::hitTestWidgets(const GuiWidget& w, ImVec2 parentRefPos, ImVec2 par
     const ImVec2 p0 = refToScreen(refPos);
     const ImVec2 p1 = refToScreen(ImVec2(refPos.x + w.width, refPos.y + w.height));
 
+    // Mirror the draw path: this widget's own rotation/scale is applied about the
+    // rect centre, on top of the transform inherited from its ancestors.
+    const ImVec2 pivot((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    const GuiAffine ownXf = accWorld.compose(
+        GuiAffine::fromRotScale(pivot, w.scale, w.rotation));
+
     // Children are drawn on top of their parent, so test them first (reverse order).
     for (auto it = w.children.rbegin(); it != w.children.rend(); ++it)
     {
         if (const GuiWidget* child = layout.findWidget(*it))
         {
-            int hit = hitTestWidgets(*child, refPos, ImVec2(w.width, w.height), mouse);
+            int hit = hitTestWidgets(*child, refPos, ImVec2(w.width, w.height), mouse, ownXf);
             if (hit >= 0) return hit;
         }
     }
 
-    if (mouse.x >= p0.x && mouse.x <= p1.x && mouse.y >= p0.y && mouse.y <= p1.y)
+    // Map the mouse back into the widget's untransformed rect before testing.
+    const ImVec2 localMouse = ownXf.inverse().transform(mouse);
+    if (localMouse.x >= p0.x && localMouse.x <= p1.x &&
+        localMouse.y >= p0.y && localMouse.y <= p1.y)
         return w.id;
     return -1;
 }
@@ -1787,18 +1955,36 @@ void PanelGui::drawSelectedInspector()
     bool hasImage = (w->type == GuiWidgetType::Image || w->type == GuiWidgetType::Button);
     if (hasImage && ImGui::CollapsingHeader("Image", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        // Texture selection is a button that opens a picker restricted to
-        // project images imported with the "GUI" image type.
-        std::string texLabel = "Select Texture...";
+        // Texture selection: a thumbnail of the assigned image followed by a
+        // button that opens a picker restricted to project images imported with
+        // the "GUI" image type.
+        std::string texName = "Select Texture...";
         if (!w->textureUuid.empty())
         {
             auto itTex = manager->fileMap.find(w->textureUuid);
             if (itTex != manager->fileMap.end())
-                texLabel = "Texture: " + fs::path(itTex->second.path.c_str()).stem().string();
+                texName = fs::path(itTex->second.path.c_str()).stem().string();
             else
-                texLabel = "Texture: " + w->textureUuid.substr(0, 8) + "...";
+                texName = w->textureUuid.substr(0, 8) + "...";
         }
-        if (ImGui::Button(texLabel.c_str(), ImVec2(-FLT_MIN, 0.0f)))
+
+        // Prefer the project thumbnail; fall back to the imported texture itself
+        // so the row still previews what the widget will draw.
+        uint32_t texPreview = 0;
+        if (!w->textureUuid.empty())
+        {
+            texPreview = resolveThumbnail(w->textureUuid);
+            if (texPreview == 0)
+                texPreview = resolveWidgetTexture(w->textureUuid).glId;
+        }
+
+        const float texRowH = ImGui::GetFrameHeight() * 1.5f;
+        if (texPreview != 0)
+        {
+            ImGui::Image((ImTextureRef)(intptr_t)texPreview, ImVec2(texRowH, texRowH));
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(("Texture: " + texName).c_str(), ImVec2(-FLT_MIN, texRowH)))
             ImGui::OpenPopup("##guitexturepick");
         drawTexturePickerPopup(w);
         int mode = (int)w->imageMode;
@@ -1961,13 +2147,12 @@ static ImVec2 anchorFractions(GuiAnchor anchor)
 
 // Recursive runtime widget painter (no interaction, no selection UI).
 //
-// Layout rule — stretch-to-fill positions with undistorted widgets:
-//   * POSITIONS follow the game view's aspect ratio. Anchor fractions resolve
-//     against the parent's on-screen rect, and free offsets scale with the
-//     matching axis (scaleX for x, scaleY for y), so a widget anchored to the
-//     bottom-right really lands in the bottom-right corner of the view.
-//   * SIZES use a single uniform factor (the average of both axes) so every
-//     widget keeps its authored aspect ratio — buttons, labels and images are
+// Layout rule — the reference canvas is letterboxed into the game view by
+// renderGuiLayout, so both axes arrive here with the same uniform factor:
+//   * POSITIONS resolve anchor fractions against the parent's on-screen rect and
+//     scale free offsets with the matching axis, so a widget anchored to the
+//     bottom-right really lands in the bottom-right corner of the canvas.
+//   * SIZES keep their authored aspect ratio — buttons, labels and images are
 //     never squashed or stretched.
 static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, const GuiWidget& w,
                                    ImVec2 parentPxMin, ImVec2 parentPxSize,
@@ -1975,6 +2160,10 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
                                    const GuiTextureResolver& resolveTexture)
 {
     if (!w.visible) return;
+
+    // Vertices emitted below form this widget's subtree and receive its local
+    // rotation/scale once the subtree (children included) is complete.
+    const int vtxBegin = dl->VtxBuffer.Size;
 
     // Uniform size factor: widgets keep their shape at every aspect ratio.
     const float scale = (scaleX + scaleY) * 0.5f;
@@ -1985,12 +2174,19 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
     const ImVec2 size(w.width * scale, w.height * scale);
     const ImVec2 p1(p0.x + size.x, p0.y + size.y);
 
+    const ImVec2 pivot((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+    const bool transformed = hasGuiTransform(w);
+    const GuiAffine ownXf = GuiAffine::fromRotScale(pivot, w.scale, w.rotation);
+
     // Radii/borders/fonts follow the same uniform factor as the sizes.
     const float cr        = w.cornerRadius * scale;
     const float bw        = ImMax(1.0f, w.borderWidth * scale);
     const ImU32 bgCol     = colorU32(w.color);
     const ImU32 borderCol = colorU32(w.borderColor);
     const ImU32 textCol   = colorU32(w.textColor);
+    // Honour the widget colour's alpha so images can be faded at runtime.
+    const ImU32 imageTint = IM_COL32(255, 255, 255,
+                                     (int)(ImClamp(w.color[3], 0.0f, 1.0f) * 255.0f + 0.5f));
     const float fontPx    = ImMax(1.0f, w.fontSize * scale);
     const float fscale    = fontPx / ImGui::GetFontSize();
     const float pad       = ImMax(2.0f, 6.0f * scale);
@@ -2036,8 +2232,14 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
                     ImVec2 dmin, dmax;
                     computeGuiImageRect(w.imageFit, p0, p1, tex.size, dmin, dmax);
                     const bool clip = (w.imageFit == GuiImageFit::Cover || w.imageFit == GuiImageFit::None);
-                    if (clip) dl->PushClipRect(p0, p1, true);
-                    dl->AddImage((ImTextureRef)(intptr_t)tex.glId, dmin, dmax);
+                    if (clip)
+                    {
+                        ImVec2 cmin, cmax;
+                        guiClipRect(p0, p1, ownXf, transformed, cmin, cmax);
+                        dl->PushClipRect(cmin, cmax, true);
+                    }
+                    dl->AddImage((ImTextureRef)(intptr_t)tex.glId, dmin, dmax,
+                                 ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), imageTint);
                     if (clip) dl->PopClipRect();
                 }
             }
@@ -2075,8 +2277,14 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
                     ImVec2 dmin, dmax;
                     computeGuiImageRect(w.imageFit, p0, p1, tex.size, dmin, dmax);
                     const bool clip = (w.imageFit == GuiImageFit::Cover || w.imageFit == GuiImageFit::None);
-                    if (clip) dl->PushClipRect(p0, p1, true);
-                    dl->AddImage((ImTextureRef)(intptr_t)tex.glId, dmin, dmax);
+                    if (clip)
+                    {
+                        ImVec2 cmin, cmax;
+                        guiClipRect(p0, p1, ownXf, transformed, cmin, cmax);
+                        dl->PushClipRect(cmin, cmax, true);
+                    }
+                    dl->AddImage((ImTextureRef)(intptr_t)tex.glId, dmin, dmax,
+                                 ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), imageTint);
                     if (clip) dl->PopClipRect();
                     drawn = true;
                 }
@@ -2184,7 +2392,12 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
 
     // Children (clipped inside scroll views).
     bool clip = (w.type == GuiWidgetType::ScrollView);
-    if (clip) dl->PushClipRect(p0, p1, true);
+    if (clip)
+    {
+        ImVec2 cmin, cmax;
+        guiClipRect(p0, p1, ownXf, transformed, cmin, cmax);
+        dl->PushClipRect(cmin, cmax, true);
+    }
     for (int cid : w.children)
     {
         if (const GuiWidget* child = layout.findWidget(cid))
@@ -2202,27 +2415,35 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
         }
     }
     if (clip) dl->PopClipRect();
+
+    // Bake this widget's rotation/scale into its subtree. Ancestors apply theirs
+    // after this call returns, so nested transforms compose correctly.
+    if (hasGuiTransform(w))
+        transformDrawVertices(dl, vtxBegin, dl->VtxBuffer.Size, pivot, w.scale, w.rotation);
 }
 
 void renderGuiLayout(ImDrawList* dl, const GuiLayout& layout, ImVec2 rectMin, ImVec2 rectMax,
                      const GuiTextureResolver& resolveTexture)
 {
-    float rectW = rectMax.x - rectMin.x;
-    float rectH = rectMax.y - rectMin.y;
+    const float rectW = rectMax.x - rectMin.x;
+    const float rectH = rectMax.y - rectMin.y;
     if (!dl || rectW <= 0.0f || rectH <= 0.0f) return;
     if (layout.canvasWidth <= 0 || layout.canvasHeight <= 0) return;
 
-    // Stretch-to-fill: the reference canvas is mapped onto the whole game view,
-    // so layout follows the view's aspect ratio. Positions use the per-axis
-    // scales (a widget at 50% width is always at 50% of the view and anchors
-    // land on the real screen edges), while widget *sizes* use a single uniform
-    // factor so nothing is distorted — see renderGuiWidgetRuntime.
-    const float scaleX = rectW / (float)layout.canvasWidth;
-    const float scaleY = rectH / (float)layout.canvasHeight;
-    if (scaleX <= 0.0f || scaleY <= 0.0f) return;
+    // Letterbox: map the reference canvas onto the destination rect with a single
+    // uniform scale and centre it, so the whole .ui always fits the game view
+    // without any widget spilling outside (or being squashed on one axis).
+    const float fit = ImMin(rectW / (float)layout.canvasWidth,
+                            rectH / (float)layout.canvasHeight);
+    if (fit <= 0.0f) return;
+
+    const ImVec2 canvasSize((float)layout.canvasWidth * fit,
+                            (float)layout.canvasHeight * fit);
+    const ImVec2 origin(rectMin.x + (rectW - canvasSize.x) * 0.5f,
+                        rectMin.y + (rectH - canvasSize.y) * 0.5f);
 
     for (int rid : layout.rootIds())
         if (const GuiWidget* w = layout.findWidget(rid))
-            renderGuiWidgetRuntime(layout, dl, *w, rectMin, ImVec2(rectW, rectH), scaleX, scaleY,
+            renderGuiWidgetRuntime(layout, dl, *w, origin, canvasSize, fit, fit,
                                    resolveTexture);
 }

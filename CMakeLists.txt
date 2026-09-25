@@ -1,18 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
-project(Kemena3DStudio)
+project(Kemena3D)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS ON)
 
 # Path to the Kemena3D SDK output directory
 # The default path below will be replaced by build_editor.py
-set(KEMENA3D_SDK_DIR "C:/Kemena3D/" CACHE PATH "Path to Kemena3D SDK output directory")
+set(KEMENA3D_SDK_DIR "C:/Kemena3D-SDK/" CACHE PATH "Path to Kemena3D SDK output directory")
 
 # Kemena3D source directory – used to reference transitive deps not copied to the SDK output
 get_filename_component(KEMENA3D_SOURCE_DIR "${KEMENA3D_SDK_DIR}" DIRECTORY)
 
-# Whether to link against the static kemena3d library (set by build_editor.py)
-option(KEMENA3D_LINK_STATIC "Link against the static kemena3d library" ON)
+# Whether to link against the static Kemena3D SDK library (set by build_editor.py)
+option(KEMENA3D_LINK_STATIC "Link against the static Kemena3D SDK library" ON)
 
 set(SOURCES
     main.cpp
@@ -74,7 +74,7 @@ option(KEMENA3D_USE_D3D11 "Build the studio against a DirectX 11 SDK (must match
 if(KEMENA3D_USE_D3D11 AND WIN32)
     target_compile_definitions(${PROJECT_NAME} PRIVATE KEMENA_D3D11 WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(${PROJECT_NAME} PRIVATE d3d11 dxgi d3dcompiler)
-    message(STATUS "Kemena3D Studio: DirectX 11 backend enabled")
+    message(STATUS "Kemena3D: DirectX 11 backend enabled")
 endif()
 
 # Release builds use the GUI subsystem (no console window); Debug keeps the console
@@ -169,7 +169,7 @@ target_link_directories(${PROJECT_NAME} PRIVATE
 
 # Linked libraries — common to both toolchains
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    kemena3d
+    Kemena3DSDK
     opengl32
     winmm
     ole32

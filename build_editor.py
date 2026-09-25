@@ -14,7 +14,7 @@ COMPILER_GENERATOR = {
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-DEFAULT_SDK_DIR = "D:/Projects/Kemena3D/kemena3d/Output"
+DEFAULT_SDK_DIR = "D:/Projects/Kemena3D/Kemena3D-SDK/Output"
 
 MINGW_SEARCH_PATHS = [
     r"C:\mingw64\bin",
@@ -57,7 +57,7 @@ def banner():
  |_|\_\  |___| |_|  |_|  |___|  |_|\_|   |_|_|   |___/   |___/
                         www.kemena3d.com
  ------------------------------------------------------------------------
- Automatically compile Kemena3D Studio Editor...
+ Automatically compile Kemena3D Editor...
  ------------------------------------------------------------------------
 """)
 
@@ -88,9 +88,9 @@ def is_multi_config(generator):
     """Return True for generators that select the config at build time (VS, Xcode)."""
     return generator.startswith("Visual Studio") or generator == "Xcode"
 
-def rebuild_jolt_md(kemena3d_source_dir, modes, vs_generator="Visual Studio 18 2026"):
-    """Rebuild JoltPhysics with /MD (MultiThreadedDLL) to match the kemena3d SDK CRT."""
-    jolt_cmake = Path(kemena3d_source_dir) / "Dependencies/jolt/Build"
+def rebuild_jolt_md(sdk_source_dir, modes, vs_generator="Visual Studio 18 2026"):
+    """Rebuild JoltPhysics with /MD (MultiThreadedDLL) to match the Kemena3D SDK CRT."""
+    jolt_cmake = Path(sdk_source_dir) / "Dependencies/jolt/Build"
     if not jolt_cmake.exists():
         print(f"[WARN] Jolt source not found at {jolt_cmake}, skipping Jolt rebuild.")
         return
@@ -149,7 +149,7 @@ def build_with_cmake(generator, build_mode, extra_args, sdk_dir, make_program=No
     # Build
     run_cmd(f'cmake --build "{build_dir}" --config {build_mode} --parallel')
 
-    print(f"[SUCCESS] Kemena3D Studio ({build_mode}) built successfully.")
+    print(f"[SUCCESS] Kemena3D ({build_mode}) built successfully.")
 
 def main():
     banner()
@@ -169,9 +169,9 @@ def main():
         }
     )
 
-    # Static vs dynamic kemena3d library
+    # Static vs dynamic Kemena3D SDK library
     link_type = choose(
-        "\nPlease choose the kemena3d library type:",
+        "\nPlease choose the Kemena3D SDK library type:",
         {
             "1": "Static library",
             "2": "Dynamic library (DLL)"
@@ -214,16 +214,16 @@ def main():
     else:
         modes = ["Debug", "Release"]
 
-    # MSVC: ensure Jolt is built with /MD to match the kemena3d SDK CRT
+    # MSVC: ensure Jolt is built with /MD to match the Kemena3D SDK CRT
     if compiler in ("1", "2"):
-        kemena3d_source_dir = str(Path(sdk_dir).parent)
-        rebuild_jolt_md(kemena3d_source_dir, modes, generator)
+        sdk_source_dir = str(Path(sdk_dir).parent)
+        rebuild_jolt_md(sdk_source_dir, modes, generator)
 
     for mode in modes:
         build_with_cmake(generator, mode, extra_args, sdk_dir, make_program)
 
     print("\n------------------------------------------------------------------------")
-    print("Kemena3D Studio has been compiled successfully.")
+    print("Kemena3D has been compiled successfully.")
     print("------------------------------------------------------------------------")
 
 if __name__ == "__main__":
@@ -231,6 +231,6 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("\n------------------------------------------------------------------------")
-        print(f"Failed to compile Kemena3D Studio: {e}")
+        print(f"Failed to compile Kemena3D: {e}")
         print("------------------------------------------------------------------------")
         sys.exit(1)
