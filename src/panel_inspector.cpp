@@ -3861,6 +3861,12 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         saveMetaJson(asset.metaPath, j);
         dirty = false;
 
+        // Mirror the settings into Config/import_settings.json. That store is
+        // committed with the project while Library/ is only a regenerable cache,
+        // so this is what makes the settings survive a move through git.
+        if (mgr && !asset.uuid.empty())
+            mgr->publishImportSettings(asset.uuid, j);
+
         // Re-convert the source model into Library/ImportedAssets with these
         // settings (scale / tangents / animation) and refresh its thumbnail.
         if (mgr && !asset.uuid.empty())
@@ -4065,6 +4071,12 @@ static void drawImageImportSettings(kGuiManager *gui, const PanelProject::Select
         j["normalFilter"] = s.normalFilter;
         saveMetaJson(asset.metaPath, j);
         dirty = false;
+
+        // Mirror the settings into Config/import_settings.json (committed with the
+        // project) so they survive a move through git, where Library/ — and with
+        // it the metadata just written above — may never be checked out again.
+        if (mgr && !asset.uuid.empty())
+            mgr->publishImportSettings(asset.uuid, j);
 
         // Re-process the source image into Library/ImportedAssets with these
         // settings, then reload it and refresh every material using it.

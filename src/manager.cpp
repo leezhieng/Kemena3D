@@ -41,6 +41,11 @@ namespace fs = std::filesystem;
 static ImageImportOptions imageImportOptionsFromMeta(const fs::path &metaPath,
                                                      const ImageImportOptions &base);
 
+// Same, but from an already-parsed settings object (Library metadata merged with
+// the git-tracked import settings store).
+static ImageImportOptions imageImportOptionsFromJson(const nlohmann::json &mj,
+                                                     const ImageImportOptions &base);
+
 Manager::Manager(kWindow *setWindow, kWorld *setWorld, kRenderer *setRenderer)
 {
     window = setWindow;
@@ -676,6 +681,235 @@ void Manager::addRecentProject(const kString &path)
     saveRecentProjects();
 }
 
+// ===========================================================================
+// Git-tracked import settings store (Config/import_settings.json)
+// ===========================================================================
+//
+// Per-asset import settings used to live only in Library/Metadata/<uuid>.json.
+// Library/ is a regenerable cache: most projects gitignore it outright, and even
+// where Metadata/ is committed the scan below used to delete a mesh's metadata
+// whenever its thumbnail was missing — which is *always* the case right after a
+// fresh checkout, because Thumbnails/ is gitignored. The mesh was then re-imported
+// from scratch and every setting (FBX scale, tangents, animation import, texture
+// options) silently reverted to its default whenever the project was moved
+// between machines through git.
+//
+// This store is the durable, path-keyed copy of that information. It is keyed by
+// the asset's path relative to Assets/ (not by UUID, which is volatile) and lives
+// in Config/, so it survives a wiped Library/, a regenerated Library/assets.json
+// (which mints fresh UUIDs and would otherwise dangle every scene reference) and
+// any UUID change for the same file on disk.
+
+/// Keys that describe the import pipeline rather than user-chosen settings; they
+/// are never copied between the Library metadata and the store.
+static const char *const kSettingsBookkeepingKeys[] = {
+    "uuid", "type", "last_change", "src_checksum", "src_path", "src_file",
+    "dest_path", "dest_file"};
+
+/// @brief Reads a JSON object from @p path; returns an empty object on failure.
+static json readJsonObjectFile(const fs::path &path)
+{
+    if (path.empty() || !fs::exists(path))
+        return json::object();
+    try
+    {
+        std::ifstream f(path);
+        json j;
+        f >> j;
+        return j.is_object() ? j : json::object();
+    }
+    catch (...)
+    {
+        return json::object();
+    }
+}
+
+/// @brief Extracts the user-chosen import settings from a metadata / store entry.
+static json settingsFromEntry(const json &entry)
+{
+    json settings = json::object();
+    if (!entry.is_object())
+        return settings;
+
+    for (auto it = entry.begin(); it != entry.end(); ++it)
+    {
+        bool bookkeeping = false;
+        for (const char *key : kSettingsBookkeepingKeys)
+        {
+            if (it.key() == key)
+            {
+                bookkeeping = true;
+                break;
+            }
+        }
+        if (!bookkeeping)
+            settings[it.key()] = it.value();
+    }
+    return settings;
+}
+
+/// @brief Copies every key of @p settings that @p target does not define yet.
+///
+/// Existing values win: the Library metadata is the copy the inspector edits,
+/// the store only fills gaps the cache has lost.
+static bool mergeMissingSettings(json &target, const json &settings)
+{
+    if (!target.is_object() || !settings.is_object())
+        return false;
+
+    bool changed = false;
+    for (auto it = settings.begin(); it != settings.end(); ++it)
+    {
+        if (!target.contains(it.key()))
+        {
+            target[it.key()] = it.value();
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+fs::path Manager::importSettingsStorePath() const
+{
+    return projectPath / "Config" / "import_settings.json";
+}
+
+void Manager::loadImportSettingsStore()
+{
+    importSettingsStore = json::object();
+    importSettingsStore["version"] = 1;
+    importSettingsStore["assets"] = json::object();
+    importSettingsStoreDirty = false;
+    importSettingsStoreLoaded = true;
+
+    json stored;
+    if (!projectPath.empty())
+        stored = readJsonObjectFile(importSettingsStorePath());
+    if (stored.empty())
+        return;
+
+    importSettingsStore = std::move(stored);
+    if (!importSettingsStore.contains("version"))
+        importSettingsStore["version"] = 1;
+    if (!importSettingsStore.contains("assets") || !importSettingsStore["assets"].is_object())
+        importSettingsStore["assets"] = json::object();
+}
+
+void Manager::saveImportSettingsStore()
+{
+    if (projectPath.empty())
+        return;
+
+    fs::path path = importSettingsStorePath();
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+
+    std::ofstream f(path);
+    if (!f)
+    {
+        std::cerr << "Failed to write import settings store: " << path << "\n";
+        return;
+    }
+    f << importSettingsStore.dump(4);
+    importSettingsStoreDirty = false;
+}
+
+json *Manager::findStoredImportSettings(const kString &relativePath)
+{
+    if (!importSettingsStoreLoaded)
+        loadImportSettingsStore();
+    if (relativePath.empty() || !importSettingsStore.contains("assets"))
+        return nullptr;
+
+    json &assets = importSettingsStore["assets"];
+    if (!assets.is_object())
+        return nullptr;
+
+    auto it = assets.find(relativePath);
+    if (it == assets.end() || !it->is_object())
+        return nullptr;
+    return &(*it);
+}
+
+json &Manager::upsertStoredImportSettings(const kString &relativePath)
+{
+    if (!importSettingsStoreLoaded)
+        loadImportSettingsStore();
+    if (!importSettingsStore.contains("assets") || !importSettingsStore["assets"].is_object())
+        importSettingsStore["assets"] = json::object();
+
+    json &assets = importSettingsStore["assets"];
+    if (!assets.contains(relativePath) || !assets[relativePath].is_object())
+        assets[relativePath] = json::object();
+    return assets[relativePath];
+}
+
+kString Manager::relativeAssetPath(const fs::path &assetPath) const
+{
+    if (projectPath.empty() || assetPath.empty())
+        return kString();
+
+    std::error_code ec;
+    fs::path rel = fs::relative(assetPath, projectPath / "Assets", ec);
+    if (ec)
+        return kString();
+    return rel.generic_string();
+}
+
+json Manager::assetSettingsFor(const kString &uuid, const fs::path &srcPath)
+{
+    json settings = json::object();
+    if (!uuid.empty())
+        settings = settingsFromEntry(readJsonObjectFile(projectPath / "Library" / "Metadata" / (uuid + ".json")));
+
+    // Library/ is a regenerable cache, so its metadata can be missing entirely or
+    // (for projects imported before this store existed) stripped of the user's
+    // settings. Fill every gap from the committed, path-keyed store.
+    if (json *stored = findStoredImportSettings(relativeAssetPath(srcPath)))
+        mergeMissingSettings(settings, settingsFromEntry(*stored));
+    return settings;
+}
+
+void Manager::publishImportSettings(const kString &uuid, const nlohmann::json &meta)
+{
+    auto fit = fileMap.find(uuid);
+    if (fit == fileMap.end())
+        return;
+
+    json &entry = upsertStoredImportSettings(fit->second.path);
+    json updated = settingsFromEntry(meta);
+    updated["uuid"] = uuid;
+    updated["type"] = fit->second.type;
+    updated["checksum"] = fit->second.checksum;
+    if (entry != updated)
+        entry = updated;
+
+    // Write through immediately: the store is the only copy of these settings
+    // that is guaranteed to travel with the project through git.
+    saveImportSettingsStore();
+}
+
+void Manager::remapImportSettingsStorePath(const fs::path &oldPath, const fs::path &newPath)
+{
+    kString oldRel = relativeAssetPath(oldPath);
+    kString newRel = relativeAssetPath(newPath);
+    if (oldRel.empty() || newRel.empty() || oldRel == newRel)
+        return;
+
+    if (!importSettingsStoreLoaded)
+        loadImportSettingsStore();
+
+    json &assets = importSettingsStore["assets"];
+    auto it = assets.find(oldRel);
+    if (it == assets.end())
+        return;
+
+    assets[newRel] = *it;
+    assets.erase(it);
+    importSettingsStoreDirty = true;
+    saveImportSettingsStore();
+}
+
 void Manager::checkAssetChange()
 {
     if (projectOpened && !showingMessageBox)
@@ -691,6 +925,10 @@ void Manager::checkAssetChange()
         fs::path libraryFolder = projectPath / "Library";
         fs::path assetsJsonFile = libraryFolder / "assets.json";
         fs::path assetsPath = projectPath / "Assets";
+
+        // Identity (UUID/type) and import settings of every asset also live in
+        // Config/import_settings.json; see the block above checkAssetChange().
+        loadImportSettingsStore();
 
         // Check whether assets.json exist or not
         try
@@ -870,9 +1108,22 @@ void Manager::checkAssetChange()
             auto it = uuidMap.find(relativePath);
             if (it == uuidMap.end())
             {
-                // New file
-                kString uuid = generateUuid();
+                // New file — or an existing asset whose Library walked away (fresh
+                // clone, `git clean`, regenerated assets.json). Reuse the UUID the
+                // settings store recorded for this path whenever it is free: scenes
+                // reference assets by UUID, so minting a new one would dangle every
+                // mesh, material, animation and prefab using this file.
+                json *stored = findStoredImportSettings(relativePath);
+                kString storedUuid = stored ? stored->value("uuid", kString()) : kString();
+                const bool canRestoreUuid = !storedUuid.empty() &&
+                                            fileMap.find(storedUuid) == fileMap.end();
+
+                kString uuid = canRestoreUuid ? storedUuid : generateUuid();
                 kString type = checkAssetType(p.path());
+
+                if (canRestoreUuid)
+                    std::cout << "Restored asset UUID from import settings store: "
+                              << relativePath << " -> " << uuid << "\n";
 
                 fileUuid = uuid;
                 fileType = type;
@@ -908,6 +1159,9 @@ void Manager::checkAssetChange()
                     info.checksum = checksum;
                     needImport = true; // Need import
 
+                    // New content deserves a fresh attempt (and a fresh error).
+                    failedImports.erase(uuid);
+
                     // Update JSON as well
                     for (auto &entry : j["files"])
                     {
@@ -937,6 +1191,9 @@ void Manager::checkAssetChange()
                 fs::path destFile = destDir / (fileUuid + uuidExt);
                 fs::path thumbnailPath = libraryFolder / "Thumbnails" / (fileUuid + ".png");
                 fs::path metaPath = libraryFolder / "Metadata" / (fileUuid + ".json");
+
+                // Durable copy of this asset's identity + settings, keyed by path.
+                json *storedEntry = findStoredImportSettings(relativePath);
 
                 // Image importer migration: when the encoder's output format
                 // changes (kImageImporterVersion), re-import the .dds so existing
@@ -989,6 +1246,12 @@ void Manager::checkAssetChange()
                         }
                     }
 
+                    // Restore settings a wiped / orphaned Library cache lost. Keys
+                    // the metadata already defines stay untouched — it is the copy
+                    // the inspector edits, the store only fills the gaps.
+                    if (storedEntry)
+                        mergeMissingSettings(meta, settingsFromEntry(*storedEntry));
+
                     meta["type"] = fileType;
                     meta["last_change"] = static_cast<int64_t>(std::time(nullptr));
                     meta["src_checksum"] = checksum;
@@ -1009,6 +1272,44 @@ void Manager::checkAssetChange()
                         std::cerr << "Failed to write metadata: " << metaPath << "\n";
                 }
 
+                // Mirror the metadata into the git-tracked store: the entry holds
+                // the asset's identity (UUID/type/checksum) plus a copy of the
+                // settings, so a project moved between machines can be restored
+                // without relying on the Library cache at all.
+                json assetSettings = settingsFromEntry(readJsonObjectFile(metaPath));
+                bool metadataLostSettings = false;
+                if (storedEntry)
+                    metadataLostSettings = mergeMissingSettings(assetSettings, settingsFromEntry(*storedEntry));
+
+                // The metadata still exists but no longer holds some of the settings
+                // the store knows about (that is exactly the state the old
+                // thumbnail-missing deletion left behind). Write them back so the
+                // inspector and any import that reads the file directly see them too.
+                if (metadataLostSettings)
+                {
+                    json repaired = readJsonObjectFile(metaPath);
+                    mergeMissingSettings(repaired, settingsFromEntry(*storedEntry));
+                    std::ofstream rf(metaPath);
+                    if (rf)
+                    {
+                        rf << repaired.dump(4);
+                        std::cout << "Restored import settings for: " << relativePath << "\n";
+                    }
+                }
+
+                {
+                    json &entry = upsertStoredImportSettings(relativePath);
+                    json updated = assetSettings;
+                    updated["uuid"] = fileUuid;
+                    updated["type"] = fileType;
+                    updated["checksum"] = checksum;
+                    if (entry != updated)
+                    {
+                        entry = updated;
+                        importSettingsStoreDirty = true;
+                    }
+                }
+
                 // Queue conversion if imported asset is missing or source changed.
                 // Only mesh/image produce a file in ImportedAssets (uuidExt set).
                 // Materials and other types have no imported file, so testing
@@ -1023,7 +1324,13 @@ void Manager::checkAssetChange()
                 {
                     if (fileType == "mesh" && !uuidExt.empty())
                     {
-                        // For meshes, delete the imported asset and metadata to trigger full re-import.
+                        // Drop only the cached .glb (it is regenerable) to force a
+                        // re-import. The metadata is deliberately kept: it carries
+                        // the user's import settings, and deleting it here — as this
+                        // used to — is what reset every mesh's scale/tangents/
+                        // animation back to the defaults after a project move, since
+                        // Thumbnails/ is gitignored and therefore always missing in a
+                        // fresh checkout.
                         auto tryRemove = [](const fs::path &p)
                         {
                             if (!fs::exists(p))
@@ -1036,7 +1343,6 @@ void Manager::checkAssetChange()
                                 std::cerr << "Failed to remove: " << p << " (" << ec.message() << ")\n";
                         };
                         tryRemove(destFile);
-                        tryRemove(metaPath);
                         needImport = true;
                     }
                     else if (fileType == "image" && fs::exists(srcFullPath) && !needImport)
@@ -1049,10 +1355,27 @@ void Manager::checkAssetChange()
 
                 if (needImport && (fileType == "mesh" || fileType == "image" || fileType == "audio"))
                 {
-                    std::cout << srcFullPath << " -> " << destFile << "\n";
-                    importTasks.push_back({srcFullPath, destFile, fileType,
-                                           fileUuid, thumbnailPath, false, false});
-                    anyChanges = true;
+                    // Don't retry (or re-log) an import that already failed for this
+                    // exact source content. Without this, a file the importer cannot
+                    // read — an FBX predating the FBX 2011 DOM, say — would fail again
+                    // on every scan, because the failure is what keeps its thumbnail
+                    // missing. Editing the source or clicking Reimport clears this.
+                    auto failed = failedImports.find(fileUuid);
+                    if (failed != failedImports.end() && failed->second == checksum)
+                    {
+                        // Known-bad content: leave the asset listed without a thumbnail.
+                    }
+                    else
+                    {
+                        std::cout << srcFullPath << " -> " << destFile << "\n";
+                        ImportTask task{srcFullPath, destFile, fileType, fileUuid, thumbnailPath, false, false};
+                        // Snapshot the settings here (main thread, metadata already
+                        // repaired above) so the worker thread never has to fall back
+                        // to the importer's defaults.
+                        task.settings = assetSettings;
+                        importTasks.push_back(std::move(task));
+                        anyChanges = true;
+                    }
                 }
 
                 if (fileType == "material" && (!fs::exists(thumbnailPath) || needImport))
@@ -1077,6 +1400,12 @@ void Manager::checkAssetChange()
         std::ofstream out(assetsJsonFile);
         out << j.dump(4);
         std::cout << "assets.json updated.\n";
+
+        // Persist the store only when it actually changed, so an ordinary scan
+        // (which runs on every focus change) does not touch the file mtime — and
+        // therefore git status — for nothing.
+        if (importSettingsStoreDirty)
+            saveImportSettingsStore();
 
         // Begin batch imports
         startBatchImport(importTasks);
@@ -1362,27 +1691,19 @@ void Manager::startBatchImport(const std::vector<ImportTask> &tasks)
 		{
 			if (task.type == "mesh")
 			{
-				// Load the per-asset import settings (scale / tangents / animation)
-				// from Library/Metadata/<uuid>.json so a re-import on another
-				// machine honours the settings chosen in the inspector instead of
-				// silently falling back to defaults.
+				// The import settings (scale / tangents / animation) ride along on
+				// the task, so a re-import on another machine honours what the user
+				// chose instead of silently falling back to defaults. The fallback
+				// re-reads the Library metadata and then the git-tracked store,
+				// which also covers tasks queued before that snapshot existed.
+				json settings = task.settings;
+				if (!settings.is_object() || settings.empty())
+					settings = assetSettingsFor(task.uuid, task.inputPath);
+
 				MeshImportOptions opt;
-				fs::path metaPath = projectPath / "Library" / "Metadata" / (task.uuid + ".json");
-				if (!task.uuid.empty() && fs::exists(metaPath))
-				{
-					try
-					{
-						std::ifstream mf(metaPath);
-						nlohmann::json mj;
-						mf >> mj;
-						opt.scaleFactor = mj.value("scaleFactor", 1.0f);
-						opt.tangents = mj.value("tangents", 0);
-						opt.importAnimation = mj.value("importAnimation", true);
-					}
-					catch (...)
-					{
-					}
-				}
+				opt.scaleFactor = settings.value("scaleFactor", 1.0f);
+				opt.tangents = settings.value("tangents", 0);
+				opt.importAnimation = settings.value("importAnimation", true);
 
 				std::string err;
 				task.success = convertMeshToGlbEx(task.inputPath, task.outputPath, opt, &err, &task.warnings);
@@ -1391,12 +1712,15 @@ void Manager::startBatchImport(const std::vector<ImportTask> &tasks)
 			}
 			else if (task.type == "image")
 			{
-				// Honour the per-texture import settings from Library/Metadata so a
-				// batch re-import (source change or importer version bump) never
-				// silently resets the user's choices. Missing keys fall back to
-				// the ImageImportOptions defaults.
-				fs::path metaPath = projectPath / "Library" / "Metadata" / (task.uuid + ".json");
-				ImageImportOptions imgOpt = imageImportOptionsFromMeta(metaPath, ImageImportOptions{});
+				// Honour the per-texture import settings (snapshotted on the task,
+				// otherwise resolved from the Library metadata and then from the
+				// git-tracked store) so a batch re-import — source change, importer
+				// version bump or a fresh clone — never resets the user's choices.
+				// Missing keys fall back to the ImageImportOptions defaults.
+				json settings = task.settings;
+				if (!settings.is_object() || settings.empty())
+					settings = assetSettingsFor(task.uuid, task.inputPath);
+				ImageImportOptions imgOpt = imageImportOptionsFromJson(settings, ImageImportOptions{});
 				task.success = convertImageToDDS(task.inputPath, task.outputPath, imgOpt);
 				if (!task.success)
 					task.errorMsg = "image import failed (unsupported or corrupt source file?)";
@@ -1473,6 +1797,16 @@ void Manager::drawImportPopup(PanelConsole *console)
                                         task.inputPath.generic_string().c_str(),
                                         task.errorMsg.empty() ? "unknown error" : task.errorMsg.c_str());
                         task.reported = true;
+
+                        // Remember the failure for this source content so the next
+                        // scan doesn't queue the very same doomed import again (see
+                        // checkAssetChange).
+                        if (!task.uuid.empty())
+                        {
+                            auto fit = fileMap.find(task.uuid);
+                            if (fit != fileMap.end())
+                                failedImports[task.uuid] = fit->second.checksum;
+                        }
                     }
                     else if (task.success && !task.reported && task.type == "mesh" && !task.thumbnailPath.empty())
                     {
@@ -4687,6 +5021,10 @@ bool Manager::renameAsset(const fs::path &oldPath, const kString &newName)
     // .logic graph), material references, etc. keep resolving. Without this,
     // checkAssetChange() would assign a fresh UUID and the links break.
     remapAssetRegistryPath(projectPath, oldPath, newPath);
+
+    // Keep the git-tracked settings store keyed by the new path too, so the file
+    // keeps its UUID and import settings when the project is moved later on.
+    remapImportSettingsStorePath(oldPath, newPath);
 
     // If the renamed file is open in the Script Editor, update its tracked path
     // so a subsequent Save writes to the new file instead of the old name.
@@ -8647,18 +8985,15 @@ kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString
  * @param metaPath Path to `Library/Metadata/<uuid>.json` (may not exist).
  * @param base     Defaults used for any key missing from the metadata.
  */
-static ImageImportOptions imageImportOptionsFromMeta(const fs::path &metaPath,
+static ImageImportOptions imageImportOptionsFromJson(const nlohmann::json &mj,
                                                      const ImageImportOptions &base)
 {
     ImageImportOptions opt = base;
-    if (metaPath.empty() || !fs::exists(metaPath))
+    if (!mj.is_object() || mj.empty())
         return opt;
 
     try
     {
-        std::ifstream mf(metaPath);
-        nlohmann::json mj;
-        mf >> mj;
         static const int kMaxSizes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
         int sizeIdx = mj.value("maxSizeIndex", 7);
         sizeIdx = std::max(0, std::min(7, sizeIdx));
@@ -8685,6 +9020,12 @@ static ImageImportOptions imageImportOptionsFromMeta(const fs::path &metaPath,
     return opt;
 }
 
+static ImageImportOptions imageImportOptionsFromMeta(const fs::path &metaPath,
+                                                     const ImageImportOptions &base)
+{
+    return imageImportOptionsFromJson(readJsonObjectFile(metaPath), base);
+}
+
 bool Manager::reimportTexture(const kString &textureUuid)
 {
     auto fit = fileMap.find(textureUuid);
@@ -8695,11 +9036,16 @@ bool Manager::reimportTexture(const kString &textureUuid)
     if (!fs::exists(srcPath))
         return false;
 
-    fs::path ddsPath = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
-    fs::path metaPath = projectPath / "Library" / "Metadata" / (textureUuid + ".json");
+    // A manual re-import always retries, even after a failed attempt.
+    failedImports.erase(textureUuid);
 
-    // Map the inspector's import settings to converter options.
-    ImageImportOptions opt = imageImportOptionsFromMeta(metaPath, ImageImportOptions{});
+    fs::path ddsPath = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
+
+    // Map the inspector's import settings to converter options. The settings are
+    // read from the Library metadata, backed by the git-tracked store, so a
+    // re-import after a project move cannot silently revert to the defaults.
+    ImageImportOptions opt = imageImportOptionsFromJson(assetSettingsFor(textureUuid, srcPath),
+                                                        ImageImportOptions{});
 
     std::error_code ec;
     fs::create_directories(ddsPath.parent_path(), ec);
@@ -8730,26 +9076,20 @@ bool Manager::reimportMesh(const kString &meshUuid)
     if (!fs::exists(srcPath))
         return false;
 
+    // A manual re-import always retries, even after a failed attempt.
+    failedImports.erase(meshUuid);
+
     fs::path glbPath = projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
-    fs::path metaPath = projectPath / "Library" / "Metadata" / (meshUuid + ".json");
     fs::path thumbPath = projectPath / "Library" / "Thumbnails" / (meshUuid + ".png");
 
+    // Settings come from the Library metadata, with the git-tracked store filling
+    // any gap, so a re-import after a project move keeps the user's scale and
+    // tangents instead of reverting to the importer's defaults.
+    json settings = assetSettingsFor(meshUuid, srcPath);
     MeshImportOptions opt;
-    if (fs::exists(metaPath))
-    {
-        try
-        {
-            std::ifstream mf(metaPath);
-            nlohmann::json mj;
-            mf >> mj;
-            opt.scaleFactor = mj.value("scaleFactor", 1.0f);
-            opt.tangents = mj.value("tangents", 0);
-            opt.importAnimation = mj.value("importAnimation", true);
-        }
-        catch (...)
-        {
-        }
-    }
+    opt.scaleFactor = settings.value("scaleFactor", 1.0f);
+    opt.tangents = settings.value("tangents", 0);
+    opt.importAnimation = settings.value("importAnimation", true);
 
     std::error_code ec;
     fs::create_directories(glbPath.parent_path(), ec);
@@ -9286,8 +9626,14 @@ void Manager::reimportAsset(const kString &uuid)
     if (uuid.empty() || projectPath.empty())
         return;
 
-    // Delete the converted file in Library/ImportedAssets and thumbnail/metadata
-    // so checkAssetChange will re-import from the source.
+    // Reimport is the user's way of saying "try again": forget a prior failure so
+    // the import is queued even if the content is unchanged.
+    failedImports.erase(uuid);
+
+    // Delete the converted file in Library/ImportedAssets and the cached thumbnail
+    // so checkAssetChange will re-import from the source. The metadata is kept on
+    // purpose: it holds the user's import settings, and re-importing must honour
+    // them instead of reverting to the importer's defaults.
     fs::path libDir = projectPath / "Library" / "ImportedAssets";
 
     // Try common extensions for mesh/image/audio
@@ -9303,12 +9649,14 @@ void Manager::reimportAsset(const kString &uuid)
         }
     }
 
-    // Remove thumbnail and metadata to force regeneration
-    auto tryRemove = [](const fs::path &p) {
-        if (fs::exists(p)) { std::error_code ec; fs::remove(p, ec); }
-    };
-    tryRemove(projectPath / "Library" / "Thumbnails" / (uuid + ".png"));
-    tryRemove(projectPath / "Library" / "Metadata" / (uuid + ".json"));
+    // Remove the cached thumbnail to force regeneration (the metadata stays — see
+    // the note at the top of this function).
+    fs::path thumbPath = projectPath / "Library" / "Thumbnails" / (uuid + ".png");
+    if (fs::exists(thumbPath))
+    {
+        std::error_code ec;
+        fs::remove(thumbPath, ec);
+    }
 
     // Trigger re-import
     checkAssetChange();

@@ -227,10 +227,90 @@ namespace
     };
 }
 
+/**
+ * @brief Explains why a legacy FBX file cannot be imported, if that is the case.
+ *
+ * Assimp's FBX reader implements the FBX 2011+ DOM only (binary 7100 and up, i.e.
+ * FBX 2011/2012/2013). Older exports — FBX 6.0/6.1, still produced by legacy
+ * exporters and converters — are rejected deep inside the parser, where the only
+ * feedback is "FBX-DOM unsupported, old format version, supported are only FBX
+ * 2011, FBX 2012 and FBX 2013". Reading the version up front turns that into an
+ * actionable message.
+ *
+ * @param inputPath Candidate model file.
+ * @return A user-facing explanation, or an empty string when the file is fine.
+ */
+static std::string legacyFbxReason(const fs::path &inputPath)
+{
+    if (inputPath.extension().string() != ".fbx")
+        return std::string();
+
+    std::ifstream f(inputPath, std::ios::binary);
+    if (!f)
+        return std::string();
+
+    char header[64] = {};
+    f.read(header, static_cast<std::streamsize>(sizeof(header) - 1));
+    const std::streamsize got = f.gcount();
+
+    // Binary FBX: the magic "Kaydara FBX Binary  \0", two unknown bytes, then the
+    // version as a little-endian uint32 at offset 23.
+    static const char kBinaryMagic[] = "Kaydara FBX Binary  ";
+    if (got >= 27 && std::memcmp(header, kBinaryMagic, sizeof(kBinaryMagic) - 1) == 0)
+    {
+        const unsigned char *b = reinterpret_cast<const unsigned char *>(header);
+        const uint32_t version = uint32_t(b[23]) | (uint32_t(b[24]) << 8) |
+                                 (uint32_t(b[25]) << 16) | (uint32_t(b[26]) << 24);
+        if (version >= 7100)
+            return std::string();
+
+        std::ostringstream oss;
+        oss << "FBX " << (version / 1000) << "." << ((version / 100) % 10)
+            << " (binary version " << version << ") predates FBX 2011 (7100), which is "
+               "the oldest FBX the mesh importer can read. Re-export the model as FBX "
+               "2011+ (binary 7.4/7.5, e.g. FBX 2014/2015) from its authoring tool, or "
+               "convert it to .glb / .gltf / .obj and import that instead.";
+        return oss.str();
+    }
+
+    // ASCII FBX declares its version next to "FBXVersion".
+    const std::string text(header, static_cast<size_t>(got));
+    const size_t at = text.find("FBXVersion");
+    if (at == std::string::npos)
+        return std::string();
+
+    size_t p = text.find_first_of("0123456789", at);
+    if (p == std::string::npos)
+        return std::string();
+
+    unsigned long version = 0;
+    while (p < text.size() && std::isdigit(static_cast<unsigned char>(text[p])))
+        version = version * 10 + static_cast<unsigned long>(text[p++] - '0');
+    if (version == 0 || version >= 7100)
+        return std::string();
+
+    std::ostringstream oss;
+    oss << "FBX " << (version / 1000) << "." << ((version / 100) % 10)
+        << " (ASCII version " << version << ") predates FBX 2011 (7100), which is the "
+           "oldest FBX the mesh importer can read. Re-export the model as FBX 2011+ "
+           "or convert it to .glb / .gltf / .obj and import that instead.";
+    return oss.str();
+}
+
 bool convertMeshToGlbEx(const fs::path &inputPath, const fs::path &outputPath,
                         const MeshImportOptions &opt, std::string *errorOut,
                         std::vector<std::string> *warningsOut)
 {
+    // Fail fast (with a useful message) on FBX files older than the FBX 2011 DOM
+    // that Assimp implements — see legacyFbxReason().
+    if (const std::string reason = legacyFbxReason(inputPath); !reason.empty())
+    {
+        if (errorOut)
+            *errorOut = reason;
+        std::cerr << "Mesh import rejected: " << inputPath << ": " << reason << "\n";
+        return false;
+    }
+
     Assimp::Importer importer;
 
     // Optionally capture Assimp warnings into warningsOut. The DefaultLogger is a

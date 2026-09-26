@@ -99,6 +99,14 @@ struct ImportTask
     kString errorMsg;
     std::vector<std::string> warnings;
     bool warningsLogged = false;
+
+    /// Snapshot of the asset's import settings taken when the task was queued.
+    ///
+    /// Carried on the task instead of being re-read from Library/Metadata on the
+    /// worker thread: Library/ is a regenerable (usually gitignored) cache, so a
+    /// project moved between machines through git would otherwise re-import with
+    /// default settings and silently reset the user's FBX scale, tangents, etc.
+    json settings = json::object();
 };
 
 /**
@@ -676,6 +684,19 @@ public:
     bool reimportTexture(const kString &textureUuid);
     bool reimportMesh(const kString &meshUuid);
     void processPendingMeshReloads();
+
+    /**
+     * @brief Records an asset's import settings in the git-tracked settings store.
+     *
+     * Called by the inspector when the user applies new mesh/texture import
+     * settings. Writes the settings (plus the asset's UUID/type/checksum) into
+     * `Config/import_settings.json` immediately, so the values survive a project
+     * move through git even when the project's Library/ folder is gitignored.
+     *
+     * @param uuid Asset UUID as tracked in the asset registry.
+     * @param meta Metadata object holding the settings that were just applied.
+     */
+    void publishImportSettings(const kString &uuid, const nlohmann::json &meta);
     std::vector<kString> pendingMeshReloads;
     kShader *getRawShader(const kString &shaderUuid);
     kString getMaterialShaderSource(const nlohmann::json &matJson);
@@ -824,6 +845,24 @@ public:
 
     std::unordered_map<kString, FileInfo> fileMap;
     std::unordered_map<kString, kString> uuidMap;
+
+    /// Path-keyed, git-tracked mirror of each asset's identity (UUID/type) and
+    /// user-chosen import settings, stored in `Config/import_settings.json`.
+    ///
+    /// Library/ is a regenerable cache that most projects gitignore, and even
+    /// when its Metadata folder is committed it can be wiped by a clean checkout
+    /// or orphaned by a regenerated assets.json (which mints new UUIDs). This
+    /// store is what keeps import settings — and the UUIDs that every scene
+    /// reference depends on — stable when a project travels between machines.
+    json importSettingsStore = json::object();
+    bool importSettingsStoreLoaded = false;
+    bool importSettingsStoreDirty = false;
+
+    /// UUID -> source checksum of imports that failed (an FBX version the importer
+    /// cannot read, for instance). Retrying those on every scan would repeat the
+    /// same error forever, because their thumbnail is never generated; a source
+    /// change or an explicit Reimport clears the entry.
+    std::unordered_map<kString, kString> failedImports;
     std::unordered_map<kString, ObjectInfo> objectMap;
 
     std::vector<kString> selectedObjects;
@@ -873,6 +912,34 @@ private:
 
     kString checkAssetType(const fs::path &p);
     void startBatchImport(const std::vector<ImportTask> &tasks);
+
+    // --- Git-tracked import settings store (Config/import_settings.json) -----
+    //
+    // The store is keyed by the asset's path relative to Assets/ so it does not
+    // depend on the volatile UUID, and it is committed with the project so a
+    // fresh clone on another machine restores both the UUIDs and the import
+    // settings without relying on the Library cache.
+
+    /// @brief Absolute path of the settings store for the open project.
+    fs::path importSettingsStorePath() const;
+    /// @brief Loads (or reloads) the settings store from disk for the open project.
+    void loadImportSettingsStore();
+    /// @brief Writes the settings store back to disk.
+    void saveImportSettingsStore();
+    /// @brief Finds the store entry for @p relativePath (relative to Assets/), or nullptr.
+    json *findStoredImportSettings(const kString &relativePath);
+    /// @brief Returns (creating if needed) the store entry for @p relativePath.
+    json &upsertStoredImportSettings(const kString &relativePath);
+    /// @brief Path of @p assetPath relative to the project's Assets/ folder.
+    kString relativeAssetPath(const fs::path &assetPath) const;
+
+    /// @brief Resolved import settings for an asset: Library metadata first, with
+    ///        the git-tracked store filling in anything the cache lost.
+    json assetSettingsFor(const kString &uuid, const fs::path &srcPath);
+
+    /// @brief Moves a store entry when an asset is renamed so its UUID and
+    ///        settings follow the file to its new path.
+    void remapImportSettingsStorePath(const fs::path &oldPath, const fs::path &newPath);
 
     /**
      * @brief Resolves an audio asset UUID to a playable filesystem path.
