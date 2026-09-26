@@ -35,6 +35,12 @@
 
 namespace fs = std::filesystem;
 
+// Defined further down (next to reimportTexture) but needed by the asset scan /
+// batch import above it: reads a texture's Library metadata into the converter
+// options so a (re)import honours the per-texture import settings.
+static ImageImportOptions imageImportOptionsFromMeta(const fs::path &metaPath,
+                                                     const ImageImportOptions &base);
+
 Manager::Manager(kWindow *setWindow, kWorld *setWorld, kRenderer *setRenderer)
 {
     window = setWindow;
@@ -932,6 +938,35 @@ void Manager::checkAssetChange()
                 fs::path thumbnailPath = libraryFolder / "Thumbnails" / (fileUuid + ".png");
                 fs::path metaPath = libraryFolder / "Metadata" / (fileUuid + ".json");
 
+                // Image importer migration: when the encoder's output format
+                // changes (kImageImporterVersion), re-import the .dds so existing
+                // projects pick up the fix without a manual re-import. The new
+                // version is stamped immediately so a later scan won't loop.
+                if (fileType == "image" && !needImport && fs::exists(metaPath))
+                {
+                    try
+                    {
+                        std::ifstream vf(metaPath);
+                        nlohmann::json vj;
+                        vf >> vj;
+                        if (vj.is_object() &&
+                            vj.value("importerVersion", 1) < kImageImporterVersion)
+                        {
+                            std::cout << "Re-importing image (importer v" << kImageImporterVersion
+                                      << "): " << relativePath << "\n";
+                            vj["importerVersion"] = kImageImporterVersion;
+                            std::ofstream vw(metaPath);
+                            if (vw)
+                                vw << vj.dump(4);
+                            needImport = true;
+                        }
+                    }
+                    catch (...)
+                    {
+                        // Unreadable metadata — treat as current and leave it alone.
+                    }
+                }
+
                 // Write / overwrite metadata whenever it's missing or the file changed.
                 // Preserve any existing user-chosen import settings (scaleFactor,
                 // tangents, importAnimation, etc.) so a source change or a fresh
@@ -961,6 +996,8 @@ void Manager::checkAssetChange()
                     meta["src_file"] = srcFullPath.filename().generic_string();
                     meta["dest_path"] = fs::relative(destDir, projectPath).generic_string();
                     meta["dest_file"] = fileUuid + uuidExt;
+                    if (fileType == "image")
+                        meta["importerVersion"] = kImageImporterVersion;
 
                     std::ofstream mf(metaPath);
                     if (mf)
@@ -1354,7 +1391,13 @@ void Manager::startBatchImport(const std::vector<ImportTask> &tasks)
 			}
 			else if (task.type == "image")
 			{
-				task.success = convertImageToDxt5(task.inputPath, task.outputPath);
+				// Honour the per-texture import settings from Library/Metadata so a
+				// batch re-import (source change or importer version bump) never
+				// silently resets the user's choices. Missing keys fall back to
+				// the ImageImportOptions defaults.
+				fs::path metaPath = projectPath / "Library" / "Metadata" / (task.uuid + ".json");
+				ImageImportOptions imgOpt = imageImportOptionsFromMeta(metaPath, ImageImportOptions{});
+				task.success = convertImageToDDS(task.inputPath, task.outputPath, imgOpt);
 				if (!task.success)
 					task.errorMsg = "image import failed (unsupported or corrupt source file?)";
 			}
@@ -8589,6 +8632,59 @@ kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString
     return tex;
 }
 
+/**
+ * @brief Build image import options from a texture's Library metadata.
+ *
+ * Shared by the batch import and reimportTexture so a re-import always honours
+ * the settings chosen in the Image Import Settings panel instead of silently
+ * reverting to defaults. Keys absent from the metadata fall back to @p base
+ * (notably alphaSource = Input Alpha, so an image that was never configured is
+ * never forced opaque).
+ *
+ * sRGB, wrap and filter are load-time only, so they are not part of the
+ * returned options — getProjectTexture reads those straight from the .meta.
+ *
+ * @param metaPath Path to `Library/Metadata/<uuid>.json` (may not exist).
+ * @param base     Defaults used for any key missing from the metadata.
+ */
+static ImageImportOptions imageImportOptionsFromMeta(const fs::path &metaPath,
+                                                     const ImageImportOptions &base)
+{
+    ImageImportOptions opt = base;
+    if (metaPath.empty() || !fs::exists(metaPath))
+        return opt;
+
+    try
+    {
+        std::ifstream mf(metaPath);
+        nlohmann::json mj;
+        mf >> mj;
+        static const int kMaxSizes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
+        int sizeIdx = mj.value("maxSizeIndex", 7);
+        sizeIdx = std::max(0, std::min(7, sizeIdx));
+        opt.maxSize = kMaxSizes[sizeIdx];
+        opt.compression = mj.value("compression", opt.compression);
+        opt.alphaSource = mj.value("alphaSource", opt.alphaSource);
+        // Channel: 0=sRGB, 1=Linear Color, 2=Linear Grayscale (migrate old bool).
+        int channel = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
+        opt.sRGB = (channel == 0);
+        opt.grayscale = (channel == 2);
+        opt.generateMipmap = mj.value("generateMipmap", opt.generateMipmap);
+        opt.flipVertical = mj.value("flipVertical", opt.flipVertical);
+
+        // Normal map (imageType 3): linear data, with its own options.
+        opt.isNormalMap = (mj.value("imageType", 0) == 3);
+        opt.flipGreen = mj.value("flipGreen", opt.flipGreen);
+        opt.fromGrayscale = mj.value("fromGrayscale", opt.fromGrayscale);
+        opt.bumpiness = mj.value("bumpiness", opt.bumpiness);
+        opt.normalFilter = mj.value("normalFilter", opt.normalFilter);
+    }
+    catch (...)
+    {
+    }
+    return opt;
+}
+
 bool Manager::reimportTexture(const kString &textureUuid)
 {
     auto fit = fileMap.find(textureUuid);
@@ -8602,41 +8698,8 @@ bool Manager::reimportTexture(const kString &textureUuid)
     fs::path ddsPath = projectPath / "Library" / "ImportedAssets" / (textureUuid + ".dds");
     fs::path metaPath = projectPath / "Library" / "Metadata" / (textureUuid + ".json");
 
-    // Map the inspector's import settings to converter options. (sRGB, wrap and
-    // filter are load-time only, so they're not passed to the converter here —
-    // getProjectTexture reads them straight from the .meta.)
-    ImageImportOptions opt;
-    if (fs::exists(metaPath))
-    {
-        try
-        {
-            std::ifstream mf(metaPath);
-            nlohmann::json mj;
-            mf >> mj;
-            static const int kSizes[] = {32, 64, 128, 256, 512, 1024, 2048, 4096};
-            int sizeIdx = mj.value("maxSizeIndex", 7);
-            sizeIdx = std::max(0, std::min(7, sizeIdx));
-            opt.maxSize = kSizes[sizeIdx];
-            opt.compression = mj.value("compression", 2);
-            opt.alphaSource = mj.value("alphaSource", 0);
-            // Channel: 0=sRGB, 1=Linear Color, 2=Linear Grayscale (migrate old bool).
-            int channel = mj.value("channel", mj.value("sRGB", true) ? 0 : 1);
-            opt.sRGB = (channel == 0);
-            opt.grayscale = (channel == 2);
-            opt.generateMipmap = mj.value("generateMipmap", true);
-            opt.flipVertical = mj.value("flipVertical", false);
-
-            // Normal map (imageType 3): linear data, with its own options.
-            opt.isNormalMap = (mj.value("imageType", 0) == 3);
-            opt.flipGreen = mj.value("flipGreen", false);
-            opt.fromGrayscale = mj.value("fromGrayscale", false);
-            opt.bumpiness = mj.value("bumpiness", 1.0f);
-            opt.normalFilter = mj.value("normalFilter", 0);
-        }
-        catch (...)
-        {
-        }
-    }
+    // Map the inspector's import settings to converter options.
+    ImageImportOptions opt = imageImportOptionsFromMeta(metaPath, ImageImportOptions{});
 
     std::error_code ec;
     fs::create_directories(ddsPath.parent_path(), ec);

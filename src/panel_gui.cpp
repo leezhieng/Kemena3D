@@ -2147,13 +2147,14 @@ static ImVec2 anchorFractions(GuiAnchor anchor)
 
 // Recursive runtime widget painter (no interaction, no selection UI).
 //
-// Layout rule — the reference canvas is letterboxed into the game view by
-// renderGuiLayout, so both axes arrive here with the same uniform factor:
+// Layout rule — the .ui's reference canvas is only an authoring guide: at
+// runtime renderGuiLayout stretches the layout to fill the whole game view, so
+// the two axes arrive with independent factors:
 //   * POSITIONS resolve anchor fractions against the parent's on-screen rect and
 //     scale free offsets with the matching axis, so a widget anchored to the
-//     bottom-right really lands in the bottom-right corner of the canvas.
-//   * SIZES keep their authored aspect ratio — buttons, labels and images are
-//     never squashed or stretched.
+//     bottom-right really lands in the bottom-right corner of the viewport.
+//   * SIZES scale per axis with the same factors, so a full-screen panel really
+//     covers the viewport even when its aspect ratio differs from the reference.
 static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, const GuiWidget& w,
                                    ImVec2 parentPxMin, ImVec2 parentPxSize,
                                    float scaleX, float scaleY,
@@ -2165,13 +2166,18 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
     // rotation/scale once the subtree (children included) is complete.
     const int vtxBegin = dl->VtxBuffer.Size;
 
-    // Uniform size factor: widgets keep their shape at every aspect ratio.
+    // Uniform factor for details that must never stretch (corner radii, border
+    // thickness, font size), averaged over the two axes.
     const float scale = (scaleX + scaleY) * 0.5f;
 
+    // Widget rect tracks the destination along each axis. Scaling both axes
+    // independently is what lets a right/bottom anchored widget reach the real
+    // viewport edge instead of stopping at the letterbox of the saved ratio.
+    const ImVec2 size(w.width * scaleX, w.height * scaleY);
+
     const ImVec2 af = anchorFractions(w.anchor);
-    const ImVec2 p0(parentPxMin.x + af.x * parentPxSize.x + w.x * scaleX - af.x * w.width * scale,
-                    parentPxMin.y + af.y * parentPxSize.y + w.y * scaleY - af.y * w.height * scale);
-    const ImVec2 size(w.width * scale, w.height * scale);
+    const ImVec2 p0(parentPxMin.x + af.x * parentPxSize.x + w.x * scaleX - af.x * size.x,
+                    parentPxMin.y + af.y * parentPxSize.y + w.y * scaleY - af.y * size.y);
     const ImVec2 p1(p0.x + size.x, p0.y + size.y);
 
     const ImVec2 pivot((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
@@ -2274,8 +2280,38 @@ static void renderGuiWidgetRuntime(const GuiLayout& layout, ImDrawList* dl, cons
                 GuiTextureInfo tex = resolveTexture(w.textureUuid);
                 if (tex.glId != 0)
                 {
+                    // ---- Viewport aspect compensation ----------------------
+                    // The widget rect is stretched on each axis to fill the
+                    // viewport, so a Fill image would inherit that stretch and
+                    // look squashed whenever the viewport ratio differs from the
+                    // document's reference canvas. Draw it into a box that keeps
+                    // the authored (reference-space) proportions, sized to stay
+                    // inside the widget rect, so the image looks exactly as it
+                    // did in the editor at any viewport aspect ratio.
+                    //
+                    // Sizing uses min(scaleX, scaleY), i.e. the largest uniform
+                    // scale that still fits the widget rect, so the box never
+                    // overflows and needs no clipping. When the two scales match
+                    // (reference ratio) the box equals the widget rect and this
+                    // is a no-op.
+                    //
+                    // Only Fill needs this: Cover/Contain/ScaleDown/None already
+                    // derive their size from the texture's own aspect ratio, so
+                    // they can safely keep the full widget rect.
+                    ImVec2 boxMin = p0;
+                    ImVec2 boxMax = p1;
+                    if (w.imageFit == GuiImageFit::Fill)
+                    {
+                        const float k  = ImMin(scaleX, scaleY);
+                        const float bw = w.width * k;
+                        const float bh = w.height * k;
+                        boxMin = ImVec2((p0.x + p1.x) * 0.5f - bw * 0.5f,
+                                        (p0.y + p1.y) * 0.5f - bh * 0.5f);
+                        boxMax = ImVec2(boxMin.x + bw, boxMin.y + bh);
+                    }
+
                     ImVec2 dmin, dmax;
-                    computeGuiImageRect(w.imageFit, p0, p1, tex.size, dmin, dmax);
+                    computeGuiImageRect(w.imageFit, boxMin, boxMax, tex.size, dmin, dmax);
                     const bool clip = (w.imageFit == GuiImageFit::Cover || w.imageFit == GuiImageFit::None);
                     if (clip)
                     {
@@ -2430,20 +2466,16 @@ void renderGuiLayout(ImDrawList* dl, const GuiLayout& layout, ImVec2 rectMin, Im
     if (!dl || rectW <= 0.0f || rectH <= 0.0f) return;
     if (layout.canvasWidth <= 0 || layout.canvasHeight <= 0) return;
 
-    // Letterbox: map the reference canvas onto the destination rect with a single
-    // uniform scale and centre it, so the whole .ui always fits the game view
-    // without any widget spilling outside (or being squashed on one axis).
-    const float fit = ImMin(rectW / (float)layout.canvasWidth,
-                            rectH / (float)layout.canvasHeight);
-    if (fit <= 0.0f) return;
-
-    const ImVec2 canvasSize((float)layout.canvasWidth * fit,
-                            (float)layout.canvasHeight * fit);
-    const ImVec2 origin(rectMin.x + (rectW - canvasSize.x) * 0.5f,
-                        rectMin.y + (rectH - canvasSize.y) * 0.5f);
+    // The reference canvas is only an authoring resolution: stretch the layout to
+    // fill the destination rect so widgets reach the real viewport edges at any
+    // aspect ratio. The saved canvas ratio is no longer enforced by letterboxing —
+    // it is used purely to derive the two per-axis scales.
+    const float scaleX = rectW / (float)layout.canvasWidth;
+    const float scaleY = rectH / (float)layout.canvasHeight;
+    if (scaleX <= 0.0f || scaleY <= 0.0f) return;
 
     for (int rid : layout.rootIds())
         if (const GuiWidget* w = layout.findWidget(rid))
-            renderGuiWidgetRuntime(layout, dl, *w, origin, canvasSize, fit, fit,
+            renderGuiWidgetRuntime(layout, dl, *w, rectMin, ImVec2(rectW, rectH), scaleX, scaleY,
                                    resolveTexture);
 }

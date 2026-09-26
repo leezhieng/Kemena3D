@@ -414,10 +414,13 @@ private:
 bool loadGuiLayoutFromFile(const std::string& path, GuiLayout& outLayout);
 
 /**
- * @brief Render a layout into an ImGui draw list, letterboxed into a screen rect.
+ * @brief Render a layout into an ImGui draw list, stretched to fill a screen rect.
  *
  * Used at runtime (Game panel) where the layout must scale to the viewport
- * rather than to the editor's preview transform.
+ * rather than to the editor's preview transform. The document's reference canvas
+ * size is only an authoring guide: the layout is scaled independently on each
+ * axis to fill the whole destination rect, so widgets land on the true viewport
+ * edges instead of being letterboxed to the saved aspect ratio.
  *
  * @param dl      Target draw list.
  * @param layout  Layout to render.

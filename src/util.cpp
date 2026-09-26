@@ -503,6 +503,148 @@ static std::vector<unsigned char> heightToNormal(const unsigned char *rgba, int 
     return out;
 }
 
+/**
+ * @brief Push opaque colour outward into fully-transparent texels (alpha bleed).
+ *
+ * Source images routinely store arbitrary RGB in fully-transparent texels —
+ * white being by far the most common, since RGB is treated as "don't care"
+ * there. Alpha is never filtered in isolation: bilinear sampling, mip
+ * generation and DXT5 colour blocks all interpolate RGB across the alpha
+ * boundary, so that white is dragged into the visible edge and shows up as a
+ * bright one-pixel fringe around otherwise-opaque artwork.
+ *
+ * Replicating the nearest opaque colour into the transparent texels (leaving
+ * their alpha at 0) makes every filter kernel blend edge colour into edge
+ * colour instead of into white, which removes the fringe. Nothing visible
+ * changes — fully-transparent pixels stay fully transparent — only the RGB the
+ * interpolation kernels average in does.
+ *
+ * Implemented as a multi-source breadth-first flood seeded from the opaque
+ * texels that line the alpha boundary, so each transparent texel takes the
+ * colour of its nearest opaque neighbour. A wave only reads the previous wave,
+ * which stops a spread from smearing a farther colour back toward the edge it
+ * came from. The flood has no depth limit, so even the lowest mip levels (which
+ * average very large blocks) only ever see edge colour.
+ *
+ * Runs in O(w * h) time and uses one integer of scratch memory per pixel.
+ *
+ * @param px Tightly packed RGBA8 pixels (modified in place).
+ * @param w  Image width in pixels.
+ * @param h  Image height in pixels.
+ */
+static void bleedTransparentEdges(unsigned char *px, int w, int h)
+{
+    if (!px || w <= 0 || h <= 0)
+        return;
+
+    const size_t n = (size_t)w * (size_t)h;
+
+    // 0 = untouched transparent texel, 1 = originally opaque (flood sources),
+    // k > 1 = texel bled by wave k-1. Reading only same-wave sources keeps the
+    // colour flowing outward from the true edge.
+    std::vector<int> wave(n, 0);
+    bool anyTransparent = false;
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (px[i * 4 + 3] > 0)
+            wave[i] = 1;
+        else
+            anyTransparent = true;
+    }
+
+    // Fully opaque image: nothing to bleed, and flooding would only copy the
+    // image onto itself. This also covers the normal-map and alphaSource = None
+    // paths, which force alpha to 255.
+    if (!anyTransparent)
+        return;
+
+    const int dx[4] = {1, -1, 0, 0};
+    const int dy[4] = {0, 0, 1, -1};
+
+    // Seed only opaque texels that touch a transparent one. Every reachable
+    // transparent texel is adjacent to an opaque texel, so this still floods the
+    // whole region while keeping the frontier proportional to the alpha edges
+    // rather than to the image area.
+    std::vector<size_t> frontier;
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const size_t i = (size_t)y * (size_t)w + (size_t)x;
+            if (wave[i] != 1)
+                continue;
+            for (int k = 0; k < 4; ++k)
+            {
+                const int nx = x + dx[k];
+                const int ny = y + dy[k];
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+                    continue;
+                if (wave[(size_t)ny * (size_t)w + (size_t)nx] == 0)
+                {
+                    frontier.push_back(i);
+                    break;
+                }
+            }
+        }
+    }
+
+    int cur = 1;
+    std::vector<size_t> nextFrontier;
+
+    while (!frontier.empty())
+    {
+        nextFrontier.clear();
+
+        for (size_t idx : frontier)
+        {
+            const int x = (int)(idx % (size_t)w);
+            const int y = (int)(idx / (size_t)w);
+
+            for (int k = 0; k < 4; ++k)
+            {
+                const int nx = x + dx[k];
+                const int ny = y + dy[k];
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+                    continue;
+
+                const size_t j = (size_t)ny * (size_t)w + (size_t)nx;
+                if (wave[j] != 0)
+                    continue; // opaque, or already filled by an earlier wave
+
+                // Average only the current wave's neighbours, never a mix of
+                // distances, so the bled colour stays close to the edge colour.
+                int r = 0, g = 0, b = 0, count = 0;
+                for (int m = 0; m < 4; ++m)
+                {
+                    const int ax = nx + dx[m];
+                    const int ay = ny + dy[m];
+                    if (ax < 0 || ay < 0 || ax >= w || ay >= h)
+                        continue;
+                    const size_t s = (size_t)ay * (size_t)w + (size_t)ax;
+                    if (wave[s] != cur)
+                        continue;
+                    r += px[s * 4 + 0];
+                    g += px[s * 4 + 1];
+                    b += px[s * 4 + 2];
+                    ++count;
+                }
+                if (count == 0)
+                    continue;
+
+                px[j * 4 + 0] = (unsigned char)(r / count);
+                px[j * 4 + 1] = (unsigned char)(g / count);
+                px[j * 4 + 2] = (unsigned char)(b / count);
+                // Alpha deliberately left at 0: the texel stays invisible.
+                wave[j] = cur + 1;
+                nextFrontier.push_back(j);
+            }
+        }
+
+        frontier.swap(nextFrontier);
+        ++cur;
+    }
+}
+
 bool convertImageToDDS(const fs::path &inputPath, const fs::path &outputPath, const ImageImportOptions &opt)
 {
     // stb's flip flag is a sticky global; set it for this load only and reset
@@ -563,6 +705,12 @@ bool convertImageToDDS(const fs::path &inputPath, const fs::path &outputPath, co
             }
         }
     }
+
+    // --- Alpha bleed ------------------------------------------------------
+    // Run before resize/mip generation/compression so none of those filters
+    // can drag the RGB of transparent texels (usually white) into the visible
+    // edge — the source of the bright fringes around opaque artwork.
+    bleedTransparentEdges(src, srcW, srcH);
 
     // --- Resize to clamp the longest edge to Max Size ---------------------
     // Always resize into a caller-owned vector (never the NULL-output allocator)

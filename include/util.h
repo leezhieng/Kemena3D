@@ -181,6 +181,22 @@ struct ImageImportOptions
 };
 
 /**
+ * @brief Version of the image-to-DDS encoder's output.
+ *
+ * Bumped whenever the encoder changes in a way that makes previously imported
+ * `Library/ImportedAssets/*.dds` files stale. The project scan compares this
+ * against the `importerVersion` stored in each image's metadata and silently
+ * re-imports (and re-stamps) any image written by an older encoder, so an
+ * editor upgrade fixes existing projects without a manual re-import.
+ *
+ * History:
+ *  - 1: original encoder (no alpha bleed).
+ *  - 2: transparent texels are alpha-bled before resize/mip/DXT5, removing the
+ *       bright fringe around opaque artwork.
+ */
+inline constexpr int kImageImporterVersion = 2;
+
+/**
  * @brief Convert an image file to a DDS texture honouring import settings.
  *
  * Loads @p inputPath as RGBA, applies the alpha-source rule, optionally
@@ -197,8 +213,10 @@ bool convertImageToDDS(const fs::path& inputPath, const fs::path& outputPath, co
 /**
  * @brief Convert an image to a DXT5 .dds using default import settings.
  *
- * Thin wrapper over convertImageToDDS() for the initial batch import, before the
- * user customizes per-texture settings.
+ * Thin wrapper over convertImageToDDS() with an all-defaults
+ * @ref ImageImportOptions. Prefer convertImageToDDS() with options derived from
+ * a texture's metadata (see the project scan / reimportTexture) so a re-import
+ * honours the settings the user chose in the Image Import Settings panel.
  *
  * @param inputPath  Path to the source image file.
  * @param outputPath Destination path for the generated .dds file.
