@@ -1818,6 +1818,24 @@ void Manager::drawImportPopup(PanelConsole *console)
                         thumbnailQueue.push_back({task.uuid, task.inputPath, task.thumbnailPath, "image"});
                         task.reported = true;
                     }
+
+                    // A re-imported asset that the open world/scene references is
+                    // pushed back into the live scene here, once its conversion has
+                    // actually finished. This is the earliest point the new
+                    // Library/ImportedAssets file is guaranteed ready, since the
+                    // conversion ran on a worker thread. Entries are erased so the
+                    // refresh happens exactly once (this loop re-runs each frame
+                    // while the completion popup is shown).
+                    if (!task.uuid.empty())
+                    {
+                        auto pit = reimportReloadPending.find(task.uuid);
+                        if (pit != reimportReloadPending.end())
+                        {
+                            if (task.success)
+                                applyAssetReload(task.uuid);
+                            reimportReloadPending.erase(pit);
+                        }
+                    }
                 }
 
                 auto now = std::chrono::steady_clock::now();
@@ -1826,6 +1844,53 @@ void Manager::drawImportPopup(PanelConsole *console)
                     gui->closeCurrentPopup();
                     showImportPopup = false;
                     importEndTime = {};
+
+                    // Safety net: if a second re-import started (and overwrote
+                    // importQueue) before this batch finished, a parked UUID may
+                    // never have appeared in the loop above. Flush whatever is
+                    // left, but only where the converted file now exists — a
+                    // still-running or failed conversion must not trigger a reload
+                    // against a file that is not there.
+                    if (!reimportReloadPending.empty())
+                    {
+                        fs::path importedDir = projectPath / "Library" / "ImportedAssets";
+                        for (auto it = reimportReloadPending.begin();
+                             it != reimportReloadPending.end();)
+                        {
+                            const kString &ruuid = *it;
+                            bool ready = false;
+                            for (const char *ext : {".glb", ".dds", ".wav"})
+                            {
+                                if (fs::exists(importedDir / (ruuid + ext)))
+                                {
+                                    ready = true;
+                                    break;
+                                }
+                            }
+                            // Types without a Library conversion (material, shader,
+                            // prefab, ...) park nothing, so a missing file means the
+                            // conversion is not ready yet — keep waiting.
+                            if (ready)
+                            {
+                                applyAssetReload(ruuid);
+                                it = reimportReloadPending.erase(it);
+                            }
+                            else
+                            {
+                                auto fit = fileMap.find(ruuid);
+                                if (fit != fileMap.end() && fit->second.type != "mesh" &&
+                                    fit->second.type != "image" && fit->second.type != "audio")
+                                {
+                                    applyAssetReload(ruuid);
+                                    it = reimportReloadPending.erase(it);
+                                }
+                                else
+                                {
+                                    ++it;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 gui->popupEnd();
@@ -9231,6 +9296,51 @@ void Manager::processPendingMeshReloads()
     }
 }
 
+void Manager::applyAssetReload(const kString &uuid)
+{
+    if (uuid.empty())
+        return;
+
+    auto fit = fileMap.find(uuid);
+    if (fit == fileMap.end())
+        return;
+
+    const kString &type = fit->second.type;
+
+    if (type == "mesh")
+    {
+        // Rebuild every scene instance that references this mesh. Deferred (like
+        // reimportMesh) so the old objects are never torn down mid panel-draw;
+        // processPendingMeshReloads picks this up on the next frame.
+        if (std::find(pendingMeshReloads.begin(), pendingMeshReloads.end(), uuid) ==
+            pendingMeshReloads.end())
+            pendingMeshReloads.push_back(uuid);
+    }
+    else if (type == "image")
+    {
+        // Drop the cached GPU texture(s) so the next material build reloads the new
+        // .dds, then rebuild materials on every scene object so the change shows.
+        // Both the default (sRGB) and the normal-map (linear) variants are evicted.
+        textureCache.erase(uuid);
+        textureCache.erase(uuid + "#linear");
+        reapplyStoredMaterials();
+    }
+    else if (type == "material" || type == "shader")
+    {
+        // The source is read directly (no Library/ImportedAssets conversion), so
+        // rebuilding the stored materials is all that is needed to pick up the
+        // edit — for a shader this also drops the stale kShader* held by materials,
+        // since checkAssetChange() already cleared shaderCache.
+        reapplyStoredMaterials();
+    }
+    else if (type == "prefab")
+    {
+        // Re-expand every instance so the prefab the world references reflects
+        // the refreshed source.
+        refreshAllPrefabInstances(uuid);
+    }
+}
+
 kShader *Manager::getRawShader(const kString &shaderUuid)
 {
     if (shaderUuid.empty())
@@ -9660,6 +9770,27 @@ void Manager::reimportAsset(const kString &uuid)
 
     // Trigger re-import
     checkAssetChange();
+
+    // Refresh the live world/scene so any object referencing this asset reflects
+    // the change. checkAssetChange() queues a conversion task for mesh/image/audio;
+    // those run on the import worker thread, so the refresh can only happen once
+    // the batch finishes — drawImportPopup() then calls applyAssetReload() for
+    // every UUID parked here. Asset types with no Library conversion (material,
+    // shader, prefab, ...) have nothing to wait for, so refresh right away.
+    bool conversionQueued = false;
+    for (const ImportTask &t : importTasks)
+    {
+        if (t.uuid == uuid)
+        {
+            conversionQueued = true;
+            break;
+        }
+    }
+
+    if (conversionQueued)
+        reimportReloadPending.insert(uuid);
+    else
+        applyAssetReload(uuid);
 }
 
 // ===========================================================================

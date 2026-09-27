@@ -686,6 +686,23 @@ public:
     void processPendingMeshReloads();
 
     /**
+     * @brief Refreshes live world/scene objects that reference a re-imported asset.
+     *
+     * A Reimport from the project panel goes through @ref reimportAsset, which
+     * performs the conversion on the import worker thread. This is the counterpart
+     * the inspector's synchronous @ref reimportMesh / @ref reimportTexture already
+     * do: it makes the open world/scene reflect the freshly converted asset.
+     *
+     * Meshes are queued into @ref pendingMeshReloads (rebuilt next frame by
+     * @ref processPendingMeshReloads); images drop their cached GPU textures and
+     * rebuild materials; materials and shaders rebuild the stored materials.
+     * Assets with no live scene representation (audio, world, ...) are ignored.
+     *
+     * @param uuid Asset UUID as tracked in the asset registry.
+     */
+    void applyAssetReload(const kString &uuid);
+
+    /**
      * @brief Records an asset's import settings in the git-tracked settings store.
      *
      * Called by the inspector when the user applies new mesh/texture import
@@ -698,6 +715,12 @@ public:
      */
     void publishImportSettings(const kString &uuid, const nlohmann::json &meta);
     std::vector<kString> pendingMeshReloads;
+
+    /// UUIDs of assets whose Reimport conversion is still running on the import
+    /// worker thread. Once the batch finishes, @ref drawImportPopup calls
+    /// @ref applyAssetReload for each entry so the live world/scene picks up the
+    /// new asset without the user having to close and reopen the world.
+    std::set<kString> reimportReloadPending;
     kShader *getRawShader(const kString &shaderUuid);
     kString getMaterialShaderSource(const nlohmann::json &matJson);
     void applyDefaultMaterialToObject(kObject *obj);
