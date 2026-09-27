@@ -181,6 +181,27 @@ nlohmann::json AnimatorGraph::toJson() const
         sj["sizeX"]     = s.sizeX;
         sj["sizeY"]     = s.sizeY;
         sj["comment"]   = s.comment;
+
+        // Blend-tree payload (written for every node so round-trips are exact).
+        sj["blendType"]   = (int)s.blendType;
+        sj["blendParamX"] = s.blendParamX;
+        sj["blendParamY"] = s.blendParamY;
+        sj["blendRangeX"] = json::array({ s.blendRangeXMin, s.blendRangeXMax });
+        sj["blendRangeY"] = json::array({ s.blendRangeYMin, s.blendRangeYMax });
+
+        json blendArr = json::array();
+        for (const auto& c : s.blendChildren)
+        {
+            json cj;
+            cj["stateId"]   = c.stateId;
+            cj["threshold"] = c.threshold;
+            cj["posX"]      = c.posX;
+            cj["posY"]      = c.posY;
+            cj["speed"]     = c.speed;
+            blendArr.push_back(cj);
+        }
+        sj["blendChildren"] = blendArr;
+
         statesArr.push_back(sj);
     }
     j["states"] = statesArr;
@@ -265,6 +286,34 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
             st.sizeX         = s.value("sizeX", 320.0f);
             st.sizeY         = s.value("sizeY", 180.0f);
             st.comment       = s.value("comment", std::string("Comment"));
+
+            // Blend-tree payload.
+            st.blendType   = (AnimBlendType)s.value("blendType", (int)AnimBlendType::OneD);
+            st.blendParamX = s.value("blendParamX", std::string());
+            st.blendParamY = s.value("blendParamY", std::string());
+            if (s.contains("blendRangeX") && s["blendRangeX"].is_array() && s["blendRangeX"].size() >= 2)
+            {
+                st.blendRangeXMin = s["blendRangeX"][0].get<float>();
+                st.blendRangeXMax = s["blendRangeX"][1].get<float>();
+            }
+            if (s.contains("blendRangeY") && s["blendRangeY"].is_array() && s["blendRangeY"].size() >= 2)
+            {
+                st.blendRangeYMin = s["blendRangeY"][0].get<float>();
+                st.blendRangeYMax = s["blendRangeY"][1].get<float>();
+            }
+            if (s.contains("blendChildren") && s["blendChildren"].is_array())
+            {
+                for (const auto& c : s["blendChildren"])
+                {
+                    AnimBlendChild bc;
+                    bc.stateId   = c.value("stateId", -1);
+                    bc.threshold = c.value("threshold", 0.0f);
+                    bc.posX      = c.value("posX", 0.0f);
+                    bc.posY      = c.value("posY", 0.0f);
+                    bc.speed     = c.value("speed", 1.0f);
+                    st.blendChildren.push_back(bc);
+                }
+            }
             states.push_back(st);
         }
     }
@@ -337,8 +386,9 @@ void PanelAnimator::newGraph()
     dragFromState      = -1;
     dragFromOutput     = false;
     isDraggingState    = false;
+    dragBlendChildIndex = -1;
 
-    // Add a default entry state
+    // Add the always-present Default State (the entry point).
     AnimState entry;
     entry.id        = graph.newNodeId();
     entry.name      = "Default State";
@@ -346,6 +396,16 @@ void PanelAnimator::newGraph()
     entry.posX      = 300.f;
     entry.posY      = 200.f;
     graph.states.push_back(entry);
+
+    // Add the always-present Any State node. It is source-only (no input pin)
+    // and, like the Default State, cannot be deleted.
+    AnimState any;
+    any.id   = graph.newNodeId();
+    any.kind = AnimStateKind::AnyState;
+    any.name = "Any State";
+    any.posX = 40.f;
+    any.posY = 40.f;
+    graph.states.push_back(any);
 }
 
 void PanelAnimator::openFile(const std::string& path)
@@ -363,7 +423,10 @@ void PanelAnimator::loadGraph(const std::string& path)
         graph.fromJson(j);
         filePath = path;
         graph.name = fs::path(path).stem().string();
-        graph.dirty = false;
+        // Guarantee the always-present nodes exist even in files written before
+        // Any State / Blend Tree support was added.
+        bool added = ensureSpecialNodes();
+        graph.dirty = added;
         selectedState      = -1;
         selectedTransition = -1;
         editingVarIndex    = -1;
@@ -371,6 +434,7 @@ void PanelAnimator::loadGraph(const std::string& path)
         dragFromState      = -1;
         dragFromOutput     = false;
         isDraggingState    = false;
+        dragBlendChildIndex = -1;
     }
     catch (...) {}
 }
@@ -441,40 +505,140 @@ ImVec2 PanelAnimator::screenToCanvas(ImVec2 sp, ImVec2 origin) const
     return (sp - origin) * (1.f / canvasZoom) - canvasOffset;
 }
 
-ImVec2 PanelAnimator::getInputPinPos(const AnimState& state, ImVec2 origin) const
+// ---------------------------------------------------------------------------
+// Node geometry + lookups
+// ---------------------------------------------------------------------------
+
+float PanelAnimator::nodeWidth(const AnimState& state) const
 {
-    // Anchor nodes are small pass-through circles with pins on their left/right.
-    if (state.isAnchor())
+    switch (state.kind)
     {
-        float zoom = canvasZoom;
-        ImVec2 tl  = canvasToScreen({ state.posX, state.posY }, origin);
-        return { tl.x, tl.y + 12.f * zoom };
+        case AnimStateKind::Comment:   return state.sizeX;
+        case AnimStateKind::Anchor:    return 24.f;
+        case AnimStateKind::AnyState:  return ANY_STATE_WIDTH;
+        case AnimStateKind::BlendTree: return BLEND_NODE_WIDTH;
+        case AnimStateKind::State:
+        default:                       return NODE_WIDTH;
+    }
+}
+
+float PanelAnimator::nodeHeight(const AnimState& state) const
+{
+    switch (state.kind)
+    {
+        case AnimStateKind::Comment:   return state.sizeY;
+        case AnimStateKind::Anchor:    return 24.f;
+        case AnimStateKind::AnyState:  return NODE_HEADER_H + ANY_STATE_BODY_H;
+        case AnimStateKind::BlendTree: return NODE_HEADER_H +
+                                              (state.blendType == AnimBlendType::TwoD
+                                                   ? BLEND_BODY_H_2D : BLEND_BODY_H_1D);
+        case AnimStateKind::State:
+        default:
+            return NODE_HEADER_H + (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f);
+    }
+}
+
+void PanelAnimator::nodeScreenRect(const AnimState& state, ImVec2 origin, ImVec2& tl, ImVec2& br) const
+{
+    tl = canvasToScreen({ state.posX, state.posY }, origin);
+    br = tl + ImVec2(nodeWidth(state) * canvasZoom, nodeHeight(state) * canvasZoom);
+}
+
+void PanelAnimator::blendDiagramRect(const AnimState& state, ImVec2 origin, ImVec2& tl, ImVec2& br) const
+{
+    ImVec2 nTL, nBR;
+    nodeScreenRect(state, origin, nTL, nBR);
+    float pad = BLEND_PAD * canvasZoom;
+    tl = { nTL.x + pad, nTL.y + NODE_HEADER_H * canvasZoom + pad };
+    br = { nBR.x - pad, nBR.y - pad };
+}
+
+AnimState* PanelAnimator::findAnyState()
+{
+    for (auto& s : graph.states)
+        if (s.isAnyState()) return &s;
+    return nullptr;
+}
+
+AnimState* PanelAnimator::findDefaultState()
+{
+    for (auto& s : graph.states)
+        if (s.isState() && s.isDefault) return &s;
+    return nullptr;
+}
+
+bool PanelAnimator::ensureSpecialNodes()
+{
+    bool added = false;
+
+    // Exactly one Default State must exist.
+    if (!findDefaultState())
+    {
+        AnimState* firstState = nullptr;
+        for (auto& s : graph.states)
+            if (s.isState()) { firstState = &s; break; }
+
+        if (firstState)
+        {
+            firstState->isDefault = true;
+        }
+        else
+        {
+            AnimState entry;
+            entry.id        = graph.newNodeId();
+            entry.name      = "Default State";
+            entry.isDefault = true;
+            entry.posX      = 300.f;
+            entry.posY      = 200.f;
+            graph.states.push_back(entry);
+            added = true;
+        }
     }
 
-    // Input pin: left side, vertically centered on the node body (below header)
-    float zoom = canvasZoom;
-    float hdrH = NODE_HEADER_H * zoom;
-    float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * zoom;
+    // Exactly one Any State node must exist.
+    if (!findAnyState())
+    {
+        AnimState any;
+        any.id   = graph.newNodeId();
+        any.kind = AnimStateKind::AnyState;
+        any.name = "Any State";
+        any.posX = 40.f;
+        any.posY = 40.f;
+        graph.states.push_back(any);
+        added = true;
+    }
+
+    return added;
+}
+
+ImVec2 PanelAnimator::getInputPinPos(const AnimState& state, ImVec2 origin) const
+{
+    const float zoom = canvasZoom;
     ImVec2 tl = canvasToScreen({ state.posX, state.posY }, origin);
+
+    // Anchor nodes are small pass-through circles with pins on their left/right.
+    if (state.isAnchor())
+        return { tl.x, tl.y + 12.f * zoom };
+
+    // Input pin: left side, vertically centered on the node body (below header).
+    float hdrH  = NODE_HEADER_H * zoom;
+    float bodyH = (nodeHeight(state) - NODE_HEADER_H) * zoom;
     return { tl.x, tl.y + hdrH + bodyH * 0.5f };
 }
 
 ImVec2 PanelAnimator::getOutputPinPos(const AnimState& state, ImVec2 origin) const
 {
+    const float zoom = canvasZoom;
+    ImVec2 tl = canvasToScreen({ state.posX, state.posY }, origin);
+
     // Anchor nodes are small pass-through circles with pins on their left/right.
     if (state.isAnchor())
-    {
-        float zoom = canvasZoom;
-        ImVec2 tl  = canvasToScreen({ state.posX, state.posY }, origin);
         return { tl.x + 24.f * zoom, tl.y + 12.f * zoom };
-    }
 
-    // Output pin: right side, vertically centered on the node body (below header)
-    float zoom = canvasZoom;
-    float nw   = NODE_WIDTH * zoom;
-    float hdrH = NODE_HEADER_H * zoom;
-    float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * zoom;
-    ImVec2 tl = canvasToScreen({ state.posX, state.posY }, origin);
+    // Output pin: right side, vertically centered on the node body (below header).
+    float nw    = nodeWidth(state) * zoom;
+    float hdrH  = NODE_HEADER_H * zoom;
+    float bodyH = (nodeHeight(state) - NODE_HEADER_H) * zoom;
     return { tl.x + nw, tl.y + hdrH + bodyH * 0.5f };
 }
 
@@ -482,7 +646,8 @@ int PanelAnimator::hitTestInputPins(ImVec2 mouse, ImVec2 origin) const
 {
     for (const auto& s : graph.states)
     {
-        if (s.isComment()) continue;
+        // The Any State node is source-only, so it contributes no input pin.
+        if (s.isComment() || s.isAnyState()) continue;
         ImVec2 p = getInputPinPos(s, origin);
         float dx = mouse.x - p.x, dy = mouse.y - p.y;
         // Anchors are tiny; keep their pin hit radius tight so the body can be
@@ -576,17 +741,18 @@ int PanelAnimator::hitTestLinks(ImVec2 mouse, ImVec2 origin) const
 
 void PanelAnimator::drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
 {
-    if (state.isAnchor())  { drawAnchorNode(dl, state, origin);  return; }
-    if (state.isComment()) { drawCommentNode(dl, state, origin); return; }
+    if (state.isAnchor())    { drawAnchorNode(dl, state, origin);    return; }
+    if (state.isComment())   { drawCommentNode(dl, state, origin);   return; }
+    if (state.isAnyState())  { drawAnyStateNode(dl, state, origin);  return; }
+    if (state.isBlendTree()) { drawBlendTreeNode(dl, state, origin); return; }
 
     const float zoom     = canvasZoom;
-    const float nw       = NODE_WIDTH * zoom;
+    const float nw       = nodeWidth(state) * zoom;
     const float hdrH     = NODE_HEADER_H * zoom;
     const float pinR     = PIN_RADIUS * zoom;
     const float fontSize = ImGui::GetFontSize();
 
-    float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * zoom;
-    float totalH = hdrH + bodyH;
+    float totalH = nodeHeight(state) * zoom;
 
     ImVec2 topLeft = canvasToScreen({ state.posX, state.posY }, origin);
     ImVec2 botRight = topLeft + ImVec2(nw, totalH);
@@ -654,6 +820,168 @@ void PanelAnimator::drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
         dl->AddCircleFilled(outPos, pinR, IM_COL32(255, 180, 80, 255));
         dl->AddCircle(outPos, pinR, IM_COL32(200, 200, 200, 180), 0, 1.5f);
     }
+}
+
+void PanelAnimator::drawAnyStateNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
+{
+    const float zoom     = canvasZoom;
+    const float nw       = ANY_STATE_WIDTH * zoom;
+    const float hdrH     = NODE_HEADER_H * zoom;
+    const float pinR     = PIN_RADIUS * zoom;
+    const float fontSize = ImGui::GetFontSize();
+
+    const float totalH = (NODE_HEADER_H + ANY_STATE_BODY_H) * zoom;
+
+    ImVec2 topLeft  = canvasToScreen({ state.posX, state.posY }, origin);
+    ImVec2 botRight = topLeft + ImVec2(nw, totalH);
+
+    bool isSelected = (state.id == selectedState);
+    ImVec4 hdrCol   = ImVec4(0.10f, 0.20f, 0.55f, 1.f); // deep blue
+
+    dl->AddRectFilled({ topLeft.x + 3, topLeft.y + 3 }, { botRight.x + 3, botRight.y + 3 },
+                      IM_COL32(0, 0, 0, 80), 6.f * zoom);
+    dl->AddRectFilled(topLeft, botRight, IM_COL32(40, 44, 52, 235), 6.f * zoom);
+    dl->AddRectFilled(topLeft, { botRight.x, topLeft.y + hdrH }, toImU32(hdrCol), 6.f * zoom);
+    dl->AddRectFilled({ topLeft.x, topLeft.y + hdrH - 4.f * zoom },
+                      { botRight.x, topLeft.y + hdrH }, toImU32(hdrCol), 0.f);
+
+    ImU32 outlineCol = isSelected ? IM_COL32(255, 200, 50, 255) : IM_COL32(100, 100, 100, 180);
+    dl->AddRect(topLeft, botRight, outlineCol, 6.f * zoom, 0, isSelected ? 2.f : 1.f);
+
+    ImVec2 titlePos = topLeft + ImVec2(6.f * zoom, (hdrH - fontSize) * 0.5f);
+    dl->AddText(titlePos, IM_COL32(255, 255, 255, 255), state.name.c_str());
+
+    float bodyY = topLeft.y + hdrH + 4.f * zoom;
+    dl->AddText({ topLeft.x + 6.f * zoom, bodyY }, IM_COL32(160, 190, 230, 255), "Source only");
+    bodyY += fontSize + 2.f * zoom;
+    dl->AddText({ topLeft.x + 6.f * zoom, bodyY }, IM_COL32(150, 150, 150, 255),
+                "Fires from any state");
+
+    // Output pin only: the Any State node is never a destination.
+    ImVec2 outPos = getOutputPinPos(state, origin);
+    dl->AddCircleFilled(outPos, pinR, IM_COL32(255, 180, 80, 255));
+    dl->AddCircle(outPos, pinR, IM_COL32(200, 200, 200, 180), 0, 1.5f);
+}
+
+void PanelAnimator::drawBlendTreeNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
+{
+    const float zoom     = canvasZoom;
+    const float nw       = BLEND_NODE_WIDTH * zoom;
+    const float hdrH     = NODE_HEADER_H * zoom;
+    const float pinR     = PIN_RADIUS * zoom;
+    const float fontSize = ImGui::GetFontSize();
+
+    const bool  is2D  = (state.blendType == AnimBlendType::TwoD);
+    const float bodyH = (is2D ? BLEND_BODY_H_2D : BLEND_BODY_H_1D) * zoom;
+
+    ImVec2 topLeft  = canvasToScreen({ state.posX, state.posY }, origin);
+    ImVec2 botRight = topLeft + ImVec2(nw, hdrH + bodyH);
+
+    bool isSelected = (state.id == selectedState);
+    ImVec4 hdrCol   = ImVec4(0.42f, 0.20f, 0.58f, 1.f); // purple
+
+    dl->AddRectFilled({ topLeft.x + 3, topLeft.y + 3 }, { botRight.x + 3, botRight.y + 3 },
+                      IM_COL32(0, 0, 0, 80), 6.f * zoom);
+    dl->AddRectFilled(topLeft, botRight, IM_COL32(45, 45, 48, 235), 6.f * zoom);
+    dl->AddRectFilled(topLeft, { botRight.x, topLeft.y + hdrH }, toImU32(hdrCol), 6.f * zoom);
+    dl->AddRectFilled({ topLeft.x, topLeft.y + hdrH - 4.f * zoom },
+                      { botRight.x, topLeft.y + hdrH }, toImU32(hdrCol), 0.f);
+
+    ImU32 outlineCol = isSelected ? IM_COL32(255, 200, 50, 255) : IM_COL32(100, 100, 100, 180);
+    dl->AddRect(topLeft, botRight, outlineCol, 6.f * zoom, 0, isSelected ? 2.f : 1.f);
+
+    // Title + 1D/2D tag.
+    ImVec2 titlePos = topLeft + ImVec2(6.f * zoom, (hdrH - fontSize) * 0.5f);
+    dl->AddText(titlePos, IM_COL32(255, 255, 255, 255), state.name.c_str());
+    const char* tag = is2D ? "2D" : "1D";
+    float tagW = ImGui::CalcTextSize(tag).x;
+    dl->AddText({ topLeft.x + nw - tagW - 6.f * zoom, topLeft.y + (hdrH - fontSize) * 0.5f },
+                IM_COL32(235, 225, 255, 220), tag);
+
+    ImVec2 dtl, dbr;
+    blendDiagramRect(state, origin, dtl, dbr);
+
+    // Diagram background.
+    dl->AddRectFilled(dtl, dbr, IM_COL32(28, 28, 34, 255), 4.f * zoom);
+    dl->AddRect(dtl, dbr, IM_COL32(90, 90, 110, 180), 4.f * zoom);
+
+    auto mapX = [&](float v) -> float {
+        float r0 = state.blendRangeXMin, r1 = state.blendRangeXMax;
+        if (r1 - r0 < 1e-5f) r1 = r0 + 1.f;
+        return dtl.x + (v - r0) / (r1 - r0) * (dbr.x - dtl.x);
+    };
+    auto mapY = [&](float v) -> float {
+        float r0 = state.blendRangeYMin, r1 = state.blendRangeYMax;
+        if (r1 - r0 < 1e-5f) r1 = r0 + 1.f;
+        return dbr.y - (v - r0) / (r1 - r0) * (dbr.y - dtl.y); // y grows upward
+    };
+    auto evalVar = [&](const std::string& name) -> float {
+        for (const auto& v : graph.variables)
+            if (v.name == name) return v.defaultValue;
+        return 0.f;
+    };
+
+    if (is2D)
+    {
+        float midX = mapX((state.blendRangeXMin + state.blendRangeXMax) * 0.5f);
+        float midY = mapY((state.blendRangeYMin + state.blendRangeYMax) * 0.5f);
+        dl->AddLine({ midX, dtl.y }, { midX, dbr.y }, IM_COL32(70, 70, 80, 200));
+        dl->AddLine({ dtl.x, midY }, { dbr.x, midY }, IM_COL32(70, 70, 80, 200));
+    }
+    else
+    {
+        float midY = (dtl.y + dbr.y) * 0.5f;
+        dl->AddLine({ dtl.x, midY }, { dbr.x, midY }, IM_COL32(80, 80, 95, 220));
+    }
+
+    // Current parameter position marker (uses the variable's default value).
+    {
+        ImU32 markerCol = IM_COL32(120, 220, 160, 200);
+        float px = evalVar(state.blendParamX);
+        if (is2D)
+        {
+            float py = evalVar(state.blendParamY);
+            float sx = mapX(px), sy = mapY(py);
+            dl->AddLine({ sx, dtl.y }, { sx, dbr.y }, markerCol);
+            dl->AddLine({ dtl.x, sy }, { dbr.x, sy }, markerCol);
+        }
+        else
+        {
+            float sx = mapX(px);
+            dl->AddLine({ sx, dtl.y }, { sx, dbr.y }, markerCol);
+        }
+    }
+
+    // Each blend child as a labelled dot.
+    for (const auto& child : state.blendChildren)
+    {
+        AnimState* linked = graph.findState(child.stateId);
+        float cx = mapX(is2D ? child.posX : child.threshold);
+        float cy = is2D ? mapY(child.posY) : (dtl.y + dbr.y) * 0.5f;
+        ImU32 dotCol = linked ? IM_COL32(255, 180, 80, 255) : IM_COL32(200, 90, 90, 255);
+        dl->AddCircleFilled({ cx, cy }, 5.f * zoom, dotCol);
+        dl->AddCircle({ cx, cy }, 5.f * zoom, IM_COL32(20, 20, 20, 220), 0, 1.5f);
+
+        std::string label = linked ? linked->name : std::string("(none)");
+        ImVec2 ls = ImGui::CalcTextSize(label.c_str());
+        dl->AddText({ cx - ls.x * 0.5f, cy + 7.f * zoom }, IM_COL32(220, 220, 220, 220), label.c_str());
+    }
+
+    if (state.blendChildren.empty())
+    {
+        const char* hint = "Add motions in Inspector";
+        ImVec2 hs = ImGui::CalcTextSize(hint);
+        dl->AddText({ (dtl.x + dbr.x) * 0.5f - hs.x * 0.5f, (dtl.y + dbr.y) * 0.5f - hs.y * 0.5f },
+                    IM_COL32(140, 140, 140, 220), hint);
+    }
+
+    // Input (left) and output (right) pins so a blend tree behaves like a state.
+    ImVec2 inPos  = getInputPinPos(state, origin);
+    ImVec2 outPos = getOutputPinPos(state, origin);
+    dl->AddCircleFilled(inPos, pinR, IM_COL32(100, 180, 255, 255));
+    dl->AddCircle(inPos, pinR, IM_COL32(200, 200, 200, 180), 0, 1.5f);
+    dl->AddCircleFilled(outPos, pinR, IM_COL32(255, 180, 80, 255));
+    dl->AddCircle(outPos, pinR, IM_COL32(200, 200, 200, 180), 0, 1.5f);
 }
 
 void PanelAnimator::drawAnchorNode(ImDrawList* dl, AnimState& state, ImVec2 origin)
@@ -844,6 +1172,26 @@ void PanelAnimator::drawStateContextMenu()
             graph.states.push_back(st);
             graph.dirty = true;
         }
+        if (ImGui::MenuItem("Add Blend Tree"))
+        {
+            AnimState st;
+            st.id        = graph.newNodeId();
+            st.kind      = AnimStateKind::BlendTree;
+            st.name      = "Blend Tree";
+            st.blendType = AnimBlendType::OneD;
+            st.posX      = contextMenuPos.x;
+            st.posY      = contextMenuPos.y;
+
+            // Preselect the first float variables so the node is usable at once.
+            for (const auto& v : graph.variables)
+            {
+                if (v.type != AnimVariableType::Float) continue;
+                if (st.blendParamX.empty()) st.blendParamX = v.name;
+                else                        { st.blendParamY = v.name; break; }
+            }
+            graph.states.push_back(st);
+            graph.dirty = true;
+        }
         if (ImGui::MenuItem("Add Comment"))
         {
             AnimState st;
@@ -876,6 +1224,30 @@ void PanelAnimator::drawSelectedStateInspector()
     if (!state)
     {
         selectedState = -1;
+        return;
+    }
+
+    // Any State: a fixed, source-only node. It can be neither renamed nor deleted.
+    if (state->isAnyState())
+    {
+        ImGui::TextUnformatted("Animator Any State");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "   (id %d)", state->id);
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "This node is always present and cannot be deleted or renamed. "
+            "Drag from its output pin to a state (or a blend tree) to create a "
+            "transition that can fire from any state while its conditions are met.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Any State has an output pin only (no input).");
+        return;
+    }
+
+    // Blend tree: dedicated editor for the 1D / 2D motion layout.
+    if (state->isBlendTree())
+    {
+        drawBlendTreeInspector(state);
         return;
     }
 
@@ -1053,6 +1425,198 @@ void PanelAnimator::drawSelectedStateInspector()
         }
         ImGui::PopStyleColor(2);
     }
+}
+
+// ===========================================================================
+// Blend tree inspector (shown in the Inspector panel for the selected node)
+// ===========================================================================
+
+void PanelAnimator::drawBlendTreeInspector(AnimState* state)
+{
+    if (!state) return;
+
+    ImGui::TextUnformatted("Animator Blend Tree");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "   (id %d)", state->id);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Name
+    char nameBuf[128];
+    strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
+    nameBuf[sizeof(nameBuf) - 1] = '\0';
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+    {
+        state->name = nameBuf;
+        graph.dirty = true;
+    }
+
+    // Blend type: a single axis (1D) or a plane (2D).
+    ImGui::Spacing();
+    const char* blendTypes[] = { "1D", "2D" };
+    int bt = (int)state->blendType;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("Blend Type", &bt, blendTypes, IM_ARRAYSIZE(blendTypes)))
+    {
+        state->blendType = (AnimBlendType)bt;
+        graph.dirty = true;
+    }
+
+    // Float variables usable as blend parameters.
+    std::vector<const char*> floatVars;
+    floatVars.push_back("(none)");
+    for (const auto& v : graph.variables)
+        if (v.type == AnimVariableType::Float) floatVars.push_back(v.name.c_str());
+
+    auto paramIndex = [&](const std::string& name) -> int {
+        for (int i = 1; i < (int)floatVars.size(); ++i)
+            if (name == floatVars[i]) return i;
+        return 0;
+    };
+
+    ImGui::Spacing();
+    int px = paramIndex(state->blendParamX);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("Parameter X", &px, floatVars.data(), (int)floatVars.size()))
+    {
+        state->blendParamX = (px == 0) ? std::string() : std::string(floatVars[px]);
+        graph.dirty = true;
+    }
+
+    if (state->blendType == AnimBlendType::TwoD)
+    {
+        int py = paramIndex(state->blendParamY);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("Parameter Y", &py, floatVars.data(), (int)floatVars.size()))
+        {
+            state->blendParamY = (py == 0) ? std::string() : std::string(floatVars[py]);
+            graph.dirty = true;
+        }
+    }
+
+    // Authoring range for the diagram axes.
+    ImGui::Spacing();
+    float rangeX[2] = { state->blendRangeXMin, state->blendRangeXMax };
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragFloat2("Axis Range X", rangeX, 0.05f))
+    {
+        state->blendRangeXMin = rangeX[0];
+        state->blendRangeXMax = rangeX[1];
+        graph.dirty = true;
+    }
+    if (state->blendType == AnimBlendType::TwoD)
+    {
+        float rangeY[2] = { state->blendRangeYMin, state->blendRangeYMax };
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat2("Axis Range Y", rangeY, 0.05f))
+        {
+            state->blendRangeYMin = rangeY[0];
+            state->blendRangeYMax = rangeY[1];
+            graph.dirty = true;
+        }
+    }
+
+    // Motions: each drives an existing animation state.
+    ImGui::Spacing();
+    ImGui::TextUnformatted(state->blendType == AnimBlendType::TwoD
+                               ? "Motions (each has its own X / Y)"
+                               : "Motions (ordered by threshold)");
+    ImGui::Separator();
+
+    std::vector<int>         candIds;
+    std::vector<std::string> candNames;
+    for (const auto& s : graph.states)
+    {
+        if (!s.isState()) continue;
+        candIds.push_back(s.id);
+        candNames.push_back(s.name.empty() ? ("State " + std::to_string(s.id)) : s.name);
+    }
+
+    if (state->blendChildren.empty())
+        ImGui::TextDisabled("No motions yet. Add one below.");
+
+    int removeIdx = -1;
+    for (int i = 0; i < (int)state->blendChildren.size(); ++i)
+    {
+        AnimBlendChild& child = state->blendChildren[i];
+        ImGui::PushID(i);
+        ImGui::Separator();
+
+        // Linked-state combo.
+        int cur = 0;
+        std::vector<const char*> labels;
+        labels.push_back("(none)");
+        for (size_t c = 0; c < candNames.size(); ++c)
+        {
+            labels.push_back(candNames[c].c_str());
+            if (candIds[c] == child.stateId) cur = (int)c + 1;
+        }
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("State", &cur, labels.data(), (int)labels.size()))
+        {
+            child.stateId = (cur == 0) ? -1 : candIds[cur - 1];
+            graph.dirty = true;
+        }
+
+        if (state->blendType == AnimBlendType::TwoD)
+        {
+            float xy[2] = { child.posX, child.posY };
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat2("Position (X, Y)", xy, 0.05f))
+            {
+                child.posX = xy[0];
+                child.posY = xy[1];
+                graph.dirty = true;
+            }
+        }
+        else
+        {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("Threshold", &child.threshold, 0.05f))
+                graph.dirty = true;
+        }
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat("Speed", &child.speed, 0.05f, 0.0f, 10.0f))
+            graph.dirty = true;
+
+        if (ImGui::Button("Remove Motion"))
+            removeIdx = i;
+
+        ImGui::PopID();
+    }
+
+    if (removeIdx >= 0)
+    {
+        state->blendChildren.erase(state->blendChildren.begin() + removeIdx);
+        graph.dirty = true;
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Add Motion", ImVec2(-1, 0)))
+    {
+        AnimBlendChild child;
+        if (!candIds.empty()) child.stateId = candIds[0];
+        child.threshold = (float)state->blendChildren.size();
+        state->blendChildren.push_back(child);
+        graph.dirty = true;
+    }
+
+    // Delete the blend tree node (allowed; it is not one of the fixed nodes).
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.86f, 0.24f, 0.24f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.69f, 0.19f, 0.19f, 1.00f));
+    if (ImGui::Button("Delete Blend Tree", ImVec2(-1, 0)))
+    {
+        graph.removeState(state->id);
+        graph.dirty   = true;
+        selectedState = -1;
+    }
+    ImGui::PopStyleColor(2);
 }
 
 // ===========================================================================
@@ -1717,18 +2281,19 @@ void PanelAnimator::drawCanvas()
             if (it != manager->fileMap.end() && it->second.type == "animation" &&
                 fs::path(it->second.path.c_str()).extension() == ".animation")
             {
-                // Find the node currently under the mouse cursor.
+                // Find the (animation) state node currently under the mouse.
+                // Only real states accept a clip directly; blend trees and the
+                // fixed nodes derive their animation from elsewhere.
                 AnimState* target = nullptr;
                 for (int i = (int)graph.states.size() - 1; i >= 0; --i)
                 {
                     AnimState& st = graph.states[i];
-                    ImVec2 nTL = canvasToScreen({ st.posX, st.posY }, canvasTL);
-                    float nw = NODE_WIDTH * canvasZoom;
-                    float bodyH = (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f) * canvasZoom;
-                    float totalH = NODE_HEADER_H * canvasZoom + bodyH;
+                    if (!st.isState()) continue;
 
-                    if (mouse.x >= nTL.x && mouse.x <= nTL.x + nw &&
-                        mouse.y >= nTL.y && mouse.y <= nTL.y + totalH)
+                    ImVec2 nTL, nBR;
+                    nodeScreenRect(st, canvasTL, nTL, nBR);
+                    if (mouse.x >= nTL.x && mouse.x <= nBR.x &&
+                        mouse.y >= nTL.y && mouse.y <= nBR.y)
                     {
                         target = &st;
                         break;
@@ -1893,18 +2458,58 @@ void PanelAnimator::drawCanvas()
             for (int i = (int)graph.states.size() - 1; i >= 0; --i)
             {
                 AnimState& state = graph.states[i];
-                ImVec2 nTL = canvasToScreen({ state.posX, state.posY }, canvasTL);
-                ImVec2 nBR;
-                if (state.isComment())
-                    nBR = nTL + ImVec2(state.sizeX * canvasZoom, state.sizeY * canvasZoom);
-                else if (state.isAnchor())
-                    nBR = nTL + ImVec2(24.f * canvasZoom, 24.f * canvasZoom);
-                else
-                    nBR = nTL + ImVec2(NODE_WIDTH * canvasZoom,
-                                       (NODE_HEADER_H + (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f)) * canvasZoom);
+                ImVec2 nTL, nBR;
+                nodeScreenRect(state, canvasTL, nTL, nBR);
 
                 if (mouse.x < nTL.x || mouse.x > nBR.x || mouse.y < nTL.y || mouse.y > nBR.y)
                     continue;
+
+                // Clicking inside a selected blend tree's diagram grabs the
+                // nearest motion point so it can be dragged to a new position
+                // instead of moving the whole node.
+                if (state.isBlendTree() && state.id == selectedState && !state.blendChildren.empty())
+                {
+                    ImVec2 dtl, dbr;
+                    blendDiagramRect(state, canvasTL, dtl, dbr);
+                    if (mouse.x >= dtl.x && mouse.x <= dbr.x &&
+                        mouse.y >= dtl.y && mouse.y <= dbr.y)
+                    {
+                        const bool is2D = (state.blendType == AnimBlendType::TwoD);
+                        auto mapX = [&](float v) {
+                            float r0 = state.blendRangeXMin, r1 = state.blendRangeXMax;
+                            if (r1 - r0 < 1e-5f) r1 = r0 + 1.f;
+                            return dtl.x + (v - r0) / (r1 - r0) * (dbr.x - dtl.x);
+                        };
+                        auto mapY = [&](float v) {
+                            float r0 = state.blendRangeYMin, r1 = state.blendRangeYMax;
+                            if (r1 - r0 < 1e-5f) r1 = r0 + 1.f;
+                            return dbr.y - (v - r0) / (r1 - r0) * (dbr.y - dtl.y);
+                        };
+                        int   best  = -1;
+                        float bestD = 1e30f;
+                        for (int c = 0; c < (int)state.blendChildren.size(); ++c)
+                        {
+                            const AnimBlendChild& ch = state.blendChildren[c];
+                            float cx = mapX(is2D ? ch.posX : ch.threshold);
+                            float cy = is2D ? mapY(ch.posY) : (dtl.y + dbr.y) * 0.5f;
+                            float ddx = mouse.x - cx, ddy = mouse.y - cy;
+                            float d2 = ddx * ddx + ddy * ddy;
+                            if (d2 < bestD) { bestD = d2; best = c; }
+                        }
+                        // Only grab when the click is on (or very close to) a
+                        // motion dot, so clicking empty diagram space still moves
+                        // the node rather than teleporting the nearest motion.
+                        float pickR = 14.f * canvasZoom;
+                        if (best >= 0 && bestD <= pickR * pickR)
+                        {
+                            dragBlendChildIndex = best;
+                            selectedState       = state.id;
+                            selectedTransition  = -1;
+                            hitState = true;
+                            break;
+                        }
+                    }
+                }
 
                 selectedState      = state.id;
                 selectedTransition = -1;
@@ -1941,6 +2546,38 @@ void PanelAnimator::drawCanvas()
         }
     }
 
+    // Drag a motion point inside a blend-tree diagram.
+    if (dragBlendChildIndex >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    {
+        AnimState* bt = graph.findState(selectedState);
+        if (bt && bt->isBlendTree() &&
+            dragBlendChildIndex < (int)bt->blendChildren.size())
+        {
+            ImVec2 dtl, dbr;
+            blendDiagramRect(*bt, canvasTL, dtl, dbr);
+            AnimBlendChild& ch = bt->blendChildren[dragBlendChildIndex];
+
+            float nx = (dbr.x - dtl.x) > 1.f
+                ? bt->blendRangeXMin + (mouse.x - dtl.x) / (dbr.x - dtl.x) *
+                      (bt->blendRangeXMax - bt->blendRangeXMin)
+                : 0.f;
+            if (bt->blendType == AnimBlendType::TwoD)
+            {
+                float ny = (dbr.y - dtl.y) > 1.f
+                    ? bt->blendRangeYMin + (dbr.y - mouse.y) / (dbr.y - dtl.y) *
+                          (bt->blendRangeYMax - bt->blendRangeYMin)
+                    : 0.f;
+                ch.posX = nx;
+                ch.posY = ny;
+            }
+            else
+            {
+                ch.threshold = nx;
+            }
+            graph.dirty = true;
+        }
+    }
+
     // Move / resize the selected state (or comment box).
     if ((isDraggingState || isResizingComment) &&
         ImGui::IsMouseDown(ImGuiMouseButton_Left) && !io.KeyAlt)
@@ -1966,8 +2603,9 @@ void PanelAnimator::drawCanvas()
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
     {
-        isDraggingState   = false;
-        isResizingComment = false;
+        isDraggingState     = false;
+        isResizingComment   = false;
+        dragBlendChildIndex = -1;
 
         if (isDraggingLink)
         {
@@ -2035,15 +2673,8 @@ void PanelAnimator::drawCanvas()
         for (int i = (int)graph.states.size() - 1; i >= 0; --i)
         {
             AnimState& state = graph.states[i];
-            ImVec2 nTL = canvasToScreen({ state.posX, state.posY }, canvasTL);
-            ImVec2 nBR;
-            if (state.isComment())
-                nBR = nTL + ImVec2(state.sizeX * canvasZoom, state.sizeY * canvasZoom);
-            else if (state.isAnchor())
-                nBR = nTL + ImVec2(24.f * canvasZoom, 24.f * canvasZoom);
-            else
-                nBR = nTL + ImVec2(NODE_WIDTH * canvasZoom,
-                                   (NODE_HEADER_H + (60.f > PIN_ROW_H * 2.f ? 60.f : PIN_ROW_H * 2.f)) * canvasZoom);
+            ImVec2 nTL, nBR;
+            nodeScreenRect(state, canvasTL, nTL, nBR);
 
             if (mouse.x >= nTL.x && mouse.x <= nBR.x &&
                 mouse.y >= nTL.y && mouse.y <= nBR.y)
@@ -2073,7 +2704,9 @@ void PanelAnimator::drawCanvas()
         else if (selectedState >= 0)
         {
             AnimState* st = graph.findState(selectedState);
-            if (st && (!st->isDefault || st->isAnchor() || st->isComment()))
+            // The Default State and the Any State node are permanent.
+            if (st && !st->isAnyState() &&
+                (!st->isDefault || st->isAnchor() || st->isComment()))
             {
                 graph.removeState(selectedState);
                 graph.dirty    = true;

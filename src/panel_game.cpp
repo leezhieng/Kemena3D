@@ -27,7 +27,8 @@ PanelGame::PanelGame(kGuiManager *setGui, Manager *setManager)
 
 PanelGame::~PanelGame()
 {
-    delete gameRenderer;
+    // The game view renderer is owned by Manager::gameRenderer and outlives this
+    // panel, so it must not be deleted here.
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +59,63 @@ kCamera *PanelGame::findGameCamera() const
             return cam;
     }
     return nullptr;
+}
+
+kScene *PanelGame::resolveGameScene(kCamera *camera) const
+{
+    if (!camera)
+        return nullptr;
+
+    kWorld *world = manager->getWorld();
+    if (world && !camera->getSceneUuid().empty())
+    {
+        for (kScene *s : world->getScenes())
+        {
+            if (s && s->getUuid() == camera->getSceneUuid())
+                return s;
+        }
+    }
+
+    // No explicit assignment (or it no longer exists) — use the active scene.
+    return manager->getScene();
+}
+
+void PanelGame::renderGame(int viewportW, int viewportH, float dt)
+{
+    kRenderer *renderer = manager->gameRenderer;
+    kWorld    *world    = manager->getWorld();
+    if (!renderer || !world || viewportW <= 0 || viewportH <= 0)
+        return;
+
+    kCamera *gameCamera = findGameCamera();
+    kScene  *gameScene  = resolveGameScene(gameCamera);
+    if (!gameCamera || !gameScene)
+        return;
+
+    // Mirror the editor's per-frame sync so the game view honours the same
+    // shadow toggle/bias/resolution authored in the scene.
+    renderer->setEnableShadow(gameScene->getShadowsEnabled());
+    renderer->setShadowBias(gameScene->getShadowBias());
+    renderer->setShadowNormalBias(gameScene->getShadowNormalBias());
+    renderer->setShadowSoftness(gameScene->getShadowSoftness());
+    if (renderer->getShadowResolution() != gameScene->getShadowMapResolution())
+        renderer->setShadowResolution(gameScene->getShadowMapResolution());
+
+    // Keep the camera aspect ratio in sync with the viewport.
+    gameCamera->setAspectRatio((float)viewportW / (float)viewportH);
+
+    // kRenderer always draws world->getMainCamera(), so temporarily promote the
+    // game camera to main for this pass and restore the editor camera afterwards
+    // (the World panel already rendered from it earlier in the frame).
+    kCamera *savedCamera = world->getMainCamera();
+    world->setMainCamera(gameCamera);
+
+    // render() is called with autoClearSwapWindow=false (as the other panels do),
+    // so the screen-buffer FBO must be cleared explicitly before drawing.
+    renderer->clear();
+    renderer->render(world, gameScene, 0, 0, viewportW, viewportH, dt, false);
+
+    world->setMainCamera(savedCamera);
 }
 
 // ---------------------------------------------------------------------------
@@ -514,63 +572,29 @@ void PanelGame::draw(bool &isOpened)
             imgOffX = (avail.x - (float)newW) * 0.5f;
         }
 
-        // Create or resize the offscreen renderer to match this panel
-        if (!gameRenderer)
-        {
-            gameRenderer = new kOffscreenRenderer(newW, newH);
-            gameRenderer->setAssetManager(manager->getAssetManager());
-            gameRenderer->setBackgroundColor(kVec4(0.0f, 0.0f, 0.0f, 1.0f));
-            lastRendererW = newW;
-            lastRendererH = newH;
-        }
-        else if (newW != lastRendererW || newH != lastRendererH)
-        {
-            gameRenderer->resize(newW, newH);
-            lastRendererW = newW;
-            lastRendererH = newH;
-        }
+        // Publish the viewport size. The game view is rendered by the main loop
+        // into Manager::gameRenderer's FBO (through the game camera) before ImGui
+        // draws; this panel only displays the resulting colour texture.
+        width  = newW;
+        height = newH;
 
         kCamera *gameCamera = findGameCamera();
 
-        // Find the scene this camera is assigned to, falling back to manager->getScene()
-        kScene *gameScene = nullptr;
-        if (gameCamera && !gameCamera->getSceneUuid().empty())
+        if (gameCamera)
         {
-            kWorld *world = manager->getWorld();
-            if (world)
-            {
-                for (kScene *s : world->getScenes())
-                {
-                    if (s->getUuid() == gameCamera->getSceneUuid())
-                    {
-                        gameScene = s;
-                        break;
-                    }
-                }
-            }
-        }
-        if (!gameScene)
-            gameScene = manager->getScene();
-
-        if (gameCamera && gameScene)
-        {
-            // Keep camera aspect ratio in sync with the panel
-            gameCamera->setAspectRatio((float)newW / (float)newH);
-
             // Update the audio listener position from the game camera every frame
             // while the game is running (no-op when stopped or no spatial audio).
             if (playState != GamePlayState::Stopped)
                 manager->updateGameAudio(gameCamera);
-
-            // Render scene only — no editor overlay, no outlines, no debug shapes
-            gameRenderer->render(manager->getWorld(), gameScene, gameCamera);
 
             // Centre the (possibly letterboxed) view inside the panel.
             if (imgOffX > 0.0f)
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + imgOffX);
 
             ImVec2 imgMin = ImGui::GetCursorScreenPos();
-            ImTextureRef tex((ImTextureID)(uintptr_t)gameRenderer->getTexture());
+            ImTextureRef tex((ImTextureID)(uintptr_t)(manager->gameRenderer
+                                                       ? manager->gameRenderer->getFboTexture()
+                                                       : 0u));
             gui->setNextItemAllowOverlap();
             ImGui::Image(tex, ImVec2((float)newW, (float)newH), ImVec2(0, 1), ImVec2(1, 0));
 

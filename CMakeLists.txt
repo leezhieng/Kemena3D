@@ -30,6 +30,7 @@ set(SOURCES
     src/panel_prefab.cpp
     src/panel_terrain.cpp
     src/panel_animator.cpp
+    src/kanimator_blend.cpp
     src/panel_animation.cpp
     src/panel_particle.cpp
     src/panel_gui.cpp

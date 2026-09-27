@@ -4727,13 +4727,14 @@ void Manager::createNewAnimator()
     nlohmann::json j;
     j["uuid"] = generateUuid();
     j["name"] = filePath.stem().string();
-    j["nextNodeId"] = 2;
+    j["nextNodeId"] = 3;
     j["nextLinkId"] = 1;
     j["clips"] = nlohmann::json::array();
     j["variables"] = nlohmann::json::array();
 
     nlohmann::json entryState;
     entryState["id"]        = 1;
+    entryState["kind"]      = 0; // AnimStateKind::State
     entryState["name"]      = "Default State";
     entryState["animationUuid"] = "";
     entryState["speed"]     = 1.0f;
@@ -4741,7 +4742,19 @@ void Manager::createNewAnimator()
     entryState["isDefault"] = true;
     entryState["posX"]      = 300.0f;
     entryState["posY"]      = 200.0f;
-    j["states"] = nlohmann::json::array({entryState});
+
+    // Any State: always present, source-only (output pin only).
+    nlohmann::json anyState;
+    anyState["id"]        = 2;
+    anyState["kind"]      = 3; // AnimStateKind::AnyState
+    anyState["name"]      = "Any State";
+    anyState["animationUuid"] = "";
+    anyState["speed"]     = 1.0f;
+    anyState["loop"]      = true;
+    anyState["isDefault"] = false;
+    anyState["posX"]      = 40.0f;
+    anyState["posY"]      = 40.0f;
+    j["states"] = nlohmann::json::array({entryState, anyState});
     j["transitions"] = nlohmann::json::array();
 
     std::ofstream f(filePath);
@@ -9884,13 +9897,91 @@ static AnimState *resolveAnimatorPassthrough(RuntimeAnimator &rt, AnimState *tar
     return target;
 }
 
+// ---------------------------------------------------------------------------
+// Blend tree runtime resolution
+//
+// The editor stores a blend tree as a list of motions, each linked to an
+// animation state plus a 1D threshold or a 2D position. The runtime samples the
+// current blend parameters and plays the nearest motion's clip. Interpolating
+// the two nearest poses would require a multi-clip blend the engine's kAnimator
+// does not expose; selecting the nearest keeps the pose pipeline single-clip
+// and is sufficient for gameplay playback.
+// ---------------------------------------------------------------------------
+
+static const AnimBlendChild *resolveBlendTreeChild(RuntimeAnimator &rt,
+                                                   const AnimState *state,
+                                                   float *outSpeed)
+{
+    if (outSpeed) *outSpeed = 1.0f;
+    if (!state || !state->isBlendTree() || state->blendChildren.empty())
+        return nullptr;
+
+    const auto &vars = rt.animator ? rt.animator->getVariables() : rt.variables;
+    float px = 0.0f, py = 0.0f;
+    auto xit = vars.find(state->blendParamX);
+    if (xit != vars.end()) px = xit->second;
+    auto yit = vars.find(state->blendParamY);
+    if (yit != vars.end()) py = yit->second;
+
+    const AnimBlendChild *best = nullptr;
+    float bestDist = 1e30f;
+    for (const auto &c : state->blendChildren)
+    {
+        float dx = 0.0f, dy = 0.0f;
+        if (state->blendType == AnimBlendType::TwoD)
+        {
+            dx = px - c.posX;
+            dy = py - c.posY;
+        }
+        else
+        {
+            dx = px - c.threshold;
+        }
+        float d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; best = &c; }
+    }
+
+    if (best && outSpeed)
+        *outSpeed = best->speed;
+    return best;
+}
+
+/**
+ * @brief Resolve the clip UUID and effective speed for a playable node.
+ *
+ * Normal states use their own animationUuid. Blend trees resolve the nearest
+ * child motion and use the animation of the state it links to.
+ */
+static std::string animatorStateClipUuid(RuntimeAnimator &rt, const AnimState *state,
+                                         float *outSpeed)
+{
+    if (outSpeed) *outSpeed = 1.0f;
+    if (!state)
+        return std::string();
+
+    if (state->isBlendTree())
+    {
+        float childSpeed = 1.0f;
+        const AnimBlendChild *child = resolveBlendTreeChild(rt, state, &childSpeed);
+        if (outSpeed) *outSpeed = childSpeed * state->speed;
+        if (!child || !rt.graph)
+            return std::string();
+        AnimState *linked = rt.graph->findState(child->stateId);
+        return linked ? linked->animationUuid : std::string();
+    }
+
+    if (outSpeed) *outSpeed = state->speed;
+    return state->animationUuid;
+}
+
 static void enterAnimatorState(RuntimeAnimator &rt, AnimState *state)
 {
     if (!state)
         return;
     rt.currentStateId = state->id;
     rt.stateTimeSeconds = 0.0f;
-    auto it = rt.clipForState.find(state->animationUuid);
+    std::string clipUuid = animatorStateClipUuid(rt, state, nullptr);
+    auto it = rt.clipForState.find(clipUuid);
     if (it != rt.clipForState.end() && rt.animator)
         rt.animator->playAnimation(it->second);
 }
@@ -9898,14 +9989,26 @@ static void enterAnimatorState(RuntimeAnimator &rt, AnimState *state)
 static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *state, float animSeconds,
                                               AnimTransition **outFired)
 {
-    if (!state)
+    if (!state || !rt.graph)
         return nullptr;
+
+    // Locate the Any State node (there is at most one).
+    int anyStateId = -1;
+    for (auto &s : rt.graph->states)
+        if (s.isAnyState()) { anyStateId = s.id; break; }
 
     for (auto &t : rt.graph->transitions)
     {
-        if (t.fromStateId != state->id)
+        const bool fromCurrent = (t.fromStateId == state->id);
+        const bool fromAny     = (anyStateId >= 0 && t.fromStateId == anyStateId);
+        if (!fromCurrent && !fromAny)
             continue;
-        if (t.hasExitTime && animSeconds < t.exitTime)
+
+        // An Any State transition never re-enters the state already playing and
+        // carries no exit-time gating (that belongs to a concrete source state).
+        if (fromAny && t.toStateId == state->id)
+            continue;
+        if (fromCurrent && t.hasExitTime && animSeconds < t.exitTime)
             continue;
 
         bool conditionsMet = true;
@@ -9917,24 +10020,24 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
                 break;
             }
         }
+        if (!conditionsMet)
+            continue;
 
-        if (conditionsMet)
+        AnimState *target = rt.graph->findState(t.toStateId);
+        target = resolveAnimatorPassthrough(rt, target);
+        if (target && target->id != state->id && target->isPlayable() && !target->isAnyState())
         {
-            AnimState *target = rt.graph->findState(t.toStateId);
-            target = resolveAnimatorPassthrough(rt, target);
-            if (target && target->id != state->id && target->isState())
-            {
-                // Never transition into a state with no playable clip. The
-                // graph would get stuck there (stepAnimators skips states whose
-                // clip failed to load, before transitions are re-evaluated) and
-                // the object would freeze in place. Skip such edges so the
-                // current state keeps playing instead.
-                if (rt.clipForState.count(target->animationUuid) == 0)
-                    continue;
-                if (outFired)
-                    *outFired = &t;
-                return target;
-            }
+            // Never transition into a node with no playable clip. The graph
+            // would get stuck there (stepAnimators skips states whose clip
+            // failed to load, before transitions are re-evaluated) and the
+            // object would freeze in place. Skip such edges so the current
+            // state keeps playing instead.
+            std::string targetClip = animatorStateClipUuid(rt, target, nullptr);
+            if (rt.clipForState.count(targetClip) == 0)
+                continue;
+            if (outFired)
+                *outFired = &t;
+            return target;
         }
     }
     return nullptr;
@@ -10207,50 +10310,228 @@ void Manager::stepAnimators(float dt)
             enterAnimatorState(rt, state);
         }
 
-        auto clipIt = rt.clipForState.find(state->animationUuid);
-        if (clipIt == rt.clipForState.end() || !clipIt->second)
-            continue;
+        const bool isBlendTree = state->isBlendTree();
 
-        kSkeletalAnimation *clip = clipIt->second;
-        auto frameIt = rt.clipFrames.find(state->animationUuid);
-        float startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
-        float endFrame   = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
+        // Playback state shared by the transition evaluation below.
+        float stateSpeed = 1.0f;
+        std::string clipUuid;
+        kSkeletalAnimation *clip = nullptr;
+        float animSeconds = 0.0f;
 
-        float startSec = startFrame / kAnimFps;
-        float endSec   = endFrame / kAnimFps;
-
-        rt.stateTimeSeconds += dt;
-        float animSeconds = startSec + rt.stateTimeSeconds * state->speed;
-
-        if (state->loop)
+        if (isBlendTree)
         {
-            float dur = endSec - startSec;
-            if (dur > 1e-4f)
-                animSeconds = startSec + std::fmod(animSeconds - startSec, dur);
+            // ---- Weighted multi-clip pose blending --------------------------
+            // Every motion linked to a loaded clip contributes to the pose; the
+            // weights come from the current value of the 1D axis / 2D plane.
+            rt.blendStateTime   += dt;
+            rt.stateTimeSeconds += dt;
+
+            // A leftover cross-fade would fight the blended palette.
+            if (rt.animator->isBlending())
+                rt.animator->endBlend();
+
+            const auto &vars = rt.animator->getVariables();
+            auto varValue = [&vars](const std::string &name) -> float {
+                auto it = vars.find(name);
+                return it != vars.end() ? it->second : 0.0f;
+            };
+            const float paramX = varValue(state->blendParamX);
+            const float paramY = varValue(state->blendParamY);
+
+            struct BlendMotion
+            {
+                const AnimBlendChild *child  = nullptr;
+                kSkeletalAnimation   *clip   = nullptr;
+                std::string           uuid;
+                float                 weight = 0.0f;
+            };
+
+            std::vector<BlendMotion> motions;
+            motions.reserve(state->blendChildren.size());
+            for (const auto &c : state->blendChildren)
+            {
+                AnimState *linked = rt.graph->findState(c.stateId);
+                if (!linked || linked->animationUuid.empty())
+                    continue;
+                auto cIt = rt.clipForState.find(linked->animationUuid);
+                if (cIt == rt.clipForState.end() || !cIt->second)
+                    continue;
+                BlendMotion m;
+                m.child = &c;
+                m.clip  = cIt->second;
+                m.uuid  = linked->animationUuid;
+                motions.push_back(m);
+            }
+
+            if (motions.empty())
+                continue; // no playable motion in this blend tree
+
+            if (state->blendType == AnimBlendType::TwoD)
+            {
+                // Inverse-distance weighting: all motions contribute and closer
+                // ones dominate. A small epsilon avoids a divide-by-zero when the
+                // parameter sits exactly on a motion.
+                const float eps = 1e-4f;
+                float weightSum = 0.0f;
+                for (auto &m : motions)
+                {
+                    const float dx = paramX - m.child->posX;
+                    const float dy = paramY - m.child->posY;
+                    m.weight  = 1.0f / (dx * dx + dy * dy + eps);
+                    weightSum += m.weight;
+                }
+                if (weightSum > 1e-6f)
+                    for (auto &m : motions) m.weight /= weightSum;
+            }
+            else
+            {
+                // 1D: linear interpolation between the two motions bracketing the
+                // parameter, clamping to the nearest motion outside the range.
+                std::sort(motions.begin(), motions.end(),
+                          [](const BlendMotion &a, const BlendMotion &b) {
+                              return a.child->threshold < b.child->threshold;
+                          });
+                const size_t n = motions.size();
+                if (paramX <= motions.front().child->threshold)
+                {
+                    motions.front().weight = 1.0f;
+                }
+                else if (paramX >= motions.back().child->threshold)
+                {
+                    motions.back().weight = 1.0f;
+                }
+                else
+                {
+                    for (size_t i = 0; i + 1 < n; ++i)
+                    {
+                        const float t0 = motions[i].child->threshold;
+                        const float t1 = motions[i + 1].child->threshold;
+                        if (paramX >= t0 && paramX <= t1)
+                        {
+                            const float f = (t1 - t0 > 1e-6f) ? (paramX - t0) / (t1 - t0) : 0.0f;
+                            motions[i].weight     = 1.0f - f;
+                            motions[i + 1].weight = f;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Advance each motion's own clip time and build the weighted samples.
+            std::vector<kPoseSample> samples;
+            samples.reserve(motions.size());
+            for (const auto &m : motions)
+            {
+                if (m.weight <= 1e-5f)
+                    continue;
+
+                auto frameIt = rt.clipFrames.find(m.uuid);
+                const float sFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
+                const float eFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
+                const float mStart = sFrame / kAnimFps;
+                const float mEnd   = eFrame / kAnimFps;
+
+                float sec = mStart + rt.blendStateTime * m.child->speed;
+                if (state->loop)
+                {
+                    const float dur = mEnd - mStart;
+                    if (dur > 1e-4f)
+                        sec = mStart + std::fmod(sec - mStart, dur);
+                }
+                else if (sec >= mEnd)
+                {
+                    sec = mEnd;
+                }
+
+                kPoseSample sample;
+                sample.animation = m.clip;
+                sample.time      = sec * m.clip->getTicksPerSecond();
+                sample.weight    = m.weight;
+                samples.push_back(sample);
+            }
+
+            if (samples.empty())
+                continue;
+
+            // Make the strongest motion the animator's "current" clip so the
+            // renderer's updateAnimation(dt * clipSpeed == 0) can never overwrite
+            // the blended palette produced below.
+            kSkeletalAnimation *dominant = samples.front().animation;
+            float bestWeight = samples.front().weight;
+            for (const auto &s : samples)
+                if (s.weight > bestWeight) { bestWeight = s.weight; dominant = s.animation; }
+            if (rt.animator->getCurrentAnimation() != dominant)
+                rt.animator->playAnimation(dominant);
+
+            try
+            {
+                const kNodeData &root = samples.front().animation->getRootNode();
+                rt.animator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+            }
+            catch (const std::exception &)
+            {
+                // Keep the last successfully computed pose.
+            }
+
+            // Blend trees gate their own transitions on elapsed time.
+            animSeconds = rt.stateTimeSeconds;
         }
-        else if (animSeconds >= endSec)
+        else
         {
-            animSeconds = endSec;
+            // ---- Single-clip playback ---------------------------------------
+            rt.blendStateTime = 0.0f;
+            clipUuid = animatorStateClipUuid(rt, state, &stateSpeed);
+
+            auto clipIt = rt.clipForState.find(clipUuid);
+            if (clipIt == rt.clipForState.end() || !clipIt->second)
+                continue;
+            clip = clipIt->second;
+
+            auto frameIt = rt.clipFrames.find(clipUuid);
+            float startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
+            float endFrame   = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
+
+            float startSec = startFrame / kAnimFps;
+            float endSec   = endFrame / kAnimFps;
+
+            rt.stateTimeSeconds += dt;
+            animSeconds = startSec + rt.stateTimeSeconds * stateSpeed;
+
+            if (state->loop)
+            {
+                float dur = endSec - startSec;
+                if (dur > 1e-4f)
+                    animSeconds = startSec + std::fmod(animSeconds - startSec, dur);
+            }
+            else if (animSeconds >= endSec)
+            {
+                animSeconds = endSec;
+            }
         }
 
         AnimTransition *firedTrans = nullptr;
         AnimState *next = evaluateAnimatorTransitions(rt, state, animSeconds, &firedTrans);
         if (next)
         {
-            // Capture the source clip and its current pose time so a cross-fade
-            // can blend from the exact pose the transition fired at.
+            // A blend tree has no single source clip, so a transition out of one
+            // is applied as an instant switch (no cross-fade).
             kSkeletalAnimation *fromClip = clip;
-            const float fromTicks = animSeconds * clip->getTicksPerSecond();
+            const float fromTicks = (clip != nullptr)
+                                        ? animSeconds * clip->getTicksPerSecond()
+                                        : 0.0f;
 
             enterAnimatorState(rt, next);
             state = next;
-            clipIt = rt.clipForState.find(state->animationUuid);
+            rt.blendStateTime  = 0.0f;
+
+            clipUuid = animatorStateClipUuid(rt, state, &stateSpeed);
+            auto clipIt = rt.clipForState.find(clipUuid);
             if (clipIt == rt.clipForState.end() || !clipIt->second)
                 continue;
             clip = clipIt->second;
-            frameIt = rt.clipFrames.find(state->animationUuid);
-            startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
-            endFrame   = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
+
+            auto frameIt = rt.clipFrames.find(clipUuid);
+            float startFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
             animSeconds = startFrame / kAnimFps;
 
             // Honour the transition's blend settings: cross-fade over
@@ -10259,6 +10540,7 @@ void Manager::stepAnimators(float dt)
             const bool crossFade = firedTrans &&
                                    firedTrans->blendMode == AnimBlendMode::CrossFade &&
                                    firedTrans->blendDuration > 0.01f &&
+                                   !state->isBlendTree() &&
                                    fromClip != nullptr && fromClip != clip;
             if (crossFade)
             {
@@ -10268,62 +10550,67 @@ void Manager::stepAnimators(float dt)
             }
         }
 
-        float ticks = animSeconds * clip->getTicksPerSecond();
-        rt.animator->setCurrentTime(ticks);
+        // A blend tree's pose was already written above; only single-clip states
+        // compute their pose here.
+        if (!state->isBlendTree())
+        {
+            float ticks = animSeconds * clip->getTicksPerSecond();
+            rt.animator->setCurrentTime(ticks);
 
-        try
-        {
-            const kNodeData &root = clip->getRootNode();
-            rt.animator->calculateBoneTransform(&root, kMat4(1.0f));
-        }
-        catch (const std::exception &)
-        {
-            // Keep the last successfully computed pose.
-        }
-
-        {
-            static int dbg = 0;
-            if (dbg < 10 || (dbg % 120 == 0))
+            try
             {
-                // Diagnostic: report whether the pose actually reached the mesh.
-                int nonIdentity = 0;
-                kVec3 sample(0.0f);
-                const auto &finalMats = rt.animator->getFinalBoneMatrices();
-                for (const kMat4 &m : finalMats)
-                {
-                    kVec3 t = kVec3(m[3][0], m[3][1], m[3][2]);
-                    bool moved = std::fabs(t.x) > 1e-5f || std::fabs(t.y) > 1e-5f ||
-                                 std::fabs(t.z) > 1e-5f;
-                    if (moved)
-                    {
-                        nonIdentity++;
-                        if (nonIdentity == 1)
-                            sample = t;
-                    }
-                }
-                // NOTE: do NOT call getRootMotionDeltaPosition()/Rotation() here
-                // — they consume the accumulator and would steal deltas from
-                // scripts. Only the flags and resolved root bone are logged.
-                std::string msg = "[Animator] step dt=" + std::to_string(dt) +
-                                  " stateTime=" + std::to_string(rt.stateTimeSeconds) +
-                                  " animSec=" + std::to_string(animSeconds) +
-                                  " ticks=" + std::to_string(ticks) +
-                                  " tps=" + std::to_string(clip->getTicksPerSecond()) +
-                                  " skinned=" + std::to_string(rt.rootMesh && rt.rootMesh->getSkinned() ? 1 : 0) +
-                                  " animator=" + std::to_string(rt.rootMesh && rt.rootMesh->getAnimator() ? 1 : 0) +
-                                  " nonIdentityBones=" + std::to_string(nonIdentity) +
-                                  " sample=(" + std::to_string(sample.x) + "," +
-                                                std::to_string(sample.y) + "," +
-                                                std::to_string(sample.z) + ")" +
-                                  " rootMotion=" + std::to_string(rt.animator->isRootMotionActive() ? 1 : 0) +
-                                  " rmBone='" + rt.animator->getResolvedRootBoneName() + "'" +
-                                  " rm(rot,y,xz)=(" +
-                                  std::to_string(rt.animator->getRootMotionRotation() ? 1 : 0) + "," +
-                                  std::to_string(rt.animator->getRootMotionPositionY() ? 1 : 0) + "," +
-                                  std::to_string(rt.animator->getRootMotionPositionXZ() ? 1 : 0) + ")";
-                animatorDebugLog(msg);
+                const kNodeData &root = clip->getRootNode();
+                rt.animator->calculateBoneTransform(&root, kMat4(1.0f));
             }
-            dbg++;
+            catch (const std::exception &)
+            {
+                // Keep the last successfully computed pose.
+            }
+
+            {
+                static int dbg = 0;
+                if (dbg < 10 || (dbg % 120 == 0))
+                {
+                    // Diagnostic: report whether the pose actually reached the mesh.
+                    int nonIdentity = 0;
+                    kVec3 sample(0.0f);
+                    const auto &finalMats = rt.animator->getFinalBoneMatrices();
+                    for (const kMat4 &m : finalMats)
+                    {
+                        kVec3 t = kVec3(m[3][0], m[3][1], m[3][2]);
+                        bool moved = std::fabs(t.x) > 1e-5f || std::fabs(t.y) > 1e-5f ||
+                                     std::fabs(t.z) > 1e-5f;
+                        if (moved)
+                        {
+                            nonIdentity++;
+                            if (nonIdentity == 1)
+                                sample = t;
+                        }
+                    }
+                    // NOTE: do NOT call getRootMotionDeltaPosition()/Rotation() here
+                    // — they consume the accumulator and would steal deltas from
+                    // scripts. Only the flags and resolved root bone are logged.
+                    std::string msg = "[Animator] step dt=" + std::to_string(dt) +
+                                      " stateTime=" + std::to_string(rt.stateTimeSeconds) +
+                                      " animSec=" + std::to_string(animSeconds) +
+                                      " ticks=" + std::to_string(ticks) +
+                                      " tps=" + std::to_string(clip->getTicksPerSecond()) +
+                                      " skinned=" + std::to_string(rt.rootMesh && rt.rootMesh->getSkinned() ? 1 : 0) +
+                                      " animator=" + std::to_string(rt.rootMesh && rt.rootMesh->getAnimator() ? 1 : 0) +
+                                      " nonIdentityBones=" + std::to_string(nonIdentity) +
+                                      " sample=(" + std::to_string(sample.x) + "," +
+                                                    std::to_string(sample.y) + "," +
+                                                    std::to_string(sample.z) + ")" +
+                                      " rootMotion=" + std::to_string(rt.animator->isRootMotionActive() ? 1 : 0) +
+                                      " rmBone='" + rt.animator->getResolvedRootBoneName() + "'" +
+                                      " rm(rot,y,xz)=(" +
+                                      std::to_string(rt.animator->getRootMotionRotation() ? 1 : 0) + "," +
+                                      std::to_string(rt.animator->getRootMotionPositionY() ? 1 : 0) + "," +
+                                      std::to_string(rt.animator->getRootMotionPositionXZ() ? 1 : 0) + ")";
+                    animatorDebugLog(msg);
+                }
+                dbg++;
+            }
         }
     }
 }

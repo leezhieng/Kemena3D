@@ -158,6 +158,7 @@ struct RuntimeAnimator
     std::unordered_map<std::string, std::array<bool, 3>> clipRootMotion; ///< animationUuid → {rotation, positionY, positionXZ}.
     int currentStateId = -1;                                       ///< State currently playing.
     float stateTimeSeconds = 0.0f;                                 ///< Seconds since entering the current state.
+    float blendStateTime = 0.0f;                                   ///< Seconds spent in the active blend tree (per-motion clip time).
     std::unordered_map<std::string, float> variables;              ///< Controller variable values.
 };
 
@@ -548,6 +549,17 @@ public:
     kAssetManager *prefabAssetManager = nullptr;  ///< Asset manager for the prefab world (loads shaders/textures).
     kObject       *prefabRoot         = nullptr;  ///< Root object of the prefab subtree being edited.
     kScene        *prefabEditorScene  = nullptr;  ///< Editor overlay scene (grid) duplicated for the prefab panel.
+
+    // --- Game panel's dedicated renderer -------------------------------------
+    // The in-editor game view shares the world/scene with the World panel, but
+    // must render from the game camera. kRenderer always renders
+    // world->getMainCamera(), and the World panel already drives that camera
+    // with the editor camera earlier in the frame, so the game view needs its
+    // OWN kRenderer (own FBO/driver, shared GL resources) — mirroring the
+    // prefab panel. This is the "rendererGame" instance the startup comment
+    // described; it replaces the stopgap kOffscreenRenderer the game panel
+    // used to create, which lacked the main renderer's shadow/camera handling.
+    kRenderer     *gameRenderer       = nullptr;  ///< Dedicated renderer for the game panel (own FBO, own driver).
 
     // --- Audio preview -------------------------------------------------------
     kAudioManager *audioPreviewManager = nullptr;

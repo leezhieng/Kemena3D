@@ -78,16 +78,46 @@ struct AnimTransition
 
 /**
  * @brief What a node on the animator canvas represents.
+ *
+ * IMPORTANT: the numeric values are part of the on-disk .animator format, so
+ * new kinds are appended at the end to keep existing files loadable.
  */
 enum class AnimStateKind
 {
-    State,    ///< A normal animation state that plays a clip.
-    Anchor,   ///< Pass-through reroute node used to tidy transition lines.
-    Comment   ///< Resizable background comment box with editable text.
+    State     = 0,  ///< A normal animation state that plays a clip.
+    Anchor    = 1,  ///< Pass-through reroute node used to tidy transition lines.
+    Comment   = 2,  ///< Resizable background comment box with editable text.
+    AnyState  = 3,  ///< Source-only node; its transitions can fire from any state.
+    BlendTree = 4   ///< Blends several motions by a 1D or 2D parameter.
 };
 
 /**
- * @brief A single animation state node on the graph canvas.
+ * @brief How a blend-tree node interpolates between its child motions.
+ */
+enum class AnimBlendType
+{
+    OneD = 0,  ///< A single float parameter places motions along an axis.
+    TwoD = 1   ///< Two float parameters place motions on a 2D plane.
+};
+
+/**
+ * @brief A single motion inside a blend tree.
+ *
+ * The child drives an existing animation state (referenced by id) so the blend
+ * tree never duplicates clip assignments. The threshold / x,y values describe
+ * where the child sits on the blend axis or plane.
+ */
+struct AnimBlendChild
+{
+    int   stateId   = -1;    ///< Id of the linked animation state that plays this motion.
+    float threshold = 0.0f;  ///< 1D position along the blend axis.
+    float posX      = 0.0f;  ///< 2D position (x) on the blend plane.
+    float posY      = 0.0f;  ///< 2D position (y) on the blend plane.
+    float speed     = 1.0f;  ///< Playback speed multiplier for this motion.
+};
+
+/**
+ * @brief A single node on the animator canvas.
  */
 struct AnimState
 {
@@ -108,12 +138,28 @@ struct AnimState
     float       sizeY   = 180.0f;          ///< Comment box height (canvas units).
     std::string comment = "Comment";       ///< Comment text shown on the box.
 
+    // Blend-tree payload (used only when kind == AnimStateKind::BlendTree).
+    AnimBlendType blendType   = AnimBlendType::OneD; ///< 1D axis or 2D plane.
+    std::string   blendParamX;             ///< Float variable driving the x / 1D axis.
+    std::string   blendParamY;             ///< Float variable driving the y axis (2D only).
+    float         blendRangeXMin = -1.0f;  ///< Display/authoring range for the x axis.
+    float         blendRangeXMax =  1.0f;  ///< Display/authoring range for the x axis.
+    float         blendRangeYMin = -1.0f;  ///< Display/authoring range for the y axis (2D).
+    float         blendRangeYMax =  1.0f;  ///< Display/authoring range for the y axis (2D).
+    std::vector<AnimBlendChild> blendChildren; ///< Motions blended by this node.
+
     /** @brief True when this is a real, playable animation state. */
-    bool isState()   const { return kind == AnimStateKind::State; }
+    bool isState()     const { return kind == AnimStateKind::State; }
+    /** @brief True when this is the source-only Any State node. */
+    bool isAnyState()  const { return kind == AnimStateKind::AnyState; }
+    /** @brief True when this node blends several motions. */
+    bool isBlendTree() const { return kind == AnimStateKind::BlendTree; }
     /** @brief True when this is a pass-through anchor node. */
-    bool isAnchor()  const { return kind == AnimStateKind::Anchor; }
+    bool isAnchor()    const { return kind == AnimStateKind::Anchor; }
     /** @brief True when this is a comment box. */
-    bool isComment() const { return kind == AnimStateKind::Comment; }
+    bool isComment()   const { return kind == AnimStateKind::Comment; }
+    /** @brief True for node kinds that can be entered and play animation (State / BlendTree). */
+    bool isPlayable()  const { return isState() || isBlendTree(); }
 };
 
 /**
@@ -275,6 +321,9 @@ private:
     int   dragFromState   = -1;
     bool  dragFromOutput  = false;   ///< True when the link drag started from an output (right) pin.
 
+    // Blend-tree diagram drag
+    int   dragBlendChildIndex = -1;  ///< Index of the blend child being dragged in a diagram; -1 = none.
+
     // Context menu
     ImVec2 contextMenuPos;
 
@@ -295,6 +344,12 @@ private:
     static constexpr float PIN_ROW_H     = 22.f;
     static constexpr float PIN_PAD_X     = 10.f;
     // Body height is computed as max(60, PIN_ROW_H * 2) at usage sites.
+    static constexpr float ANY_STATE_WIDTH  = 160.f; ///< Any State node width (canvas units).
+    static constexpr float ANY_STATE_BODY_H = 60.f;  ///< Any State node body height.
+    static constexpr float BLEND_NODE_WIDTH = 220.f; ///< Blend tree node width.
+    static constexpr float BLEND_BODY_H_1D  = 96.f;  ///< Blend tree body height in 1D mode.
+    static constexpr float BLEND_BODY_H_2D  = 200.f; ///< Blend tree body height in 2D mode.
+    static constexpr float BLEND_PAD        = 8.f;   ///< Inner padding of the blend diagram.
 
     // -----------------------------------------------------------------------
     // Private helpers
@@ -304,6 +359,9 @@ private:
     void drawNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
     void drawAnchorNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
     void drawCommentNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
+    void drawAnyStateNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
+    void drawBlendTreeNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
+    void drawBlendTreeInspector(AnimState* state);
     void drawLinks(ImDrawList* dl, ImVec2 origin);
     void drawDragLink(ImDrawList* dl);
     void drawStateContextMenu();
@@ -316,6 +374,22 @@ private:
     // Coordinate helpers
     ImVec2 canvasToScreen(ImVec2 cp, ImVec2 origin) const;
     ImVec2 screenToCanvas(ImVec2 sp, ImVec2 origin) const;
+
+    /** @brief Canvas-space width of a node (varies by node kind). */
+    float nodeWidth(const AnimState& state) const;
+    /** @brief Canvas-space height of a node, including its header. */
+    float nodeHeight(const AnimState& state) const;
+    /** @brief Screen-space top-left / bottom-right corners of a node bounding box. */
+    void  nodeScreenRect(const AnimState& state, ImVec2 origin, ImVec2& tl, ImVec2& br) const;
+    /** @brief Screen-space rectangle of a blend tree's inner diagram area. */
+    void  blendDiagramRect(const AnimState& state, ImVec2 origin, ImVec2& tl, ImVec2& br) const;
+
+    /** @brief Find the (single) Any State node, or nullptr. */
+    AnimState* findAnyState();
+    /** @brief Find the (single) Default State node, or nullptr. */
+    AnimState* findDefaultState();
+    /** @brief Guarantee a Default State and an Any State node exist; true if one was added. */
+    bool ensureSpecialNodes();
 
     /** @brief Get the screen position of a state's input/output pin. */
     ImVec2 getInputPinPos(const AnimState& state, ImVec2 origin) const;

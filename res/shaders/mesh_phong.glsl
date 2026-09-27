@@ -263,6 +263,24 @@ vec3 calcSpotLight(SpotLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 spe
             light.specular * material.specular * spec * specTex) * light.power * intens * att;
 }
 
+// Fresnel with a roughness-aware ceiling (see mesh_pbr.glsl).
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, UE4).
+vec3 envBRDFApprox(vec3 specularColor, float roughness, float NoV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+    vec4  r    = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2  AB   = vec2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
+}
+
 void main()
 {
     vec2 uv = v_texCoord * material.tiling;
@@ -301,11 +319,28 @@ void main()
         norm = normalize(mat3(T * invmax, B * invmax, Nn) * mapN);
     }
 
-    vec3 vdir   = normalize(viewPos - v_worldPos);
-    vec3 result = sceneAmbient * material.ambient;
+    vec3 vdir    = normalize(viewPos - v_worldPos);
+    vec3 result  = sceneAmbient * material.ambient;
+    vec3 iblSpec = vec3(0.0);
 
     if (skyboxAmbientEnabled)
-        result += texture(skyboxMap, norm).rgb * skyboxAmbientStrength * material.ambient;
+    {
+        // Material-aware skybox ambient. Roughness is derived from the Phong
+        // shininess (glossiness-modulated) so matte surfaces get a blurred
+        // ambient and glossy surfaces a sharper reflection; the reflection
+        // follows the normal-mapped normal. The specular term is added after
+        // the albedo multiply below so it is not tinted by the diffuse map.
+        float roughness = clamp(1.0 - shininess / (shininess + 1.0), 0.04, 1.0);
+        float NdotV     = max(dot(norm, vdir), 0.0);
+        vec3  R         = reflect(-vdir, norm);
+        vec3  irradiance  = textureLod(skyboxMap, norm, 8.0).rgb;
+        vec3  prefiltered = textureLod(skyboxMap, R, roughness * 6.0).rgb;
+
+        vec3 F_amb = fresnelSchlickRoughness(NdotV, vec3(0.04), roughness);
+        result  += (vec3(1.0) - F_amb) * irradiance * skyboxAmbientStrength * material.ambient;
+        iblSpec  = prefiltered * material.specular * envBRDFApprox(vec3(1.0), roughness, NdotV)
+                   * skyboxAmbientStrength;
+    }
 
     for (int i = 0; i < sunLightNum; i++)
     {
@@ -317,5 +352,5 @@ void main()
     for (int i = 0; i < pointLightNum; i++) result += calcPointLight(pointLights[i], norm, v_worldPos, vdir, specularTex.xyz, shininess);
     for (int i = 0; i < spotLightNum;  i++) result += calcSpotLight (spotLights[i],  norm, v_worldPos, vdir, specularTex.xyz, shininess);
 
-    fragColor = vec4(clamp(result, 0.0, 1.0), 1.0) * diffuseTex + emissiveTex;
+    fragColor = vec4(clamp(result, 0.0, 1.0), 1.0) * diffuseTex + emissiveTex + vec4(iblSpec, 0.0);
 }

@@ -49,7 +49,7 @@ int main()
 	// Three separate kRenderer instances are created:
 	//   rendererWorld  — renders the game scene into the World panel viewport
 	//   rendererPrefab — renders the isolated prefab scene into the Prefab panel
-	//   rendererGame   — (future) renders the game view with post-processing
+	//   rendererGame   — renders the game view (game camera) into the Game panel
 	// Each owns its own kDriver (OpenGL context) with shared resources so
 	// textures from one context can be used as ImGui images in another.
 	kWindow *window = createWindow(1024, 768, windowTitle, true);
@@ -65,6 +65,17 @@ int main()
 	rendererPrefab->setEnableShadow(true);
 	rendererPrefab->setEnableObjectPicking(true);
 	rendererPrefab->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+
+	// Dedicated renderer for the in-editor Game panel. The game view shares the
+	// world/scene with the World panel but renders from the game camera, so it
+	// needs its own kRenderer (see Manager::gameRenderer). It SHARES
+	// rendererWorld's context because mesh VAOs are context-local — a separate
+	// context could not draw the main scene's meshes. Screen buffer gives us
+	// getFboTexture() for the ImGui panel image; shadows match the editor.
+	kRenderer *rendererGame = createRendererSharedContext(window, rendererWorld->getDriver());
+	rendererGame->setEnableScreenBuffer(true);
+	rendererGame->setEnableShadow(true);
+	rendererGame->setClearColor(kVec4(0.0f, 0.0f, 0.0f, 1.0f));
 
 	// Use rendererWorld as the primary renderer (drives the GUI manager and main loop).
 	kRenderer *renderer = rendererWorld;
@@ -99,6 +110,11 @@ int main()
 	// Assign the prefab's dedicated renderer to the manager so it can drive
 	// the isolated prefab viewport rendering.
 	manager->prefabRenderer = rendererPrefab;
+
+	// Assign the game panel's dedicated renderer so the main loop can render
+	// the game viewport (through the game camera) independently of the World
+	// panel, which uses the editor camera on rendererWorld.
+	manager->gameRenderer = rendererGame;
 
 	// Thumbnail renderer also loads preview / shadow shaders from resources.
 	manager->thumbnailRenderer.setAssetManager(assetManager);
@@ -1111,6 +1127,26 @@ int main()
 				worldDriver->makeCurrent(window);
 				kDriver::setCurrent(worldDriver);
 			}
+		}
+
+		// --- Game panel rendering (dedicated kRenderer) ---------------------
+		// The game view shares the world/scene with the World panel but renders
+		// from the game camera, so it uses Manager::gameRenderer (its own FBO and
+		// driver). Switch to its driver, render through PanelGame::renderGame()
+		// (which promotes the game camera to the world's main camera for the
+		// pass), then restore the world driver before ImGui draws the panel image.
+		if (showPanel.game && manager->gameRenderer && panelGame->width > 0 && panelGame->height > 0)
+		{
+			// gameRenderer shares rendererWorld's context/driver, so no context
+			// switch is needed — just make sure the world driver is current.
+			kDriver *worldDriver = rendererWorld->getDriver();
+			if (worldDriver)
+			{
+				worldDriver->makeCurrent(window);
+				kDriver::setCurrent(worldDriver);
+			}
+
+			panelGame->renderGame(panelGame->width, panelGame->height, deltaTime);
 		}
 
 		// std::cout << panelWorld->width << "," << panelWorld->height << std::endl;

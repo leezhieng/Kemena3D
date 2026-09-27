@@ -236,8 +236,13 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		ImGui::EndDragDropTarget();
 	}
 
-	// Item clicked
-	if (gui->isItemClicked() && !node.isPrefabDescendant)
+	// Item clicked — commit the click on mouse release instead of press so that
+	// starting a drag on a row (e.g. dragging the object onto the inspector
+	// panel) doesn't change the selection / inspector contents before the drag
+	// has finished. Requiring the row to have just been deactivated (released)
+	// while still hovered also prevents a drag-and-drop release over another
+	// row from selecting that drop target.
+	if (gui->isItemHovered() && gui->isItemDeactivated() && !node.isPrefabDescendant)
 	{
 		// Clicking a scene object in particle/animator preview mode returns to GameWorld.
 		// PrefabPreview is NOT switched here — the hierarchy shows the prefab scene
@@ -346,10 +351,15 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		}
 	}
 
-	// Right-click context menu for object rows
+	// Right-click context menu for object rows.
+	// A per-node popup ID is required: with a shared ID, every collapsed child
+	// of the clicked node (which doesn't push its own ID onto ImGui's ID stack)
+	// resolves to the same popup ID, so each of them re-emits the menu items
+	// and the context menu shows duplicated Rename/Duplicate/Delete entries.
 	if (isObjectRow && !node.isPrefabDescendant)
 	{
-		if (ImGui::BeginPopupContextItem("##HierarchyCtx"))
+		const kString ctxPopupId = kString("##HierarchyCtx_") + node.uuid;
+		if (ImGui::BeginPopupContextItem(ctxPopupId.c_str()))
 		{
 			kObject *ctxObj = nullptr;
 			if (manager->objectMap.count(node.uuid))

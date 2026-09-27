@@ -75,7 +75,7 @@ public:
      */
     PanelGame(kGuiManager* gui, Manager* manager);
 
-    /** @brief Destroy the panel and release its offscreen renderer. */
+    /** @brief Destroy the panel. The renderer is owned by Manager::gameRenderer. */
     ~PanelGame();
 
     /**
@@ -83,6 +83,21 @@ public:
      * @param isOpened In/out flag toggled by the window's close button.
      */
     void draw(bool& isOpened);
+
+    /**
+     * @brief Render the game viewport into the dedicated game kRenderer's FBO.
+     *
+     * Called from the main loop (with the game renderer's driver current) so the
+     * result texture is ready before draw() displays it. Resolves the game camera
+     * and its scene, swaps it in as the world's main camera for the draw, and
+     * restores the previous main camera afterwards. A no-op when the game
+     * renderer or a game camera/scene is unavailable.
+     *
+     * @param viewportW Viewport width in pixels.
+     * @param viewportH Viewport height in pixels.
+     * @param dt        Delta time used for animation/skinning.
+     */
+    void renderGame(int viewportW, int viewportH, float dt);
 
     /** @brief Get the current play state (Stopped, Playing or Paused). */
     GamePlayState getPlayState() const { return playState; }
@@ -108,6 +123,9 @@ public:
     Manager*     manager; ///< Owning editor manager (world, scene, object lookup).
     kGuiManager* gui;     ///< GUI manager used for ImGui rendering.
 
+    int width  = 0; ///< Last viewport width published by draw(); consumed by the main-loop render.
+    int height = 0; ///< Last viewport height published by draw(); consumed by the main-loop render.
+
 private:
     GamePlayState playState = GamePlayState::Stopped;        ///< Current play state.
     GameAspectRatio aspectRatio = GameAspectRatio::Free;     ///< Viewport aspect-ratio preset.
@@ -116,9 +134,6 @@ private:
     std::vector<ObjectTransformSnapshot> sceneSnapshot;      ///< Saved transforms for restore on stop.
     bool projectSavedBeforePlay = true;                      ///< projectSaved value captured when Play was pressed.
 
-    kOffscreenRenderer* gameRenderer = nullptr; ///< Offscreen renderer the game view is drawn into.
-    int lastRendererW = 0;                      ///< Last offscreen render target width, for resize detection.
-    int lastRendererH = 0;                      ///< Last offscreen render target height, for resize detection.
 
     // Transport-control icon textures (loaded from embedded resources).
     uint32_t iconPlay = 0;   ///< Play icon texture handle.
@@ -138,6 +153,16 @@ private:
      * @return The game camera, or nullptr if none is available (black screen).
      */
     kCamera* findGameCamera() const;
+
+    /**
+     * @brief Resolve the scene a game camera should render.
+     *
+     * Uses the camera's assigned scene_uuid when set and present in the world,
+     * otherwise falls back to the active scene.
+     * @param camera Game camera whose scene is resolved.
+     * @return Matching scene, or nullptr when the camera is null.
+     */
+    kScene* resolveGameScene(kCamera* camera) const;
 
     /** @brief Capture transform snapshots for the whole scene before play starts. */
     void captureSnapshot();

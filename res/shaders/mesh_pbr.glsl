@@ -250,6 +250,27 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0)
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Fresnel with a roughness-aware ceiling. Keeps rough dielectrics from getting
+// a mirror-bright grazing response, matching the split-sum IBL model.
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, "Real Shading in
+// Unreal Engine 4"). Stands in for a precomputed BRDF LUT so the skybox can be
+// integrated with the material's Fresnel response without an extra texture.
+vec3 envBRDFApprox(vec3 specularColor, float roughness, float NoV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+    vec4  r    = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2  AB   = vec2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
+}
+
 vec3 calcPBR(vec3 albedo, float metallic, float roughness, vec3 F0,
              vec3 n, vec3 v, vec3 l, vec3 radiance)
 {
@@ -345,7 +366,28 @@ void main()
 
     vec3 ambient = sceneAmbient * material.ambient * albedo;
     if (skyboxAmbientEnabled)
-        ambient += texture(skyboxMap, norm).rgb * skyboxAmbientStrength * material.ambient * albedo;
+    {
+        // Physically-based skybox ambient (split-sum IBL approximation).
+        //   Diffuse  — irradiance from a heavily blurred sample along N,
+        //              energy-weighted by kD so it scales with (1 - metallic)
+        //              and the albedo, exactly like direct lighting.
+        //   Specular — sampled along the reflection vector at a mip level
+        //              driven by roughness; the cubemap's mip chain acts as a
+        //              cheap pre-filtered environment map.
+        // The material's metallic/roughness/normal-mapped normal therefore
+        // shape the result instead of the sky simply being overlaid.
+        float NdotV      = max(dot(norm, v), 0.0);
+        vec3  R          = reflect(-v, norm);
+        vec3  irradiance = textureLod(skyboxMap, norm, 8.0).rgb;
+        vec3  prefiltered = textureLod(skyboxMap, R, roughness * 6.0).rgb;
+
+        vec3  F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3  kD    = (1.0 - F_amb) * (1.0 - metallic);
+
+        ambient += (kD * albedo * irradiance +
+                    prefiltered * envBRDFApprox(F0, roughness, NdotV)) *
+                   skyboxAmbientStrength * material.ambient;
+    }
 
     result = ambient * ao + result + emissive.rgb;
     fragColor = vec4(result, albedoSample.a);

@@ -240,6 +240,27 @@ float3 fresnelSchlick(float cosTheta, float3 F0)
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Fresnel with a roughness-aware ceiling. Keeps rough dielectrics from getting
+// a mirror-bright grazing response, matching the split-sum IBL model.
+float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+    return F0 + (max((float3)(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, "Real Shading in
+// Unreal Engine 4"). Stands in for a precomputed BRDF LUT so the skybox can be
+// integrated with the material's Fresnel response without an extra texture.
+float3 envBRDFApprox(float3 specularColor, float roughness, float NoV)
+{
+    const float4 c0 = float4(-1.0, -0.0275, -0.572,  0.022);
+    const float4 c1 = float4( 1.0,  0.0425,  1.04,  -0.04);
+    float4 r    = roughness * c0 + c1;
+    float  a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    float2 AB   = float2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
+}
+
 float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
                float3 n, float3 v, float3 l, float3 radiance)
 {
@@ -332,7 +353,28 @@ float4 PSMain(VSOutput input) : SV_Target
 
     float3 ambient = sceneAmbient * material.ambient * albedo;
     if (skyboxAmbientEnabled)
-        ambient += skyboxMap.Sample(defaultSampler, norm).rgb * skyboxAmbientStrength * material.ambient * albedo;
+    {
+        // Physically-based skybox ambient (split-sum IBL approximation).
+        //   Diffuse  — irradiance from a heavily blurred sample along N,
+        //              energy-weighted by kD so it scales with (1 - metallic)
+        //              and the albedo, exactly like direct lighting.
+        //   Specular — sampled along the reflection vector at a mip level
+        //              driven by roughness; the cubemap's mip chain acts as a
+        //              cheap pre-filtered environment map.
+        // The material's metallic/roughness/normal-mapped normal therefore
+        // shape the result instead of the sky simply being overlaid.
+        float  NdotV       = max(dot(norm, v), 0.0);
+        float3 R           = reflect(-v, norm);
+        float3 irradiance  = skyboxMap.SampleLevel(defaultSampler, norm, 8.0).rgb;
+        float3 prefiltered = skyboxMap.SampleLevel(defaultSampler, R, roughness * 6.0).rgb;
+
+        float3 F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
+        float3 kD    = (1.0 - F_amb) * (1.0 - metallic);
+
+        ambient += (kD * albedo * irradiance +
+                    prefiltered * envBRDFApprox(F0, roughness, NdotV)) *
+                   skyboxAmbientStrength * material.ambient;
+    }
 
     result = ambient * ao + result + emissive.rgb;
     return float4(result, albedoSample.a);
