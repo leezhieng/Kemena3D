@@ -618,6 +618,23 @@ public:
     void stopAnimators();
     void stepAnimators(float dt);
 
+    /**
+     * @brief Sets a named controller variable on every running runtime animator.
+     *
+     * When @p graphUuid is non-empty only animators parsed from that .animator
+     * asset are touched. Used by the Animator editor's live blend-parameter
+     * preview sliders so scrubbing re-blends the running controller instantly.
+     */
+    void setRuntimeAnimatorVariable(const std::string &graphUuid, const std::string &name, float value);
+
+    /**
+     * @brief Reads a running controller variable, or @p fallback when none runs.
+     *
+     * Mirrors setRuntimeAnimatorVariable() so the preview slider can seed itself
+     * from the value the controller is actually using this frame.
+     */
+    float getRuntimeAnimatorVariable(const std::string &graphUuid, const std::string &name, float fallback) const;
+
     std::vector<RuntimeAnimator> runtimeAnimators; ///< Active animator controllers for the current play session.
 
     // --- Ingame UI (.ui) objects ---------------------------------------------

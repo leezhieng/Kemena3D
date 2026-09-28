@@ -1,5 +1,6 @@
 #include "manager.h"
 #include "util.h"
+#include "blend_weights.h" // shared 1D/2D blend-tree weighting (also used by the editor preview)
 #include "panel_logicgraph.h" // for panelLogicGraph->notifyAssetMoved()
 #include "panel_shadergraph.h" // for panelShaderGraph->getFilePath()
 #include "mainmenu.h" // for showPanel / savedWorkspaceFileName
@@ -7184,19 +7185,27 @@ void Manager::buildScripts(bool logSummary)
             if (comp.fileName.empty())
                 continue;
             ++found;
-            if (!fs::exists(fs::path(comp.fileName)))
+            fs::path asPath(comp.fileName);
+
+            // ── Auto-generate / refresh the .as from its source .logic ──────
+            // When a .logic node graph is attached to an object, the script
+            // fileName points to Library/GeneratedScripts/<uuid>.as. That file
+            // is normally (re)written when the .logic is saved in the Script
+            // Editor, but it can be missing or STALE — e.g. the .logic was
+            // edited/saved outside the editor, or a failed save left the old
+            // output behind. Recompile it here when there is no output or the
+            // .logic source is newer than it, otherwise an old graph silently
+            // runs and edits (new nodes/variables) appear to have no effect.
             {
-                // ── Auto-generate missing .as from its source .logic ──────
-                // When a .logic node graph is attached to an object, the
-                // script fileName points to Library/GeneratedScripts/<uuid>.as,
-                // but that file is only created when the .logic is opened and
-                // saved in the Script Editor.  If it hasn't been saved yet,
-                // compile it here so the user doesn't get a "source missing"
-                // error just for picking a .logic from the script picker.
                 fs::path genDir = projectPath / "Library" / "GeneratedScripts";
-                fs::path asPath(comp.fileName);
                 if (asPath.parent_path() == genDir)
                 {
+                    const bool     asExists = fs::exists(asPath);
+                    std::error_code ecTime;
+                    fs::file_time_type asTime{};
+                    if (asExists)
+                        asTime = fs::last_write_time(asPath, ecTime);
+
                     std::string uuid = asPath.stem().string();
                     fs::path assetsDir = projectPath / "Assets";
                     std::error_code ec2;
@@ -7214,7 +7223,13 @@ void Manager::buildScripts(bool logSummary)
                                 continue;
                             nlohmann::json j;
                             f >> j;
-                            if (j.value("uuid", std::string()) == uuid)
+                            if (j.value("uuid", std::string()) != uuid)
+                                continue;
+
+                            std::error_code ecSrc;
+                            fs::file_time_type srcTime = fs::last_write_time(it->path(), ecSrc);
+                            const bool stale = !asExists || (!ecSrc && !ecTime && srcTime > asTime);
+                            if (stale)
                             {
                                 kScriptGraph graph;
                                 graph.fromJson(j);
@@ -7229,23 +7244,32 @@ void Manager::buildScripts(bool logSummary)
                                         out.close();
                                     }
                                 }
-                                break;
+                                else if (panelConsole)
+                                {
+                                    // Surface the failure instead of leaving the
+                                    // previous generated script silently active.
+                                    panelConsole->addLog(LogLevel::Error,
+                                                         "[Logic] Compile error in '%s': %s",
+                                                         it->path().filename().string().c_str(),
+                                                         res.error.c_str());
+                                }
                             }
                         }
                         catch (...) { }
+                        break;
                     }
                 }
+            }
 
-                if (!fs::exists(fs::path(comp.fileName)))
-                {
-                    ++failCount;
-                    std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
-                    if (panelConsole)
-                        panelConsole->addLog(LogLevel::Error,
-                                             "[Script] Source missing for '%s': %s",
-                                             node->getName().c_str(), comp.fileName.c_str());
-                    continue;
-                }
+            if (!fs::exists(asPath))
+            {
+                ++failCount;
+                std::cerr << "buildScripts: source missing: " << comp.fileName << "\n";
+                if (panelConsole)
+                    panelConsole->addLog(LogLevel::Error,
+                                         "[Script] Source missing for '%s': %s",
+                                         node->getName().c_str(), comp.fileName.c_str());
+                continue;
             }
 
             // One script-asset UUID per distinct source file.
@@ -9901,12 +9925,15 @@ static AnimState *resolveAnimatorPassthrough(RuntimeAnimator &rt, AnimState *tar
 // Blend tree runtime resolution
 //
 // The editor stores a blend tree as a list of motions, each linked to an
-// animation state plus a 1D threshold or a 2D position. The runtime samples the
-// current blend parameters and plays the nearest motion's clip. Interpolating
-// the two nearest poses would require a multi-clip blend the engine's kAnimator
-// does not expose; selecting the nearest keeps the pose pipeline single-clip
-// and is sufficient for gameplay playback.
+// animation state plus a 1D threshold or a 2D position. resolveBlendTreeChild()
+// still returns the single nearest motion (used when entering a blend tree or
+// leaving it through a transition); the per-frame pose itself is produced by
+// the weighted multi-clip pass in stepAnimators(), which blends every motion
+// the current parameter actually surrounds.
 // ---------------------------------------------------------------------------
+
+// The 2D weighting itself lives in blend_weights.h so the editor's embedded
+// blend-tree preview computes exactly the same weights as the runtime.
 
 static const AnimBlendChild *resolveBlendTreeChild(RuntimeAnimator &rt,
                                                    const AnimState *state,
@@ -10287,6 +10314,34 @@ void Manager::stopAnimators()
     runtimeAnimators.clear();
 }
 
+void Manager::setRuntimeAnimatorVariable(const std::string &graphUuid,
+                                         const std::string &name, float value)
+{
+    for (auto &rt : runtimeAnimators)
+    {
+        if (!rt.animator)
+            continue;
+        if (!graphUuid.empty() && (!rt.graph || rt.graph->uuid != graphUuid))
+            continue;
+        rt.animator->setVariable(name, value);
+        rt.variables[name] = value;
+    }
+}
+
+float Manager::getRuntimeAnimatorVariable(const std::string &graphUuid,
+                                          const std::string &name, float fallback) const
+{
+    for (const auto &rt : runtimeAnimators)
+    {
+        if (!rt.animator)
+            continue;
+        if (!graphUuid.empty() && (!rt.graph || rt.graph->uuid != graphUuid))
+            continue;
+        return rt.animator->getVariable(name);
+    }
+    return fallback;
+}
+
 void Manager::stepAnimators(float dt)
 {
     const float kAnimFps = 30.0f;
@@ -10368,20 +10423,19 @@ void Manager::stepAnimators(float dt)
 
             if (state->blendType == AnimBlendType::TwoD)
             {
-                // Inverse-distance weighting: all motions contribute and closer
-                // ones dominate. A small epsilon avoids a divide-by-zero when the
-                // parameter sits exactly on a motion.
-                const float eps = 1e-4f;
-                float weightSum = 0.0f;
-                for (auto &m : motions)
-                {
-                    const float dx = paramX - m.child->posX;
-                    const float dy = paramY - m.child->posY;
-                    m.weight  = 1.0f / (dx * dx + dy * dy + eps);
-                    weightSum += m.weight;
-                }
-                if (weightSum > 1e-6f)
-                    for (auto &m : motions) m.weight /= weightSum;
+                // Localised 2D blend: barycentric weights inside the triangle of
+                // motions surrounding the parameter (or a blend along the nearest
+                // motion pair when the parameter is outside the authored hull).
+                // Only the motions that actually frame the parameter contribute,
+                // so opposite-direction clips no longer cancel the pose out.
+                std::vector<kblend::Point2> pts;
+                pts.reserve(motions.size());
+                for (const auto &m : motions)
+                    pts.emplace_back(m.child->posX, m.child->posY);
+
+                const std::vector<float> w = kblend::weights2D(pts, paramX, paramY);
+                for (size_t i = 0; i < motions.size() && i < w.size(); ++i)
+                    motions[i].weight = w[i];
             }
             else
             {
@@ -10453,15 +10507,45 @@ void Manager::stepAnimators(float dt)
             if (samples.empty())
                 continue;
 
-            // Make the strongest motion the animator's "current" clip so the
-            // renderer's updateAnimation(dt * clipSpeed == 0) can never overwrite
-            // the blended palette produced below.
-            kSkeletalAnimation *dominant = samples.front().animation;
-            float bestWeight = samples.front().weight;
+            // Pick the root-motion source: the highest-weight motion that actually
+            // has a root-motion channel enabled. Using the *dominant* clip instead
+            // would suppress root motion until that clip outweighs idle ("nothing
+            // happens at first"), and calling playAnimation() each time the dominant
+            // flips would reset the tracker and make the pose pop.
+            // setBlendRootSource() switches the source without either side effect,
+            // and keeps the animator's current clip non-null for the renderer
+            // (its updateAnimation still sees clip speed 0, so it won't recompute
+            // the blended palette).
+            kSkeletalAnimation *dominant     = nullptr;
+            kSkeletalAnimation *rootClip     = nullptr;
+            float               dominantTime = 0.0f;
+            float               rootTime     = 0.0f;
+            float               bestWeight   = -1.0f;
+            float               bestRootW    = -1.0f;
             for (const auto &s : samples)
-                if (s.weight > bestWeight) { bestWeight = s.weight; dominant = s.animation; }
-            if (rt.animator->getCurrentAnimation() != dominant)
-                rt.animator->playAnimation(dominant);
+            {
+                if (s.animation == nullptr)
+                    continue;
+                if (s.weight > bestWeight)
+                {
+                    bestWeight   = s.weight;
+                    dominant     = s.animation;
+                    dominantTime = s.time;
+                }
+                const bool hasRoot = s.animation->getRootMotionRotation() ||
+                                     s.animation->getRootMotionPositionY() ||
+                                     s.animation->getRootMotionPositionXZ();
+                if (hasRoot && s.weight > bestRootW)
+                {
+                    bestRootW = s.weight;
+                    rootClip  = s.animation;
+                    rootTime  = s.time;
+                }
+            }
+            if (rootClip != nullptr)
+                rt.animator->setBlendRootSource(rootClip, rootTime);
+            else if (dominant != nullptr)
+                rt.animator->setBlendRootSource(dominant, dominantTime);
 
             try
             {

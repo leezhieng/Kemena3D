@@ -1,6 +1,11 @@
 #pragma once
 #include "kemena/kemena.h"
 #include "manager.h"
+#include <kemena/kmesh.h>
+#include <kemena/klight.h>
+#include <kemena/kcamera.h>
+#include <kemena/kscene.h>
+#include <kemena/koffscreenrenderer.h>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -246,6 +251,9 @@ public:
 
     PanelAnimator(kGuiManager* setGui, Manager* setManager);
 
+    /** @brief Releases the embedded blend-tree preview's render resources. */
+    ~PanelAnimator();
+
     /** @brief Draw the panel and handle interaction. */
     void draw(bool& isOpened);
 
@@ -331,6 +339,41 @@ private:
     // Variable editor
     int   editingVarIndex   = -1;   ///< Index into graph.variables being edited; -1 = none.
 
+    // Live blend-parameter preview (Animator inspector sliders).
+    // Keeps the scrubbed value separate from the asset's saved variable
+    // defaults so previewing never marks the graph dirty. Keyed by variable
+    // name; also drives the blend diagram's parameter marker.
+    std::unordered_map<std::string, float> blendPreviewValues;
+
+    // -----------------------------------------------------------------------
+    // Embedded blend-tree preview (offscreen 3D view in the Inspector)
+    //
+    // Self-contained: it renders the selected preview mesh with its own
+    // kAnimator, independent of the Game panel's Play mode, so a blend tree
+    // can be scrubbed and watched without entering Play.
+    // -----------------------------------------------------------------------
+    kOffscreenRenderer* previewRenderer = nullptr; ///< Offscreen target, shown via ImGui::Image.
+    kWorld*             previewWorld    = nullptr; ///< Standalone world (owns previewScene).
+    kScene*             previewScene    = nullptr; ///< Scene holding the preview mesh.
+    kCamera*            previewCamera   = nullptr; ///< Orbit camera for the preview.
+    kMesh*              previewMesh     = nullptr; ///< Displayed mesh (owned by the asset manager).
+    kMaterial*          previewMat      = nullptr; ///< Fallback material applied when the GLB ships none.
+    kAnimator*          previewAnimator = nullptr; ///< Drives the blended pose.
+    std::unordered_map<std::string, kSkeletalAnimation*> previewClips; ///< animationUuid → loaded clip (owned).
+    std::string         previewMeshUuid;              ///< Mesh UUID currently loaded ("" = none).
+    std::vector<std::string> previewMeshUuids;        ///< Selectable mesh UUIDs (derived from the graph).
+    std::vector<std::string> previewMeshNames;        ///< Display labels aligned with previewMeshUuids.
+    std::string         previewSig;                   ///< Signature of the graph's clip set (cache key).
+    int                 previewMeshChoice = 0;        ///< Index into previewMeshUuids.
+    float               previewRotX      = 20.0f;     ///< Orbit pitch, degrees.
+    float               previewRotY      = 30.0f;     ///< Orbit yaw, degrees.
+    kVec3               previewCenter    = kVec3(0.0f); ///< Orbit pivot (mesh bounds centre).
+    float               previewCamDist   = 3.0f;      ///< Orbit distance from the pivot.
+    float               previewBlendTime = 0.0f;      ///< Seconds advanced through the blended clips.
+    float               previewSize      = 220.0f;    ///< Preview image side length (px).
+    bool                previewDragging  = false;     ///< True while dragging the preview to orbit.
+    bool                previewLightOn   = true;      ///< Toggle lit vs. flat preview.
+
     // Animation picker popup state
     char        animPickerSearch[128] = {0};
     std::string animPickerSelected;
@@ -362,6 +405,14 @@ private:
     void drawAnyStateNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
     void drawBlendTreeNode(ImDrawList* dl, AnimState& state, ImVec2 origin);
     void drawBlendTreeInspector(AnimState* state);
+
+    // Embedded blend-tree preview helpers.
+    void ensurePreviewScene();
+    void releasePreviewMesh();
+    void refreshPreviewMeshes();
+    void ensurePreviewClips();
+    void framePreviewCamera();
+    void drawBlendPreview(AnimState* state);
     void drawLinks(ImDrawList* dl, ImVec2 origin);
     void drawDragLink(ImDrawList* dl);
     void drawStateContextMenu();

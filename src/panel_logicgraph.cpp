@@ -1194,6 +1194,9 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Set Boolean", kScriptNodeType::SetAnimatorBool},
         {"Set Float", kScriptNodeType::SetAnimatorFloat},
         {"Set Integer", kScriptNodeType::SetAnimatorInt},
+        {"Get Boolean", kScriptNodeType::GetAnimatorBool},
+        {"Get Float", kScriptNodeType::GetAnimatorFloat},
+        {"Get Integer", kScriptNodeType::GetAnimatorInt},
     };
     static const Entry physics[] = {
         {"Get Physics Object", kScriptNodeType::GetPhysicsObject},
@@ -1222,6 +1225,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Subtract", kScriptNodeType::Subtract},
         {"Multiply", kScriptNodeType::Multiply},
         {"Divide", kScriptNodeType::Divide},
+        {"Lerp", kScriptNodeType::Lerp},
         {"Concat String", kScriptNodeType::ConcatString},
         {"Make Vector3", kScriptNodeType::MakeVec3},
         {"Break Vector3", kScriptNodeType::BreakVec3},
@@ -1467,22 +1471,33 @@ void PanelLogicGraph::drawCanvas()
         for (auto &p : n.outputs) scan(p);
     }
 
-    // Start a link drag from a pin. This takes priority over node movement:
-    // the node body button (drawn earlier) may have started a move on the same
-    // click, so cancel it when the cursor is actually over a pin. Uses the
-    // manual pin hit-test rather than canvas hover, since the node body button
-    // now owns ImGui hover over the node.
+    // Start a link drag from a pin, or Alt+click a pin to cancel its existing
+    // connection(s). A drag takes priority over node movement: the node body
+    // button (drawn earlier) may have started a move on the same click, so
+    // cancel it when the cursor is actually over a pin. Uses the manual pin
+    // hit-test rather than canvas hover, since the node body button now owns
+    // ImGui hover over the node.
     if (hovNode && ImGui::IsMouseClicked(0) && !linkDragging)
     {
-        kScriptGraphNode *n = graph.findNode(hovNode);
-        bool isOut = false;
-        if (n && getPin(n, hovPin, &isOut))
+        if (ImGui::GetIO().KeyAlt)
         {
-            linkDragging   = true;
-            dragNode       = hovNode;
-            dragPin        = hovPin;
-            dragFromOutput = isOut;
-            movingNode     = 0; // don't drag the node while wiring a pin
+            // Alt+click a pin disconnects whatever wire(s) it owns.
+            graph.removeLinksByPin(hovNode, hovPin);
+            graph.dirty = true;
+            movingNode  = 0;
+        }
+        else
+        {
+            kScriptGraphNode *n = graph.findNode(hovNode);
+            bool isOut = false;
+            if (n && getPin(n, hovPin, &isOut))
+            {
+                linkDragging   = true;
+                dragNode       = hovNode;
+                dragPin        = hovPin;
+                dragFromOutput = isOut;
+                movingNode     = 0; // don't drag the node while wiring a pin
+            }
         }
     }
 

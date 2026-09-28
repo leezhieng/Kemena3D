@@ -9,6 +9,10 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <functional>
+#include <glm/gtc/matrix_transform.hpp>
+#include "blend_weights.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -387,6 +391,11 @@ void PanelAnimator::newGraph()
     dragFromOutput     = false;
     isDraggingState    = false;
     dragBlendChildIndex = -1;
+    blendPreviewValues.clear();
+    releasePreviewMesh();
+    previewSig.clear();
+    previewMeshUuids.clear();
+    previewMeshNames.clear();
 
     // Add the always-present Default State (the entry point).
     AnimState entry;
@@ -435,6 +444,11 @@ void PanelAnimator::loadGraph(const std::string& path)
         dragFromOutput     = false;
         isDraggingState    = false;
         dragBlendChildIndex = -1;
+        blendPreviewValues.clear();
+        releasePreviewMesh();
+        previewSig.clear();
+        previewMeshUuids.clear();
+        previewMeshNames.clear();
     }
     catch (...) {}
 }
@@ -916,6 +930,10 @@ void PanelAnimator::drawBlendTreeNode(ImDrawList* dl, AnimState& state, ImVec2 o
         return dbr.y - (v - r0) / (r1 - r0) * (dbr.y - dtl.y); // y grows upward
     };
     auto evalVar = [&](const std::string& name) -> float {
+        // A scrubbed preview value overrides the authored default so the marker
+        // tracks the live blend parameter while the user drags the slider.
+        auto pv = blendPreviewValues.find(name);
+        if (pv != blendPreviewValues.end()) return pv->second;
         for (const auto& v : graph.variables)
             if (v.name == name) return v.defaultValue;
         return 0.f;
@@ -1431,6 +1449,559 @@ void PanelAnimator::drawSelectedStateInspector()
 // Blend tree inspector (shown in the Inspector panel for the selected node)
 // ===========================================================================
 
+// ===========================================================================
+// Embedded blend-tree preview
+//
+// A self-contained offscreen 3D view (own world/scene/camera/animator) shown
+// inside the blend-tree Inspector, so a blend tree can be authored and scrubbed
+// without entering the Game panel's Play mode. It re-uses kblend::weights2D so
+// the previewed pose matches what the runtime will produce.
+// ===========================================================================
+
+PanelAnimator::~PanelAnimator()
+{
+    releasePreviewMesh();
+    delete previewRenderer; previewRenderer = nullptr;
+    delete previewCamera;   previewCamera = nullptr;
+    delete previewWorld;    previewWorld = nullptr; // owns previewScene
+    previewScene = nullptr;
+}
+
+void PanelAnimator::ensurePreviewScene()
+{
+    if (previewRenderer)
+        return;
+
+    previewRenderer = new kOffscreenRenderer(512, 512);
+    if (manager)
+        previewRenderer->setAssetManager(manager->getAssetManager());
+
+    previewWorld = createWorld(createAssetManager());
+    previewScene = previewWorld->createScene("blendPreview");
+    previewScene->setFrustumCullingEnabled(false);
+    previewScene->setShadowsEnabled(false);
+    previewScene->setAmbientLightColor(kVec3(0.18f, 0.18f, 0.18f));
+
+    kLight *sun = previewScene->addSunLight(
+        kVec3(0.0f, 3.0f, 0.0f),
+        kVec3(-0.4f, -1.0f, -0.5f),
+        kVec3(1.0f, 1.0f, 1.0f),
+        kVec3(1.0f, 1.0f, 1.0f));
+    if (sun) sun->setPower(1.4f);
+
+    previewCamera = new kCamera(nullptr, kCameraType::CAMERA_TYPE_LOCKED);
+    previewCamera->setFOV(45.0f);
+    previewCamera->setAspectRatio(1.0f);
+    previewCamera->setNearClip(0.01f);
+    previewCamera->setFarClip(1000.0f);
+    previewCamera->setLookAt(kVec3(0.0f));
+    previewCamera->setPosition(kVec3(0.0f, 0.3f, 3.0f));
+}
+
+void PanelAnimator::releasePreviewMesh()
+{
+    if (previewScene && previewMesh)
+        previewScene->removeMesh(previewMesh);
+    previewMesh = nullptr;
+    previewMeshUuid.clear();
+
+    // Clips are created by kAssetManager::loadAnimation (it returns a fresh
+    // object), so the preview owns and frees them.
+    for (auto &kv : previewClips)
+        delete kv.second;
+    previewClips.clear();
+
+    delete previewAnimator; previewAnimator = nullptr;
+    delete previewMat;      previewMat = nullptr;
+    previewBlendTime = 0.0f;
+}
+
+void PanelAnimator::refreshPreviewMeshes()
+{
+    previewMeshUuids.clear();
+    previewMeshNames.clear();
+    if (!manager)
+        return;
+
+    // Every mesh asset in the project, sorted by asset path so the list is
+    // stable and searchable at a glance.
+    std::vector<std::pair<std::string, std::string>> meshes; // (uuid, asset path)
+    for (const auto &kv : manager->fileMap)
+    {
+        if (kv.second.type != "mesh")
+            continue;
+        meshes.emplace_back(kv.first, kv.second.path.empty() ? kv.first : kv.second.path);
+    }
+    if (meshes.empty())
+    {
+        previewMeshChoice = 0;
+        return;
+    }
+
+    std::sort(meshes.begin(), meshes.end(),
+              [](const auto &a, const auto &b) { return a.second < b.second; });
+    for (const auto &m : meshes)
+    {
+        previewMeshUuids.push_back(m.first);
+        previewMeshNames.push_back(m.second);
+    }
+
+    // On first population, default to the mesh the animator's clips were
+    // authored against (best chance the clip bones bind to the model's bones).
+    if (previewMeshUuid.empty())
+    {
+        std::string preferred;
+        for (const auto &st : graph.states)
+        {
+            if (st.animationUuid.empty())
+                continue;
+            fs::path animPath = manager->findAssetPathByUuid(st.animationUuid);
+            if (animPath.empty() || !fs::exists(animPath))
+                continue;
+            json j;
+            try
+            {
+                std::ifstream f(animPath);
+                if (!f.is_open()) continue;
+                f >> j;
+            }
+            catch (...) { continue; }
+            preferred = j.value("meshUuid", std::string());
+            if (!preferred.empty())
+                break;
+        }
+        if (!preferred.empty())
+        {
+            auto it = std::find(previewMeshUuids.begin(), previewMeshUuids.end(), preferred);
+            if (it != previewMeshUuids.end())
+                previewMeshChoice = (int)std::distance(previewMeshUuids.begin(), it);
+        }
+    }
+
+    if (previewMeshChoice >= (int)previewMeshUuids.size())
+        previewMeshChoice = 0;
+}
+
+void PanelAnimator::ensurePreviewClips()
+{
+    if (!manager || !previewMesh)
+        return;
+
+    kAssetManager *am = manager->getAssetManager();
+    if (!am)
+        return;
+
+    for (const auto &st : graph.states)
+    {
+        if (st.animationUuid.empty())
+            continue;
+        if (previewClips.count(st.animationUuid))
+            continue;
+
+        fs::path animPath = manager->findAssetPathByUuid(st.animationUuid);
+        if (animPath.empty() || !fs::exists(animPath))
+            continue;
+
+        json j;
+        try
+        {
+            std::ifstream f(animPath);
+            if (!f.is_open()) continue;
+            f >> j;
+        }
+        catch (...) { continue; }
+
+        std::string meshUuid = j.value("meshUuid", std::string());
+        if (meshUuid.empty())
+            continue;
+
+        fs::path glbPath = manager->projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
+        if (!fs::exists(glbPath))
+            continue;
+
+        try
+        {
+            kSkeletalAnimation *clip = am->loadAnimation(glbPath.generic_string(), previewMesh);
+            if (clip)
+            {
+                // The preview drives clip time itself; keep the engine from
+                // advancing it a second time.
+                clip->setSpeed(0.0f);
+                previewClips[st.animationUuid] = clip;
+            }
+        }
+        catch (const std::exception &)
+        {
+            // Static skinned mesh with no clips — nothing to preview.
+        }
+    }
+}
+
+void PanelAnimator::framePreviewCamera()
+{
+    if (!previewMesh || !previewCamera)
+        return;
+
+    kAABB combined;
+    std::function<void(kMesh *)> expand = [&](kMesh *m)
+    {
+        m->calculateModelMatrix();
+        kAABB b = m->getWorldAABB();
+        if (b.isValid()) { combined.expandBy(b.min); combined.expandBy(b.max); }
+        for (kObject *c : m->getChildren())
+            if (c->getType() == NODE_TYPE_MESH)
+                expand(static_cast<kMesh *>(c));
+    };
+    expand(previewMesh);
+
+    previewCenter = combined.isValid() ? combined.center() : kVec3(0.0f);
+    kVec3 he = combined.isValid() ? combined.halfExtents() : kVec3(1.0f);
+    float radius = glm::length(he);
+    if (radius < 0.001f) radius = 1.0f;
+
+    previewCamDist = (radius / glm::tan(glm::radians(22.5f))) * 1.15f;
+    previewCamera->setNearClip(std::max(0.0001f, previewCamDist * 0.01f));
+    previewCamera->setFarClip(previewCamDist * 100.0f);
+}
+
+void PanelAnimator::drawBlendPreview(AnimState* state)
+{
+    if (!state || !manager)
+        return;
+
+    ensurePreviewScene();
+
+    // Refresh the candidate mesh list only when the graph's clip set changes,
+    // so this does not re-read the .animation files every frame.
+    std::string sig;
+    for (const auto &st : graph.states)
+        sig += st.animationUuid + "|";
+    if (sig != previewSig)
+    {
+        previewSig = sig;
+        refreshPreviewMeshes();
+    }
+
+    ImGui::TextUnformatted("Preview Model");
+    ImGui::Separator();
+
+    if (previewMeshNames.empty())
+    {
+        ImGui::TextDisabled("No mesh found for this animator's clips.");
+        return;
+    }
+
+    std::vector<const char *> names;
+    names.reserve(previewMeshNames.size());
+    for (const auto &n : previewMeshNames)
+        names.push_back(n.c_str());
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("##blendpreviewmesh", &previewMeshChoice, names.data(), (int)names.size()))
+        releasePreviewMesh(); // reload on the next frame
+
+    const std::string chosen = previewMeshUuids.empty()
+        ? std::string()
+        : previewMeshUuids[std::min((size_t)previewMeshChoice, previewMeshUuids.size() - 1)];
+
+    if (!chosen.empty() && chosen != previewMeshUuid)
+    {
+        releasePreviewMesh();
+
+        kAssetManager *am = manager->getAssetManager();
+        fs::path glbPath = manager->projectPath / "Library" / "ImportedAssets" / (chosen + ".glb");
+        if (am && fs::exists(glbPath))
+        {
+            previewMesh = am->loadMesh(glbPath.generic_string());
+            if (previewMesh)
+            {
+                previewMeshUuid = chosen;
+
+                // Fallback material for submeshes whose GLB shipped none.
+                kShader *shader = am->loadGlslFromResource("SHADER_MESH_PHONG");
+                if (shader)
+                {
+                    previewMat = new kMaterial();
+                    previewMat->setShader(shader);
+                    previewMat->setDiffuseColor(kVec3(0.82f, 0.82f, 0.82f));
+                    previewMat->setAmbientColor(kVec3(0.30f, 0.30f, 0.30f));
+                    previewMat->setSpecularColor(kVec3(0.20f, 0.20f, 0.20f));
+                    previewMat->setShininess(16.0f);
+
+                    std::function<void(kMesh *)> applyMat = [&](kMesh *m)
+                    {
+                        kMaterial *existing = m->getMaterial();
+                        if (!existing || !existing->getShader() ||
+                            existing->getShader()->getShaderProgram() == 0)
+                            m->setMaterial(previewMat, false); // false = don't auto-apply to children
+                        for (kObject *c : m->getChildren())
+                            if (c->getType() == NODE_TYPE_MESH)
+                                applyMat(static_cast<kMesh *>(c));
+                    };
+                    applyMat(previewMesh);
+                }
+
+                // One animator shared by every bone-bearing submesh.
+                previewAnimator = new kAnimator(nullptr);
+                std::function<void(kMesh *)> applyAnim = [&](kMesh *m)
+                {
+                    if (m->getBoneCount() > 0)
+                        m->setAnimator(previewAnimator);
+                    for (kObject *c : m->getChildren())
+                        if (c->getType() == NODE_TYPE_MESH)
+                            applyAnim(static_cast<kMesh *>(c));
+                };
+                applyAnim(previewMesh);
+
+                previewScene->addMesh(previewMesh);
+                ensurePreviewClips();
+                framePreviewCamera();
+                previewBlendTime = 0.0f;
+            }
+        }
+    }
+
+    if (!previewMesh || !previewAnimator || previewClips.empty())
+    {
+        // Render the bare mesh so the user can still frame the model.
+        if (previewMesh && previewCamera && previewRenderer)
+        {
+            float pr = glm::radians(previewRotX);
+            float yr = glm::radians(previewRotY);
+            kVec3 camDir(std::cos(pr) * std::sin(yr), std::sin(pr), std::cos(pr) * std::cos(yr));
+            previewCamera->setPosition(previewCenter + camDir * previewCamDist);
+            previewCamera->setLookAt(previewCenter);
+            previewRenderer->setBackgroundColor(kVec4(0.16f, 0.16f, 0.16f, 1.0f));
+            previewRenderer->renderMesh(previewMesh, previewCamera);
+
+            const float sz = std::max(120.0f, std::min(previewSize, ImGui::GetContentRegionAvail().x));
+            ImTextureRef tex((ImTextureID)(uintptr_t)previewRenderer->getTexture());
+            ImGui::Image(tex, ImVec2(sz, sz), ImVec2(0, 1), ImVec2(1, 0));
+        }
+        else
+        {
+            ImGui::TextDisabled("Loading preview…");
+        }
+        return;
+    }
+
+    // ---- Blend parameter (uses the scrubbed preview value when present) ----
+    auto varDefault = [&](const std::string &name) -> float
+    {
+        auto pv = blendPreviewValues.find(name);
+        if (pv != blendPreviewValues.end()) return pv->second;
+        for (const auto &v : graph.variables)
+            if (v.name == name) return v.defaultValue;
+        return 0.0f;
+    };
+    const float paramX = varDefault(state->blendParamX);
+    const float paramY = varDefault(state->blendParamY);
+
+    // ---- Gather playable motions ------------------------------------------
+    struct PMotion
+    {
+        kSkeletalAnimation *clip = nullptr;
+        float threshold = 0.0f;
+        float posX = 0.0f;
+        float posY = 0.0f;
+        float speed = 1.0f;
+    };
+    std::vector<PMotion> motions;
+    for (const auto &c : state->blendChildren)
+    {
+        AnimState *linked = graph.findState(c.stateId);
+        if (!linked) continue;
+        auto it = previewClips.find(linked->animationUuid);
+        if (it == previewClips.end() || !it->second) continue;
+
+        PMotion m;
+        m.clip = it->second;
+        m.threshold = c.threshold;
+        m.posX = c.posX;
+        m.posY = c.posY;
+        m.speed = c.speed;
+        motions.push_back(m);
+    }
+
+    // ---- Weights (identical math to the runtime) --------------------------
+    std::vector<float> weights(motions.size(), 0.0f);
+    if (motions.size() == 1)
+    {
+        weights[0] = 1.0f;
+    }
+    else if (motions.size() > 1)
+    {
+        if (state->blendType == AnimBlendType::TwoD)
+        {
+            std::vector<kblend::Point2> pts;
+            pts.reserve(motions.size());
+            for (const auto &m : motions)
+                pts.emplace_back(m.posX, m.posY);
+            weights = kblend::weights2D(pts, paramX, paramY);
+        }
+        else
+        {
+            std::vector<size_t> order(motions.size());
+            for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                return motions[a].threshold < motions[b].threshold;
+            });
+            if (paramX <= motions[order.front()].threshold)
+                weights[order.front()] = 1.0f;
+            else if (paramX >= motions[order.back()].threshold)
+                weights[order.back()] = 1.0f;
+            else
+                for (size_t i = 0; i + 1 < order.size(); ++i)
+                {
+                    const float t0 = motions[order[i]].threshold;
+                    const float t1 = motions[order[i + 1]].threshold;
+                    if (paramX >= t0 && paramX <= t1)
+                    {
+                        const float f = (t1 - t0 > 1e-6f) ? (paramX - t0) / (t1 - t0) : 0.0f;
+                        weights[order[i]] = 1.0f - f;
+                        weights[order[i + 1]] = f;
+                        break;
+                    }
+                }
+        }
+    }
+
+    // ---- Advance clip time and build the weighted samples -----------------
+    previewBlendTime += ImGui::GetIO().DeltaTime;
+
+    std::vector<kPoseSample> samples;
+    samples.reserve(motions.size());
+    for (size_t i = 0; i < motions.size(); ++i)
+    {
+        if (weights[i] <= 1e-5f) continue;
+        kSkeletalAnimation *clip = motions[i].clip;
+        const float tps = clip->getTicksPerSecond();
+        const float durSec = (tps > 1e-3f) ? (clip->getDuration() / tps) : 0.0f;
+
+        float sec = previewBlendTime * motions[i].speed;
+        if (durSec > 1e-4f)
+            sec = std::fmod(sec, durSec);
+
+        kPoseSample s;
+        s.animation = clip;
+        s.time = sec * tps;
+        s.weight = weights[i];
+        samples.push_back(s);
+    }
+
+    if (!samples.empty())
+    {
+        // Root motion follows the highest-weight motion that has a root-motion
+        // channel (not the dominant one), and the source is switched without
+        // resetting the tracker so the preview neither stalls nor pops.
+        kSkeletalAnimation *dominant     = nullptr;
+        kSkeletalAnimation *rootClip     = nullptr;
+        float               dominantTime = 0.0f;
+        float               rootTime     = 0.0f;
+        float               bestW        = -1.0f;
+        float               bestRootW    = -1.0f;
+        for (const auto &s : samples)
+        {
+            if (s.animation == nullptr) continue;
+            if (s.weight > bestW)
+            {
+                bestW        = s.weight;
+                dominant     = s.animation;
+                dominantTime = s.time;
+            }
+            const bool hasRoot = s.animation->getRootMotionRotation() ||
+                                 s.animation->getRootMotionPositionY() ||
+                                 s.animation->getRootMotionPositionXZ();
+            if (hasRoot && s.weight > bestRootW)
+            {
+                bestRootW = s.weight;
+                rootClip  = s.animation;
+                rootTime  = s.time;
+            }
+        }
+        if (rootClip != nullptr)
+            previewAnimator->setBlendRootSource(rootClip, rootTime);
+        else if (dominant != nullptr)
+            previewAnimator->setBlendRootSource(dominant, dominantTime);
+
+        try
+        {
+            const kNodeData &root = samples.front().animation->getRootNode();
+            previewAnimator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+        }
+        catch (const std::exception &)
+        {
+            // Keep the last successfully computed pose.
+        }
+    }
+
+    // ---- Camera orbit + offscreen render ----------------------------------
+    {
+        float pr = glm::radians(previewRotX);
+        float yr = glm::radians(previewRotY);
+        kVec3 camDir(std::cos(pr) * std::sin(yr), std::sin(pr), std::cos(pr) * std::cos(yr));
+        previewCamera->setPosition(previewCenter + camDir * previewCamDist);
+        previewCamera->setLookAt(previewCenter);
+    }
+
+    previewRenderer->setBackgroundColor(kVec4(0.16f, 0.16f, 0.16f, 1.0f));
+    if (previewLightOn)
+        previewRenderer->render(previewWorld, previewScene, previewCamera);
+    else
+        previewRenderer->renderMesh(previewMesh, previewCamera);
+
+    // ---- Image + navigation -----------------------------------------------
+    ImGui::Spacing();
+    const float sz = std::max(120.0f, std::min(previewSize, ImGui::GetContentRegionAvail().x));
+    ImTextureRef tex((ImTextureID)(uintptr_t)previewRenderer->getTexture());
+    ImGui::Image(tex, ImVec2(sz, sz), ImVec2(0, 1), ImVec2(1, 0));
+
+    if (ImGui::IsItemHovered())
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+        {
+            previewRotY -= io.MouseDelta.x * 0.4f;
+            previewRotX += io.MouseDelta.y * 0.4f;
+            previewRotX = std::max(-89.0f, std::min(89.0f, previewRotX));
+        }
+        if (io.MouseWheel != 0.0f)
+        {
+            previewCamDist *= (1.0f - io.MouseWheel * 0.1f);
+            previewCamDist = std::max(0.05f, previewCamDist);
+        }
+    }
+
+    ImGui::Checkbox("Lit", &previewLightOn);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset View"))
+    {
+        previewRotX = 20.0f;
+        previewRotY = 30.0f;
+        framePreviewCamera();
+
+        // Reset every previewed blend parameter back to 0 — both the sliders
+        // (kept in blendPreviewValues) and any running controller.
+        for (auto &kv : blendPreviewValues)
+        {
+            kv.second = 0.0f;
+            if (manager != nullptr)
+                manager->setRuntimeAnimatorVariable(graph.uuid, kv.first, 0.0f);
+        }
+        auto zeroParam = [&](const std::string &name)
+        {
+            if (name.empty()) return;
+            blendPreviewValues[name] = 0.0f;
+            if (manager != nullptr)
+                manager->setRuntimeAnimatorVariable(graph.uuid, name, 0.0f);
+        };
+        zeroParam(state->blendParamX);
+        if (state->blendType == AnimBlendType::TwoD)
+            zeroParam(state->blendParamY);
+    }
+    ImGui::TextDisabled("Drag to orbit, scroll to zoom.");
+}
+
 void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 {
     if (!state) return;
@@ -1441,12 +2012,15 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Name
+    // Fields use a label-on-its-own-line layout: the previous full-width
+    // widgets (-FLT_MIN) left no room for their right-hand captions, which
+    // were drawn outside the panel and clipped.
     char nameBuf[128];
     strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
     nameBuf[sizeof(nameBuf) - 1] = '\0';
+    ImGui::TextUnformatted("Name");
     ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+    if (ImGui::InputText("##blendname", nameBuf, sizeof(nameBuf)))
     {
         state->name = nameBuf;
         graph.dirty = true;
@@ -1454,10 +2028,11 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 
     // Blend type: a single axis (1D) or a plane (2D).
     ImGui::Spacing();
+    ImGui::TextUnformatted("Blend Type");
     const char* blendTypes[] = { "1D", "2D" };
     int bt = (int)state->blendType;
     ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("Blend Type", &bt, blendTypes, IM_ARRAYSIZE(blendTypes)))
+    if (ImGui::Combo("##blendtype", &bt, blendTypes, IM_ARRAYSIZE(blendTypes)))
     {
         state->blendType = (AnimBlendType)bt;
         graph.dirty = true;
@@ -1476,9 +2051,10 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     };
 
     ImGui::Spacing();
+    ImGui::TextUnformatted("Parameter X");
     int px = paramIndex(state->blendParamX);
     ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("Parameter X", &px, floatVars.data(), (int)floatVars.size()))
+    if (ImGui::Combo("##paramx", &px, floatVars.data(), (int)floatVars.size()))
     {
         state->blendParamX = (px == 0) ? std::string() : std::string(floatVars[px]);
         graph.dirty = true;
@@ -1486,9 +2062,10 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 
     if (state->blendType == AnimBlendType::TwoD)
     {
+        ImGui::TextUnformatted("Parameter Y");
         int py = paramIndex(state->blendParamY);
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("Parameter Y", &py, floatVars.data(), (int)floatVars.size()))
+        if (ImGui::Combo("##paramy", &py, floatVars.data(), (int)floatVars.size()))
         {
             state->blendParamY = (py == 0) ? std::string() : std::string(floatVars[py]);
             graph.dirty = true;
@@ -1497,9 +2074,10 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 
     // Authoring range for the diagram axes.
     ImGui::Spacing();
+    ImGui::TextUnformatted("Axis Range X");
     float rangeX[2] = { state->blendRangeXMin, state->blendRangeXMax };
     ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::DragFloat2("Axis Range X", rangeX, 0.05f))
+    if (ImGui::DragFloat2("##rangex", rangeX, 0.05f))
     {
         state->blendRangeXMin = rangeX[0];
         state->blendRangeXMax = rangeX[1];
@@ -1507,15 +2085,72 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     }
     if (state->blendType == AnimBlendType::TwoD)
     {
+        ImGui::TextUnformatted("Axis Range Y");
         float rangeY[2] = { state->blendRangeYMin, state->blendRangeYMax };
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::DragFloat2("Axis Range Y", rangeY, 0.05f))
+        if (ImGui::DragFloat2("##rangey", rangeY, 0.05f))
         {
             state->blendRangeYMin = rangeY[0];
             state->blendRangeYMax = rangeY[1];
             graph.dirty = true;
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Preview — scrub a parameter and watch the blended pose in the embedded
+    // 3D view, all without entering the Game panel's Play mode. While playing,
+    // the slider also drives any running controller built from this graph; the
+    // value is kept locally so previewing never dirties the asset.
+    // -----------------------------------------------------------------------
+    auto drawParamPreview = [&](const std::string& varName, float lo, float hi)
+    {
+        if (varName.empty())
+        {
+            ImGui::TextDisabled("(no parameter)");
+            return;
+        }
+        if (hi - lo < 1e-5f)
+            hi = lo + 1.0f;
+
+        ImGui::PushID(varName.c_str());
+
+        float value;
+        auto it = blendPreviewValues.find(varName);
+        if (it != blendPreviewValues.end())
+        {
+            value = it->second;
+        }
+        else
+        {
+            float def = 0.0f;
+            for (const auto& v : graph.variables)
+                if (v.name == varName) { def = v.defaultValue; break; }
+            value = (manager != nullptr)
+                        ? manager->getRuntimeAnimatorVariable(graph.uuid, varName, def)
+                        : def;
+            blendPreviewValues[varName] = value;
+        }
+
+        ImGui::TextUnformatted(varName.c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::SliderFloat("##paramval", &value, lo, hi, "%.3f"))
+        {
+            blendPreviewValues[varName] = value;
+            if (manager != nullptr)
+                manager->setRuntimeAnimatorVariable(graph.uuid, varName, value);
+        }
+
+        ImGui::PopID();
+    };
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Preview");
+    ImGui::Separator();
+    drawBlendPreview(state);
+    ImGui::Spacing();
+    drawParamPreview(state->blendParamX, state->blendRangeXMin, state->blendRangeXMax);
+    if (state->blendType == AnimBlendType::TwoD)
+        drawParamPreview(state->blendParamY, state->blendRangeYMin, state->blendRangeYMax);
 
     // Motions: each drives an existing animation state.
     ImGui::Spacing();
@@ -1553,8 +2188,9 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
             if (candIds[c] == child.stateId) cur = (int)c + 1;
         }
 
+        ImGui::TextUnformatted("State");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("State", &cur, labels.data(), (int)labels.size()))
+        if (ImGui::Combo("##motionstate", &cur, labels.data(), (int)labels.size()))
         {
             child.stateId = (cur == 0) ? -1 : candIds[cur - 1];
             graph.dirty = true;
@@ -1563,8 +2199,9 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         if (state->blendType == AnimBlendType::TwoD)
         {
             float xy[2] = { child.posX, child.posY };
+            ImGui::TextUnformatted("Position (X, Y)");
             ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::DragFloat2("Position (X, Y)", xy, 0.05f))
+            if (ImGui::DragFloat2("##motionpos", xy, 0.05f))
             {
                 child.posX = xy[0];
                 child.posY = xy[1];
@@ -1573,13 +2210,15 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         }
         else
         {
+            ImGui::TextUnformatted("Threshold");
             ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::DragFloat("Threshold", &child.threshold, 0.05f))
+            if (ImGui::DragFloat("##motionthresh", &child.threshold, 0.05f))
                 graph.dirty = true;
         }
 
+        ImGui::TextUnformatted("Speed");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::DragFloat("Speed", &child.speed, 0.05f, 0.0f, 10.0f))
+        if (ImGui::DragFloat("##motionspeed", &child.speed, 0.05f, 0.0f, 10.0f))
             graph.dirty = true;
 
         if (ImGui::Button("Remove Motion"))

@@ -49,6 +49,29 @@ namespace kemena
 
         kMat4 nodeTransform = node->transformation;
 
+        // Root motion is never averaged across the blended clips — mixing
+        // opposing translations would cancel them out and lose the delta.
+        // Instead the root-motion bone is taken verbatim from the animator's
+        // active clip (the dominant sample, set by the caller) and run through
+        // the same extract/bake path as single-clip playback, so the character
+        // still moves and getRootMotionDeltaPosition() reports the motion.
+        bool rootMotionApplied = false;
+        if (rootMotionActive())
+        {
+            resolveRootBone();
+            if (node->name == rootBoneName && currentAnimation != nullptr)
+            {
+                kBone *rootBone = currentAnimation->findBone(node->name);
+                if (rootBone != nullptr)
+                {
+                    rootBone->update(currentTime);
+                    nodeTransform = rootBone->getLocalTransform();
+                    handleRootMotion(rootBone, nodeTransform);
+                    rootMotionApplied = true;
+                }
+            }
+        }
+
         kVec3 posAccum(0.0f);
         kVec3 scaleAccum(0.0f);
         kQuat rotAccum(0.0f, 0.0f, 0.0f, 0.0f);
@@ -56,6 +79,7 @@ namespace kemena
         float totalWeight = 0.0f;
         bool  haveRef     = false;
 
+        if (!rootMotionApplied)
         for (const kPoseSample &s : samples)
         {
             if (s.animation == nullptr || s.weight <= 0.0f)
