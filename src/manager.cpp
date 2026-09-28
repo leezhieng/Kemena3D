@@ -10038,6 +10038,11 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
         if (fromCurrent && t.hasExitTime && animSeconds < t.exitTime)
             continue;
 
+        // A blend tree can additionally gate every outgoing transition on its
+        // own exit time (Blending / Timing section of the blend-tree inspector).
+        if (fromCurrent && state->hasExitTime && animSeconds < state->exitTime)
+            continue;
+
         bool conditionsMet = true;
         for (auto &c : t.conditions)
         {
@@ -10471,6 +10476,53 @@ void Manager::stepAnimators(float dt)
                 }
             }
 
+            // "Instant" blending snaps to the single dominant motion instead of
+            // weighting the surrounding ones; "Cross Fade" (the default) keeps
+            // the weighted blend. When Cross Fade also carries a blendDuration,
+            // the weights are eased toward their targets so a parameter jump
+            // glides across instead of popping (blendDuration 0 keeps the old
+            // instant-weighting behaviour).
+            if (state->blendMode == AnimBlendMode::Instant && motions.size() > 1)
+            {
+                size_t dominantIdx = 0;
+                for (size_t i = 1; i < motions.size(); ++i)
+                    if (motions[i].weight > motions[dominantIdx].weight)
+                        dominantIdx = i;
+                for (size_t i = 0; i < motions.size(); ++i)
+                    motions[i].weight = (i == dominantIdx) ? 1.0f : 0.0f;
+            }
+            else if (state->blendMode == AnimBlendMode::CrossFade &&
+                     state->blendDuration > 0.01f)
+            {
+                if (rt.blendSmoothStateId != state->id)
+                {
+                    // First frame in this blend tree: settle on the target
+                    // weights so entering the state never lags behind.
+                    rt.blendSmoothStateId = state->id;
+                    rt.blendSmoothWeights.clear();
+                    for (const auto &m : motions)
+                        rt.blendSmoothWeights[m.uuid] = m.weight;
+                }
+                else
+                {
+                    const float t = std::min(1.0f, dt / state->blendDuration);
+                    float sum = 0.0f;
+                    for (auto &m : motions)
+                    {
+                        auto it = rt.blendSmoothWeights.find(m.uuid);
+                        const float current = (it != rt.blendSmoothWeights.end()) ? it->second : 0.0f;
+                        const float eased   = current + (m.weight - current) * t;
+                        rt.blendSmoothWeights[m.uuid] = eased;
+                        m.weight = eased;
+                        sum += eased;
+                    }
+                    // Renormalise so the eased weights stay a convex blend.
+                    if (sum > 1e-5f)
+                        for (auto &m : motions)
+                            m.weight /= sum;
+                }
+            }
+
             // Advance each motion's own clip time and build the weighted samples.
             std::vector<kPoseSample> samples;
             samples.reserve(motions.size());
@@ -10507,15 +10559,14 @@ void Manager::stepAnimators(float dt)
             if (samples.empty())
                 continue;
 
-            // Pick the root-motion source: the highest-weight motion that actually
-            // has a root-motion channel enabled. Using the *dominant* clip instead
-            // would suppress root motion until that clip outweighs idle ("nothing
-            // happens at first"), and calling playAnimation() each time the dominant
-            // flips would reset the tracker and make the pose pop.
-            // setBlendRootSource() switches the source without either side effect,
-            // and keeps the animator's current clip non-null for the renderer
-            // (its updateAnimation still sees clip speed 0, so it won't recompute
-            // the blended palette).
+            // Pick the clip the animator points at (keeps its current clip
+            // non-null for the renderer and resolves the root-motion bone).
+            // The root *displacement* is no longer read from this single clip —
+            // calculateBlendedBoneTransform() now combines every motion's root
+            // delta by blend weight, so diagonal moves drive both axes and the
+            // motion fades out together with the pose instead of lingering on
+            // the last root-bearing clip. setBlendRootSource() switches the
+            // source without resetting time or popping the pose.
             kSkeletalAnimation *dominant     = nullptr;
             kSkeletalAnimation *rootClip     = nullptr;
             float               dominantTime = 0.0f;
@@ -10563,7 +10614,9 @@ void Manager::stepAnimators(float dt)
         else
         {
             // ---- Single-clip playback ---------------------------------------
-            rt.blendStateTime = 0.0f;
+            rt.blendStateTime      = 0.0f;
+            rt.blendSmoothStateId  = -1; // leave any blend-tree easing behind
+            rt.blendSmoothWeights.clear();
             clipUuid = animatorStateClipUuid(rt, state, &stateSpeed);
 
             auto clipIt = rt.clipForState.find(clipUuid);

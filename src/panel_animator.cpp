@@ -193,6 +193,12 @@ nlohmann::json AnimatorGraph::toJson() const
         sj["blendRangeX"] = json::array({ s.blendRangeXMin, s.blendRangeXMax });
         sj["blendRangeY"] = json::array({ s.blendRangeYMin, s.blendRangeYMax });
 
+        // Blend-tree blending / timing (mirrors the transition payload).
+        sj["blendMode"]     = (int)s.blendMode;
+        sj["blendDuration"] = s.blendDuration;
+        sj["hasExitTime"]   = s.hasExitTime;
+        sj["exitTime"]      = s.exitTime;
+
         json blendArr = json::array();
         for (const auto& c : s.blendChildren)
         {
@@ -305,6 +311,12 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
                 st.blendRangeYMin = s["blendRangeY"][0].get<float>();
                 st.blendRangeYMax = s["blendRangeY"][1].get<float>();
             }
+
+            // Blend-tree blending / timing (absent in older files → defaults).
+            st.blendMode     = (AnimBlendMode)s.value("blendMode", (int)AnimBlendMode::CrossFade);
+            st.blendDuration = s.value("blendDuration", 0.0f);
+            st.hasExitTime   = s.value("hasExitTime", false);
+            st.exitTime      = s.value("exitTime", 0.0f);
             if (s.contains("blendChildren") && s["blendChildren"].is_array())
             {
                 for (const auto& c : s["blendChildren"])
@@ -2094,6 +2106,44 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
             state->blendRangeYMax = rangeY[1];
             graph.dirty = true;
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Blending / Timing — the same two groups the transition inspector shows,
+    // so a blend tree can declare how its motions are combined and whether it
+    // must play for a minimum time before its outgoing transitions may fire.
+    // -----------------------------------------------------------------------
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Blending");
+    ImGui::Separator();
+
+    ImGui::TextUnformatted("Blend Mode");
+    const char* blendModes[] = { "Instant", "Cross Fade" };
+    int mode = (int)state->blendMode;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("##blendtreemode", &mode, blendModes, IM_ARRAYSIZE(blendModes)))
+    {
+        state->blendMode = (AnimBlendMode)mode;
+        graph.dirty = true;
+    }
+
+    ImGui::TextUnformatted("Blend Duration");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragFloat("##blendtreedur", &state->blendDuration, 0.01f, 0.0f, 10.0f, "%.2fs"))
+        graph.dirty = true;
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Timing");
+    ImGui::Separator();
+
+    if (ImGui::Checkbox("Has Exit Time", &state->hasExitTime))
+        graph.dirty = true;
+    if (state->hasExitTime)
+    {
+        ImGui::TextUnformatted("Exit Time");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat("##blendtreeexit", &state->exitTime, 0.01f, 0.0f, 100.0f, "%.2fs"))
+            graph.dirty = true;
     }
 
     // -----------------------------------------------------------------------

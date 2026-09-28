@@ -159,6 +159,8 @@ struct RuntimeAnimator
     int currentStateId = -1;                                       ///< State currently playing.
     float stateTimeSeconds = 0.0f;                                 ///< Seconds since entering the current state.
     float blendStateTime = 0.0f;                                   ///< Seconds spent in the active blend tree (per-motion clip time).
+    int blendSmoothStateId = -1;                                   ///< Blend tree whose Cross Fade weights are being eased (-1 = none).
+    std::unordered_map<std::string, float> blendSmoothWeights;     ///< animationUuid -> eased blend weight for the active blend tree.
     std::unordered_map<std::string, float> variables;              ///< Controller variable values.
 };
 

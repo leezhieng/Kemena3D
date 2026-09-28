@@ -153,6 +153,13 @@ struct AnimState
     float         blendRangeYMax =  1.0f;  ///< Display/authoring range for the y axis (2D).
     std::vector<AnimBlendChild> blendChildren; ///< Motions blended by this node.
 
+    // Blend-tree blending / timing. Mirrors AnimTransition so a blend tree
+    // exposes the same "Blending" + "Timing" options as a state transition.
+    AnimBlendMode blendMode     = AnimBlendMode::CrossFade; ///< Instant snaps to the dominant motion; Cross Fade weights the surrounding motions.
+    float         blendDuration = 0.0f;                     ///< Seconds to ease the blend weights across (Cross Fade only; 0 disables easing).
+    bool          hasExitTime   = false;                    ///< If true, outgoing transitions wait until exitTime has elapsed.
+    float         exitTime      = 0.0f;                     ///< Seconds the blend tree must play before it may be exited.
+
     /** @brief True when this is a real, playable animation state. */
     bool isState()     const { return kind == AnimStateKind::State; }
     /** @brief True when this is the source-only Any State node. */
