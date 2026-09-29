@@ -90,7 +90,12 @@ cbuffer PerObject : register(b0)
     int      cascadeCount;
     int      enableShadow;
     int      receiveShadow;
-    int      _objPad0;
+    float    shadowResolution;
+    float    shadowBias;
+    float    shadowNormalBias;
+    float    shadowNormalOffset;
+    float    shadowSoftness;
+    float3   _objPad0;
 };
 
 struct VSInput
@@ -214,6 +219,10 @@ SamplerState         skyboxSampler     : register(s9);
 static const float PI = 3.14159265359;
 
 // --- CSM shadow helpers ------------------------------------------------------
+//
+// Follows the Microsoft DX tech articles: normal-offset sampling, constant +
+// slope-scaled receiver bias, softness-driven PCF, and a smooth blend across
+// the cascade boundary.
 
 float csmSplit(int i)
 {
@@ -223,18 +232,34 @@ float csmSplit(int i)
     return cascadeSplits.w;
 }
 
-float csmSample(int layer, float3 wp, float bias)
+// World-space size of one shadow-map texel for a cascade (ortho [0][0] == 1/radius).
+float csmTexelWorld(int layer)
+{
+    float m = abs(lightSpaceMatrices[layer][0][0]);
+    return (m > 0.0) ? 2.0 / (m * max(shadowResolution, 1.0)) : 0.0;
+}
+
+// Constant + slope-scaled receiver bias (clamped tan(acos(N·L))).
+float csmBias(float3 n, float3 l)
+{
+    float ndl = max(dot(normalize(n), normalize(l)), 0.0);
+    return shadowBias + shadowNormalBias * min(tan(acos(max(ndl, 1e-3))), 8.0);
+}
+
+bool csmProject(int layer, float3 wp, out float3 p)
+{
+    float4 ls = mul(lightSpaceMatrices[layer], float4(wp, 1.0));
+    p = ls.xyz / ls.w;
+    p = p * 0.5 + 0.5;
+    return p.z <= 1.0 && p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0;
+}
+
+float csmPCF(int layer, float3 p, float bias)
 {
     // Same texel size the GLSL derives with textureSize().
     uint sw, sh, se;
     shadowMapArray.GetDimensions(sw, sh, se);
-    float2 ts = 1.0 / float2(sw, sh);
-
-    float4 ls = mul(lightSpaceMatrices[layer], float4(wp, 1.0));
-    float3 p  = ls.xyz / ls.w;
-    p = p * 0.5 + 0.5;
-    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0)
-        return 0.0;
+    float2 ts = (1.0 / float2(sw, sh)) * max(shadowSoftness, 0.5);
 
     float s = 0.0;
     for (int x = -1; x <= 1; x++)
@@ -252,19 +277,31 @@ float csmSample(int layer, float3 wp, float bias)
     return s / 9.0;
 }
 
-float csmShadow(float3 wp, float3 n)
+float csmShadow(float3 wp, float3 n, float3 lightDir)
 {
-    if (!enableShadow || !receiveShadow) return 0.0;
+    if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
+    float3 l = normalize(-lightDir);
     float fd = abs(mul(viewMatrix, float4(wp, 1.0)).z);
     int layer = cascadeCount - 1;
     for (int i = 0; i < cascadeCount; i++)
         if (fd < csmSplit(i)) { layer = i; break; }
-    float bias = max(0.0025 * (1.0 - dot(normalize(n), float3(0.0, 1.0, 0.0))), 0.0004);
-    float sh = csmSample(layer, wp, bias);
+    // Normal-offset, then constant + slope-scaled depth bias.
+    float3 samplePos = wp + normalize(n) * (csmTexelWorld(layer) * shadowNormalOffset);
+    float bias = csmBias(n, l);
+    float3 p;
+    if (!csmProject(layer, samplePos, p)) return 0.0;
+    float sh = csmPCF(layer, p, bias);
     float sf = csmSplit(layer);
     float band = sf * 0.1;
     if (layer + 1 < cascadeCount && fd > sf - band)
-        sh = lerp(sh, csmSample(layer + 1, wp, bias), saturate((fd - (sf - band)) / band));
+    {
+        float3 p2;
+        if (csmProject(layer + 1, samplePos, p2))
+        {
+            float t = saturate((fd - (sf - band)) / max(band, 1e-4));
+            sh = lerp(sh, csmPCF(layer + 1, p2, bias), t);
+        }
+    }
     return sh;
 }
 
@@ -417,7 +454,8 @@ float4 PSMain(VSOutput input) : SV_Target
     float3 Lo = float3(0.0, 0.0, 0.0);
 
     // Sun lights (directional)
-    float shadow = csmShadow(input.v_worldPos, N);
+    float shadow = csmShadow(input.v_worldPos, N,
+                             sunLightNum > 0 ? sunLights[0].direction : float3(0.0, -1.0, 0.0));
     for (int si = 0; si < sunLightNum; si++)
     {
         float3 l        = normalize(-sunLights[si].direction);

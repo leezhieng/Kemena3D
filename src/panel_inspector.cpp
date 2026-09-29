@@ -3545,6 +3545,28 @@ static void drawSceneSection(kGuiManager *gui, kScene *scene, Manager *mgr)
                 { cap->setShadowNormalBias(after); }));
         }
 
+        // Shadow normal offset — receiver push along its normal, in shadow-map
+        // texels. Removes contact acne without the peter-panning of a pure bias.
+        static float s_normalOffsetBefore = 0.0f;
+        float noff = scene->getShadowNormalOffset();
+        float noffPreEdit = noff;
+        propLabel(gui, "Shadow N.Offset");
+        if (gui->dragFloat("##ShadowNormalOffset", &noff, 0.05f, 0.0f, 5.0f, "%.2f"))
+            scene->setShadowNormalOffset(noff);
+        if (gui->isItemActivated())
+            s_normalOffsetBefore = noffPreEdit;
+        if (gui->isItemDeactivatedAfterEdit())
+        {
+            float after = scene->getShadowNormalOffset();
+            float before = s_normalOffsetBefore;
+            kScene *cap = scene;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]()
+                { cap->setShadowNormalOffset(before); },
+                [cap, after]()
+                { cap->setShadowNormalOffset(after); }));
+        }
+
         // Shadow map resolution — combo of standard sizes. Bigger = sharper
         // shadow but more VRAM (size² × cascadeCount × depth bpp).
         propLabel(gui, "Shadow Res");

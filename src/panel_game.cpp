@@ -97,6 +97,7 @@ void PanelGame::renderGame(int viewportW, int viewportH, float dt)
     renderer->setEnableShadow(gameScene->getShadowsEnabled());
     renderer->setShadowBias(gameScene->getShadowBias());
     renderer->setShadowNormalBias(gameScene->getShadowNormalBias());
+    renderer->setShadowNormalOffset(gameScene->getShadowNormalOffset());
     renderer->setShadowSoftness(gameScene->getShadowSoftness());
     if (renderer->getShadowResolution() != gameScene->getShadowMapResolution())
         renderer->setShadowResolution(gameScene->getShadowMapResolution());

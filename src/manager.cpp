@@ -6365,8 +6365,9 @@ void Manager::loadWorld(const kString &path)
             scene->setAmbientLightColor(kVec3(al.value("r", 0.1f), al.value("g", 0.1f), al.value("b", 0.1f)));
         }
         scene->setShadowsEnabled(sceneJson.value("shadows_enabled", true));
-        scene->setShadowBias(sceneJson.value("shadow_bias", 0.0008f));
-        scene->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.003f));
+        scene->setShadowBias(sceneJson.value("shadow_bias", 0.0006f));
+        scene->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.0015f));
+        scene->setShadowNormalOffset(sceneJson.value("shadow_normal_offset", 1.5f));
         scene->setShadowMapResolution(sceneJson.value("shadow_map_resolution", 2048));
         scene->setShadowSoftness(sceneJson.value("shadow_softness", 1.5f));
         scene->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));
@@ -6722,8 +6723,9 @@ void Manager::loadDefaultWorldInto(kScene *target)
                                            al.value("b", 0.1f)));
     }
     target->setShadowsEnabled(sceneJson.value("shadows_enabled", true));
-    target->setShadowBias(sceneJson.value("shadow_bias", 0.0008f));
-    target->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.003f));
+    target->setShadowBias(sceneJson.value("shadow_bias", 0.0006f));
+    target->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.0015f));
+    target->setShadowNormalOffset(sceneJson.value("shadow_normal_offset", 1.5f));
     target->setShadowMapResolution(sceneJson.value("shadow_map_resolution", 2048));
     target->setShadowSoftness(sceneJson.value("shadow_softness", 1.5f));
     target->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));
@@ -7364,8 +7366,27 @@ void Manager::applyInputBindings()
 
 void Manager::stepInput()
 {
-    if (inputManager)
-        inputManager->update();
+    if (!inputManager)
+        return;
+
+    inputManager->update();
+
+    // Diagnostic: log action-state transitions so a latched action (a key whose
+    // release event is never seen) is immediately visible in the debug log.
+    if (inputManager->hasAction("Front"))
+    {
+        auto bit = [this](const char *a) { return inputManager->getAction(a) ? 1 : 0; };
+        static int lastState = -1;
+        int cur = (bit("Left") << 3) | (bit("Right") << 2) | (bit("Front") << 1) | bit("Back");
+        if (cur != lastState)
+        {
+            lastState = cur;
+            std::ofstream f("D:\\Projects\\Kemena3D\\animator_debug.log", std::ios::app);
+            if (f.is_open())
+                f << "[Input] L=" << bit("Left") << " R=" << bit("Right")
+                  << " F=" << bit("Front") << " B=" << bit("Back") << std::endl;
+        }
+    }
 }
 
 void Manager::startScripts()
@@ -10397,6 +10418,22 @@ void Manager::stepAnimators(float dt)
             };
             const float paramX = varValue(state->blendParamX);
             const float paramY = varValue(state->blendParamY);
+
+            // Diagnostic: log whenever the animator's blend parameters change so
+            // it is clear whether the values stop updating (script/input) while
+            // the pose stays on the previous motion (blend weights).
+            {
+                static float lastF = 1e9f, lastR = 1e9f;
+                const float vf = rt.animator->getVariable("front");
+                const float vr = rt.animator->getVariable("right");
+                if (vf != lastF || vr != lastR)
+                {
+                    lastF = vf; lastR = vr;
+                    std::ofstream f("D:\\Projects\\Kemena3D\\animator_debug.log", std::ios::app);
+                    if (f.is_open())
+                        f << "[Var] front=" << vf << " right=" << vr << std::endl;
+                }
+            }
 
             struct BlendMotion
             {

@@ -16,7 +16,9 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include <functional>
 #include <map>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -64,6 +66,7 @@ namespace kemena
         };
         struct RootTrackData
         {
+            std::string boneName;                        ///< This clip's own root-motion bone.
             kVec3 pos   = kVec3(0.0f);                   ///< Root bone local position last sampled.
             kQuat rot   = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Root bone local rotation last sampled.
             float time  = 0.0f;                          ///< Clip time of the last sample.
@@ -78,6 +81,34 @@ namespace kemena
         };
         std::unordered_map<RootTrackKey, RootTrackData, RootTrackKeyHash> g_rootTracks;
         std::unordered_map<const void *, RootSessionState> g_rootSessions;
+
+        /// Resolves the bone that carries a clip's root translation: the topmost
+        /// node whose animation is not constant. Mirrors
+        /// kAnimator::findRootBoneRecursive so the blend path and the single-clip
+        /// path agree on which bone is "the root" — but resolved PER CLIP, since
+        /// every motion is imported as its own skeleton and the root-bearing node
+        /// can differ between them.
+        std::string resolveClipRootBone(kSkeletalAnimation *anim)
+        {
+            if (anim == nullptr)
+                return std::string();
+            std::string found;
+            std::function<void(const kNodeData &)> walk = [&](const kNodeData &n)
+            {
+                if (!found.empty())
+                    return;
+                kBone *bone = anim->findBone(n.name);
+                if (bone != nullptr && !bone->isStatic())
+                {
+                    found = n.name;
+                    return;
+                }
+                for (int i = 0; i < n.childrenCount; ++i)
+                    walk(n.children[i]);
+            };
+            walk(anim->getRootNode());
+            return found;
+        }
     }
 
     void kAnimator::calculateBlendedBoneTransform(const std::vector<kPoseSample> &samples,
@@ -130,7 +161,39 @@ namespace kemena
                 if (aY)  chY  = true;
                 if (aR)  chRot = true;
 
-                kBone *bone = anim->findBone(node->name);
+                // ---- Weighted absolute root pose (drives the pinned pose) ------
+                // Uses the node the animator resolved as "the root" so the baked
+                // channel matches what setBlendRootSource()/handleRootMotion()
+                // pinhole. Kept separate from the motion delta below, because the
+                // pin bone and the per-clip translation bone are not always the
+                // same node.
+                if (kBone *poseBone = anim->findBone(node->name))
+                {
+                    poseBone->update(s.time);
+                    kVec3 pt, psc;
+                    kQuat pr;
+                    blendDecomposeTRS(poseBone->getLocalTransform(), pt, pr, psc);
+                    if (!haveRef) { rotRef = pr; haveRef = true; }
+                    else if (glm::dot(pr, rotRef) < 0.0f) pr = -pr;
+                    posAccum   += pt  * s.weight;
+                    scaleAccum += psc * s.weight;
+                    rotAccum   += pr  * s.weight;
+                    weightSum  += s.weight;
+                }
+
+                // ---- Per-clip root-motion delta -------------------------------
+                // Every motion contributes ITS OWN authored displacement, read
+                // from that clip's own root bone. Looking the same shared bone
+                // name up in every clip silently drops motions whose root lives
+                // on a different node (e.g. an idle clip whose root resolves to a
+                // rotation-only wrapper with zero translation) and collapses the
+                // blend to a single direction.
+                RootTrackKey   key{ this, anim };
+                RootTrackData &tr = g_rootTracks[key];
+                if (tr.boneName.empty())
+                    tr.boneName = resolveClipRootBone(anim);
+
+                kBone *bone = tr.boneName.empty() ? nullptr : anim->findBone(tr.boneName);
                 if (bone == nullptr)
                     continue;
                 bone->update(s.time);
@@ -144,8 +207,6 @@ namespace kemena
                 // plays) is treated as freshly started, and a backwards clip
                 // time means the clip looped — both re-seed rather than emitting
                 // a bogus multi-frame delta that would pop the character.
-                RootTrackKey   key{ this, anim };
-                RootTrackData &tr = g_rootTracks[key];
                 kVec3 dPos(0.0f);
                 kQuat dRotQ(1.0f, 0.0f, 0.0f, 0.0f);
                 if (tr.valid && tr.lastTick == frameTick - 1 && s.time >= tr.time)
@@ -168,14 +229,6 @@ namespace kemena
                 }
                 if (aR)
                     accumDeltaRot += glm::degrees(glm::eulerAngles(dRotQ)) * s.weight;
-
-                // Weighted absolute root pose (basis for the baked pose below).
-                if (!haveRef) { rotRef = r; haveRef = true; }
-                else if (glm::dot(r, rotRef) < 0.0f) r = -r;
-                posAccum   += t  * s.weight;
-                scaleAccum += sc * s.weight;
-                rotAccum   += r  * s.weight;
-                weightSum  += s.weight;
             }
 
             // Once this animator has extracted root motion in a blend tree, keep

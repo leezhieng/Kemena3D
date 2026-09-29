@@ -164,6 +164,11 @@ uniform SpotLight spotLights[32];
 
 uniform sampler2DArray shadowMapArray;
 uniform mat4  lightSpaceMatrices[4];
+// The fragment is its own compilation unit (the loader splits on the
+// "// --- FRAGMENT ---" marker), so the view matrix must be declared here even
+// though the vertex shader also declares it. It is needed to pick the cascade,
+// because the splits are camera near/far-plane distances.
+uniform mat4  viewMatrix;
 uniform vec4  cascadeSplits;
 uniform int   cascadeCount;
 uniform float shadowResolution;
@@ -172,7 +177,8 @@ uniform bool  receiveShadow;
 uniform int   shadowDebug;
 uniform float shadowBias;
 uniform float shadowNormalBias;
-uniform float shadowSoftness; // PCF tap spacing in texels (default 1.0)
+uniform float shadowNormalOffset; // normal-offset distance in shadow-map texels
+uniform float shadowSoftness;     // PCF tap spacing in texels (default 1.0)
 
 in vec3 v_worldPos;
 in vec3 v_color;
@@ -184,35 +190,38 @@ in vec3 v_N;
 
 out vec4 fragColor;
 
-float calcShadow(vec3 worldPos, vec3 norm, vec3 sunDir)
+// World-space size of one shadow-map texel in a cascade. The light matrices are
+// ortho projections whose [0][0] == 1/radius, so this needs no extra uniform.
+float csmTexelWorld(int cascade)
 {
-    // cascadeCount<=0 means the caller (e.g. kOffscreenRenderer) never set up
-    // the shadow uniforms — bail rather than sample garbage and return 1.
-    if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
+    float m00 = abs(lightSpaceMatrices[cascade][0][0]);
+    return (m00 > 0.0) ? 2.0 / (m00 * max(shadowResolution, 1.0)) : 0.0;
+}
 
-    float viewDist = distance(worldPos, viewPos);
-    int cascade = cascadeCount - 1;
-    for (int i = 0; i < cascadeCount; ++i)
-    {
-        if (viewDist < cascadeSplits[i]) { cascade = i; break; }
-    }
+// Constant + slope-scaled receiver bias. tan(acos(N·L)) grows without bound at
+// grazing angles, so it is clamped (Microsoft, "Common Techniques to Improve
+// Shadow Depth Maps").
+float csmBias(vec3 norm, vec3 sunDir)
+{
+    float ndl   = max(dot(norm, normalize(-sunDir)), 0.0);
+    float slope = tan(acos(max(ndl, 1e-3)));
+    return shadowBias + shadowNormalBias * min(slope, 8.0);
+}
 
-    vec4 lsp  = lightSpaceMatrices[cascade] * vec4(worldPos, 1.0);
-    vec3 proj = lsp.xyz / lsp.w;
-    proj      = proj * 0.5 + 0.5;
-    if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0)
-        return 0.0;
+// Project a world position into a cascade's [0,1] shadow-map space.
+bool csmProject(int cascade, vec3 worldPos, out vec3 proj)
+{
+    vec4 lsp = lightSpaceMatrices[cascade] * vec4(worldPos, 1.0);
+    proj     = lsp.xyz / lsp.w;
+    proj     = proj * 0.5 + 0.5;
+    return proj.z <= 1.0 && proj.x >= 0.0 && proj.x <= 1.0 &&
+           proj.y >= 0.0 && proj.y <= 1.0;
+}
 
-    float ndl = max(dot(norm, normalize(-sunDir)), 0.0);
-    // Scale bias by cascade index — outer cascades have a much wider depth
-    // range so the same bias becomes too tight and produces acne.
-    float biasScale = 1.0 + float(cascade) * 1.5;
-    float bias = (shadowBias + shadowNormalBias * (1.0 - ndl)) * biasScale;
-
-    // 5x5 PCF (25 taps). Tap spacing is shadowSoftness texels — bigger value
-    // = softer shadow edge but more blur of fine occluders.
+// 5x5 PCF whose tap spacing is driven by shadowSoftness texels.
+float csmPCF(int cascade, vec3 proj, float bias, vec2 texel)
+{
     float shadow = 0.0;
-    vec2  texel  = vec2(1.0 / max(shadowResolution, 1.0)) * max(shadowSoftness, 0.0);
     for (int x = -2; x <= 2; ++x)
     for (int y = -2; y <= 2; ++y)
     {
@@ -221,6 +230,51 @@ float calcShadow(vec3 worldPos, vec3 norm, vec3 sunDir)
         shadow += (proj.z - bias > d) ? 1.0 : 0.0;
     }
     return shadow / 25.0;
+}
+
+float calcShadow(vec3 worldPos, vec3 norm, vec3 sunDir)
+{
+    // cascadeCount<=0 means the caller (e.g. kOffscreenRenderer) never set up
+    // the shadow uniforms — bail rather than sample garbage and return 1.
+    if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
+
+    // Cascade by view-space depth: cascadeSplits are camera near/far-plane
+    // distances, so euclidean distance from the eye would pick too coarse a
+    // cascade (and waste shadow-map resolution).
+    float viewDepth = abs((viewMatrix * vec4(worldPos, 1.0)).z);
+    int cascade = cascadeCount - 1;
+    for (int i = 0; i < cascadeCount; ++i)
+    {
+        if (viewDepth < cascadeSplits[i]) { cascade = i; break; }
+    }
+
+    // Normal-offset: push the receiver along its normal by a fraction of a
+    // texel, so contact shadows need almost no depth bias and don't peter-pan.
+    vec3 samplePos = worldPos + normalize(norm) * (csmTexelWorld(cascade) * shadowNormalOffset);
+    float bias = csmBias(norm, sunDir);
+
+    vec3 proj;
+    if (!csmProject(cascade, samplePos, proj))
+        return 0.0;
+
+    vec2 texel = vec2(1.0 / max(shadowResolution, 1.0)) * max(shadowSoftness, 0.5);
+    float shadow = csmPCF(cascade, proj, bias, texel);
+
+    // Smoothly blend into the next cascade near the split to hide the seam
+    // ("Cascaded Shadow Maps").
+    float split = cascadeSplits[cascade];
+    float band  = split * 0.1;
+    if (cascade + 1 < cascadeCount && viewDepth > split - band)
+    {
+        vec3 proj2;
+        if (csmProject(cascade + 1, samplePos, proj2))
+        {
+            float s2 = csmPCF(cascade + 1, proj2, bias, texel);
+            float t  = clamp((viewDepth - (split - band)) / max(band, 1e-4), 0.0, 1.0);
+            shadow   = mix(shadow, s2, t);
+        }
+    }
+    return shadow;
 }
 
 const float PI = 3.14159265359;

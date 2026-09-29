@@ -348,11 +348,20 @@ int main()
 		manager->editorCamOrbitDistance = cameraOrbitDistance;
 
 		float deltaTime = window->getTimer()->getDeltaTime();
-		gui->processEvent(event);
 
-		// Event
-		if (event.hasEvent())
+		// Drain EVERY pending SDL event this frame. Processing only a single
+		// event per frame (and forwarding the previous frame's event to ImGui)
+		// lets the SDL queue back up under high-rate input such as mouse
+		// motion. Once that queue overflows SDL drops events, and a dropped
+		// KEYUP leaves the key stuck "down" in SDL_GetKeyboardState() — which
+		// is what kInputManager polls — so getAction()/getAxis() never clear
+		// and the character keeps running in the last direction while other
+		// keys appear dead. Draining the whole queue also delivers input to
+		// ImGui on the same frame it arrives.
+		while (event.hasEvent())
 		{
+			gui->processEvent(event);
+
 			int eventType = event.getType();
 
 			if (eventType == K_EVENT_QUIT)
@@ -361,11 +370,34 @@ int main()
 			}
 			else if (eventType == SDL_EVENT_WINDOW_FOCUS_GAINED)
 			{
+				// Drop any key state that latched while we were unfocused, so a
+				// key whose KEYUP was delivered elsewhere cannot keep an action
+				// "held" once we are interacting again.
+				SDL_ResetKeyboard();
+				altPressed   = false;
+				ctrlPressed  = false;
+				shiftPressed = false;
+
 				// Check asset changes
 				if (manager->projectOpened && !manager->showImportPopup)
 				{
 					manager->checkAssetChange();
 				}
+			}
+			else if (eventType == SDL_EVENT_WINDOW_FOCUS_LOST)
+			{
+				// When the window loses focus (alt-tab, clicking another app) the
+				// OS stops delivering key events to us, so a KEYUP for a key that
+				// was held at that moment is never seen. SDL_GetKeyboardState() —
+				// which kInputManager polls — would keep reporting that key as
+				// held, and gameplay would latch getAction()/getAxis() on forever
+				// (the character keeps running and never stops after the key is
+				// released). Clear SDL's keyboard state and our modifier tracking
+				// so input is clean when focus returns.
+				SDL_ResetKeyboard();
+				altPressed   = false;
+				ctrlPressed  = false;
+				shiftPressed = false;
 			}
 			else if (eventType == SDL_EVENT_DROP_FILE)
 			{
@@ -947,6 +979,7 @@ int main()
 				}
 					renderer->setShadowBias(scene->getShadowBias());
 					renderer->setShadowNormalBias(scene->getShadowNormalBias());
+					renderer->setShadowNormalOffset(scene->getShadowNormalOffset());
 					renderer->setShadowSoftness(scene->getShadowSoftness());
 					// Resolution allocates the shadow texture, so only push it
 					// on scene change (not every frame).
@@ -1004,6 +1037,7 @@ int main()
 				{
 					renderer->setShadowBias(scene->getShadowBias());
 					renderer->setShadowNormalBias(scene->getShadowNormalBias());
+					renderer->setShadowNormalOffset(scene->getShadowNormalOffset());
 					renderer->setShadowSoftness(scene->getShadowSoftness());
 					if (renderer->getShadowResolution() != scene->getShadowMapResolution())
 						renderer->setShadowResolution(scene->getShadowMapResolution());
