@@ -121,6 +121,22 @@ VSOutput VSMain(VSInput input)
 // PIXEL SHADER
 // =============================================================================
 
+// -----------------------------------------------------------------------------
+// Material parameters. The studio's material inspector parses these `// @var`
+// comments (the D3D11 backend embeds this file), so keep them in sync with
+// mesh_pbr.glsl.
+// -----------------------------------------------------------------------------
+// @var vec3      material.diffuse     Base Color
+// @var vec3      material.ambient     Ambient
+// @var float     material.metallic    Metallic
+// @var float     material.roughness   Roughness
+// @var vec2      material.tiling      UV Tiling
+// @var sampler2D albedoMap            Albedo
+// @var sampler2D normalMap            Normal
+// @var sampler2D metallicRoughnessMap Metal/Rough
+// @var sampler2D aoMap                AO
+// @var sampler2D emissiveMap          Emissive
+
 struct Material
 {
     float2 tiling;

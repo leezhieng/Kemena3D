@@ -121,6 +121,24 @@ VSOutput VSMain(VSInput input)
 // PIXEL SHADER
 // =============================================================================
 
+// -----------------------------------------------------------------------------
+// Material parameters. The studio's material inspector parses these `// @var`
+// comments (the D3D11 backend embeds this file), so keep them in sync with
+// mesh_phong.glsl.
+// -----------------------------------------------------------------------------
+// @var vec3      material.diffuse    Diffuse
+// @var vec3      material.ambient    Ambient
+// @var vec3      material.specular   Specular
+// @var float     material.shininess  Shininess
+// @var float     material.metallic   Metallic
+// @var float     material.glossiness Glossiness
+// @var vec2      material.tiling     UV Tiling
+// @var sampler2D albedoMap           Albedo
+// @var sampler2D normalMap           Normal
+// @var sampler2D specularMap         Specular Map
+// @var sampler2D glossinessMap       Glossiness Map
+// @var sampler2D emissiveMap         Emissive
+
 struct Material
 {
     float2 tiling;
@@ -311,20 +329,30 @@ float4 PSMain(VSOutput input) : SV_Target
 
     if (skyboxAmbientEnabled)
     {
-        // Material-aware skybox ambient. Roughness is derived from the Phong
-        // shininess (glossiness-modulated) so matte surfaces get a blurred
-        // ambient and glossy surfaces a sharper reflection; the reflection
-        // follows the normal-mapped normal. The specular term is added after
-        // the albedo multiply below so it is not tinted by the diffuse map.
+        // Material-aware skybox ambient (split-sum IBL). Roughness is derived
+        // from the Phong shininess (glossiness-modulated) so matte surfaces get
+        // a blurred ambient and glossy surfaces a sharper reflection; the
+        // reflection follows the normal-mapped normal. The specular colour sets
+        // the dielectric reflectivity, while the metallic factor tints the
+        // reflection toward the base colour and suppresses the diffuse term.
+        // The specular term is added after the albedo multiply below so it is
+        // not tinted by the diffuse map.
         float  roughness = clamp(1.0 - shininess / (shininess + 1.0), 0.04, 1.0);
         float  NdotV     = max(dot(norm, vdir), 0.0);
         float3 R         = reflect(-vdir, norm);
         float3 irradiance  = skyboxMap.SampleLevel(defaultSampler, norm, 8.0).rgb;
         float3 prefiltered = skyboxMap.SampleLevel(defaultSampler, R, roughness * 6.0).rgb;
 
-        float3 F_amb = fresnelSchlickRoughness(NdotV, float3(0.04, 0.04, 0.04), roughness);
-        result  += (float3(1.0, 1.0, 1.0) - F_amb) * irradiance * skyboxAmbientStrength * material.ambient;
-        iblSpec  = prefiltered * material.specular * envBRDFApprox(float3(1.0, 1.0, 1.0), roughness, NdotV)
+        // Fresnel F0: 4% dielectric, blended toward the base colour for metals.
+        float3 F0     = lerp(float3(0.04, 0.04, 0.04), material.diffuse, material.metallic);
+        float3 F_amb  = fresnelSchlickRoughness(NdotV, F0, roughness);
+        float3 kD     = (float3(1.0, 1.0, 1.0) - F_amb) * (1.0 - material.metallic);
+        // Reflected tint: the specular colour for dielectrics, the base colour
+        // for metals (metals have no diffuse response).
+        float3 specTint = lerp(material.specular, material.diffuse, material.metallic);
+
+        result  += kD * material.diffuse * irradiance * skyboxAmbientStrength * material.ambient;
+        iblSpec  = prefiltered * specTint * envBRDFApprox(float3(1.0, 1.0, 1.0), roughness, NdotV)
                    * skyboxAmbientStrength;
     }
 

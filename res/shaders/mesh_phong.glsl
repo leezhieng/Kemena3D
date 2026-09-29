@@ -131,6 +131,7 @@ struct SpotLight {
 // @var vec3      material.ambient   Ambient
 // @var vec3      material.specular   Specular
 // @var float     material.shininess  Shininess
+// @var float     material.metallic   Metallic
 // @var float     material.glossiness Glossiness
 // @var vec2      material.tiling     UV Tiling
 // @var sampler2D albedoMap           Albedo
@@ -378,20 +379,30 @@ void main()
 
     if (skyboxAmbientEnabled)
     {
-        // Material-aware skybox ambient. Roughness is derived from the Phong
-        // shininess (glossiness-modulated) so matte surfaces get a blurred
-        // ambient and glossy surfaces a sharper reflection; the reflection
-        // follows the normal-mapped normal. The specular term is added after
-        // the albedo multiply below so it is not tinted by the diffuse map.
+        // Material-aware skybox ambient (split-sum IBL). Roughness is derived
+        // from the Phong shininess (glossiness-modulated) so matte surfaces get
+        // a blurred ambient and glossy surfaces a sharper reflection; the
+        // reflection follows the normal-mapped normal. The specular colour sets
+        // the dielectric reflectivity, while the metallic factor tints the
+        // reflection toward the base colour and suppresses the diffuse term.
+        // The specular term is added after the albedo multiply below so it is
+        // not tinted by the diffuse map.
         float roughness = clamp(1.0 - shininess / (shininess + 1.0), 0.04, 1.0);
         float NdotV     = max(dot(norm, vdir), 0.0);
         vec3  R         = reflect(-vdir, norm);
         vec3  irradiance  = textureLod(skyboxMap, norm, 8.0).rgb;
         vec3  prefiltered = textureLod(skyboxMap, R, roughness * 6.0).rgb;
 
-        vec3 F_amb = fresnelSchlickRoughness(NdotV, vec3(0.04), roughness);
-        result  += (vec3(1.0) - F_amb) * irradiance * skyboxAmbientStrength * material.ambient;
-        iblSpec  = prefiltered * material.specular * envBRDFApprox(vec3(1.0), roughness, NdotV)
+        // Fresnel F0: 4% dielectric, blended toward the base colour for metals.
+        vec3 F0    = mix(vec3(0.04), material.diffuse, material.metallic);
+        vec3 F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3 kD    = (vec3(1.0) - F_amb) * (1.0 - material.metallic);
+        // Reflected tint: the specular colour for dielectrics, the base colour
+        // for metals (metals have no diffuse response).
+        vec3 specTint = mix(material.specular, material.diffuse, material.metallic);
+
+        result  += kD * material.diffuse * irradiance * skyboxAmbientStrength * material.ambient;
+        iblSpec  = prefiltered * specTint * envBRDFApprox(vec3(1.0), roughness, NdotV)
                    * skyboxAmbientStrength;
     }
 
