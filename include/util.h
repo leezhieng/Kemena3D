@@ -139,6 +139,22 @@ bool convertMeshToGlbEx(const fs::path& inputPath, const fs::path& outputPath,
 bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath);
 
 /**
+ * @brief Enumerate a model's skeleton bones in hierarchy order.
+ *
+ * Reads @p inputPath with Assimp and walks the node tree top-down, returning
+ * the names of every node that is actually used as a skinning bone (i.e. it
+ * appears in at least one mesh's bone list). When the model exposes no bones at
+ * all the names of *every* node are returned instead, so callers can still let
+ * the user author a group. Names are de-duplicated and parent bones always
+ * precede their children, which is exactly what the editor's "from bone to
+ * bone" range picker needs.
+ *
+ * @param inputPath Path to the source model file (FBX/GLB/…).
+ * @return Ordered, de-duplicated bone names; empty on load failure.
+ */
+std::vector<std::string> getMeshBoneNames(const fs::path& inputPath);
+
+/**
  * @brief Determine the largest animation frame index present in a model file.
  *
  * Loads @p inputPath with Assimp and inspects every animation clip. For each

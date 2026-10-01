@@ -29,6 +29,7 @@
 #include <kemena/kterrain.h>
 #include <kemena/kpackage.h>
 #include <kemena/kanimator.h>
+#include <kemena/kanimationmask.h>
 #include <kemena/kskelanimation.h>
 
 #include "commands.h"
@@ -138,6 +139,20 @@ struct AnimatorGraph;
 struct GuiLayout;
 
 /**
+ * @brief A named bone-mask group authored on a mesh asset.
+ *
+ * The mesh Inspector lets a user pick a bone range (start bone → end bone) and
+ * save it under a custom name (e.g. "LowerArm"). The resolved, explicit @ref
+ * bones list is what the runtime turns into a kAnimationMask; states then scale
+ * their influence on the group by name.
+ */
+struct BoneMaskGroup
+{
+    std::string              name;  ///< User-facing group name (unique per mesh).
+    std::vector<std::string> bones; ///< Resolved bone names covered by the group.
+};
+
+/**
  * @brief Runtime instance of an .animator controller attached to a scene object.
  *
  * Created by Manager::startAnimators() when the Game panel enters Play mode and
@@ -162,6 +177,13 @@ struct RuntimeAnimator
     int blendSmoothStateId = -1;                                   ///< Blend tree whose Cross Fade weights are being eased (-1 = none).
     std::unordered_map<std::string, float> blendSmoothWeights;     ///< animationUuid -> eased blend weight for the active blend tree.
     std::unordered_map<std::string, float> variables;              ///< Controller variable values.
+
+    // Bone-mask groups authored on the driven mesh (partial-animation regions).
+    // Empty when the mesh defines none, in which case states ignore mask weights.
+    std::vector<std::unique_ptr<kAnimationMask>> maskGroups;       ///< One mask per authored group (owned).
+    std::unordered_map<std::string, size_t> maskGroupIndex;        ///< Group name → index into maskGroups.
+    std::unique_ptr<kAnimationMask> restOfBodyMask;                ///< Bones not covered by any group (owned).
+    bool hasMaskGroups = false;                                    ///< True when at least one group was built.
 };
 
 class PanelProject;
@@ -745,6 +767,19 @@ public:
      * @param meta Metadata object holding the settings that were just applied.
      */
     void publishImportSettings(const kString &uuid, const nlohmann::json &meta);
+
+    /**
+     * @brief Reads the bone-mask groups authored on a mesh asset.
+     *
+     * Merges the mesh's Library metadata with the git-tracked import-settings
+     * store (so groups survive a project move) and returns each group's name and
+     * its resolved bone list. Returns an empty vector when the asset defines no
+     * masks or cannot be resolved.
+     *
+     * @param meshUuid UUID of the mesh asset.
+     */
+    std::vector<BoneMaskGroup> getMeshMaskGroups(const kString &meshUuid);
+
     std::vector<kString> pendingMeshReloads;
 
     /// UUIDs of assets whose Reimport conversion is still running on the import

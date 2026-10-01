@@ -20,6 +20,7 @@
 #include <cctype>
 #include <algorithm>       // for std::max
 #include <cmath>           // for std::sqrt
+#include <set>
 #include <assimp/config.h> // for AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY
 #include <assimp/DefaultLogger.hpp>
 #include <assimp/LogStream.hpp>
@@ -428,6 +429,61 @@ bool convertMeshToGlbEx(const fs::path &inputPath, const fs::path &outputPath,
 bool convertMeshToGlb(const fs::path &inputPath, const fs::path &outputPath)
 {
     return convertMeshToGlbEx(inputPath, outputPath, MeshImportOptions{});
+}
+
+std::vector<std::string> getMeshBoneNames(const fs::path &inputPath)
+{
+    std::vector<std::string> out;
+
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(inputPath.string(), 0);
+    if (!scene || !scene->mRootNode)
+        return out;
+
+    // Names referenced as skinning bones by any mesh. Used to filter the node
+    // walk so mesh/transform nodes don't clutter the list.
+    std::set<std::string> boneSet;
+    for (unsigned int mi = 0; mi < scene->mNumMeshes; ++mi)
+    {
+        const aiMesh *mesh = scene->mMeshes[mi];
+        if (!mesh)
+            continue;
+        for (unsigned int b = 0; b < mesh->mNumBones; ++b)
+        {
+            const aiBone *bone = mesh->mBones[b];
+            if (bone && bone->mName.length > 0)
+                boneSet.insert(std::string(bone->mName.C_Str()));
+        }
+    }
+
+    // Iterative top-down walk (children pushed in reverse so the leftmost child
+    // is emitted first) keeps the order a real hierarchy and avoids deep-recursion
+    // stack pressure on large rigs.
+    std::set<std::string> seen;
+    std::vector<const aiNode *> stack;
+    stack.push_back(scene->mRootNode);
+    while (!stack.empty())
+    {
+        const aiNode *node = stack.back();
+        stack.pop_back();
+        if (!node)
+            continue;
+
+        std::string name = (node->mName.length > 0) ? std::string(node->mName.C_Str())
+                                                    : std::string();
+        if (!name.empty() && seen.insert(name).second)
+        {
+            // Prefer real bones; fall back to every node when the model exposed
+            // no skinning bones at all.
+            if (boneSet.empty() || boneSet.count(name))
+                out.push_back(name);
+        }
+
+        for (unsigned int i = node->mNumChildren; i-- > 0;)
+            stack.push_back(node->mChildren[i]);
+    }
+
+    return out;
 }
 
 int getMaxAnimationFrames(const fs::path &inputPath, float fps)

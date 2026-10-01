@@ -871,6 +871,41 @@ json Manager::assetSettingsFor(const kString &uuid, const fs::path &srcPath)
     return settings;
 }
 
+std::vector<BoneMaskGroup> Manager::getMeshMaskGroups(const kString &meshUuid)
+{
+    std::vector<BoneMaskGroup> groups;
+    if (meshUuid.empty())
+        return groups;
+
+    fs::path srcPath;
+    auto fit = fileMap.find(meshUuid);
+    if (fit != fileMap.end())
+        srcPath = projectPath / "Assets" / fit->second.path;
+
+    json settings = assetSettingsFor(meshUuid, srcPath);
+    if (!settings.contains("boneMasks") || !settings["boneMasks"].is_array())
+        return groups;
+
+    for (const auto &g : settings["boneMasks"])
+    {
+        if (!g.is_object())
+            continue;
+
+        BoneMaskGroup grp;
+        grp.name = g.value("name", std::string());
+        if (grp.name.empty())
+            continue;
+
+        if (g.contains("bones") && g["bones"].is_array())
+            for (const auto &b : g["bones"])
+                if (b.is_string())
+                    grp.bones.push_back(b.get<std::string>());
+
+        groups.push_back(std::move(grp));
+    }
+    return groups;
+}
+
 void Manager::publishImportSettings(const kString &uuid, const nlohmann::json &meta)
 {
     auto fit = fileMap.find(uuid);
@@ -10096,6 +10131,77 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// Bone-mask group weighting.
+//
+// A state (or blend-tree motion) may declare, per named mask group, how
+// strongly it drives the masked bones. The engine blends a pose from weighted
+// kPoseSamples; to make a group weight of w mean "w of this state's pose plus
+// (1 - w) of the rest pose" we emit, for each masked region, a clip sample of
+// weight (base * w) and a rest-pose sample of weight (base * (1 - w)) carrying
+// the same mask. Regions not covered by any group are driven at full strength
+// by a sample masked to the complement of every group.
+// ---------------------------------------------------------------------------
+static void appendMaskedSamples(const RuntimeAnimator &rt, const AnimState *state,
+                                kSkeletalAnimation *clip, float time, float baseWeight,
+                                std::vector<kPoseSample> &out)
+{
+    const bool useMasks = rt.hasMaskGroups && state != nullptr && !state->maskWeights.empty();
+    if (!useMasks)
+    {
+        kPoseSample s;
+        s.animation = clip;
+        s.time      = time;
+        s.weight    = baseWeight;
+        out.push_back(s);
+        return;
+    }
+
+    // Region not covered by any group: always fully driven.
+    if (rt.restOfBodyMask)
+    {
+        kPoseSample s;
+        s.animation = clip;
+        s.time      = time;
+        s.weight    = baseWeight;
+        s.mask      = rt.restOfBodyMask.get();
+        out.push_back(s);
+    }
+
+    // One region per authored group.
+    for (const auto &entry : rt.maskGroupIndex)
+    {
+        const std::string &name = entry.first;
+        const size_t       idx  = entry.second;
+        if (idx >= rt.maskGroups.size() || !rt.maskGroups[idx])
+            continue;
+        const kAnimationMask *mask = rt.maskGroups[idx].get();
+
+        float gw = 1.0f;
+        for (const auto &mw : state->maskWeights)
+            if (mw.maskName == name) { gw = std::max(0.0f, std::min(1.0f, mw.weight)); break; }
+
+        if (baseWeight * gw > 1e-5f)
+        {
+            kPoseSample s;
+            s.animation = clip;
+            s.time      = time;
+            s.weight    = baseWeight * gw;
+            s.mask      = mask;
+            out.push_back(s);
+        }
+        if (gw < 1.0f - 1e-5f && baseWeight * (1.0f - gw) > 1e-5f)
+        {
+            kPoseSample s;
+            s.restPose  = true;
+            s.time      = time;
+            s.weight    = baseWeight * (1.0f - gw);
+            s.mask      = mask;
+            out.push_back(s);
+        }
+    }
+}
+
 static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
 {
     kString ref = obj->getAnimatorRef();
@@ -10247,6 +10353,40 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
 
     rt.rootMesh = rootMesh;
     rt.animator = new kAnimator(nullptr);
+
+    // Build the bone-mask groups authored on this mesh (Mesh Inspector → Bone
+    // Masks). States reference them by name to scale their regional influence.
+    // A "rest of body" mask covers every bone no group owns so unweighted
+    // regions keep being driven at full strength.
+    {
+        std::vector<BoneMaskGroup> authored = mgr->getMeshMaskGroups(rootMesh->getRefName());
+        if (!authored.empty())
+        {
+            std::vector<std::string> groupedBones;
+            for (const auto &g : authored)
+            {
+                auto mask = std::make_unique<kAnimationMask>(g.name);
+                mask->buildFromBoneNames(g.bones, true);
+                if (mask->empty())
+                    continue; // group named no bone actually present on the rig
+
+                rt.maskGroupIndex[g.name] = rt.maskGroups.size();
+                rt.maskGroups.push_back(std::move(mask));
+                for (const auto &b : g.bones)
+                    groupedBones.push_back(b);
+            }
+
+            if (!rt.maskGroups.empty())
+            {
+                auto rest = std::make_unique<kAnimationMask>("__ungrouped");
+                rest->buildFromMesh(rootMesh, true);
+                for (const auto &b : groupedBones)
+                    rest->setBoneEnabled(b, false);
+                rt.restOfBodyMask = std::move(rest);
+                rt.hasMaskGroups  = true;
+            }
+        }
+    }
 
     // Scripts set animator controller variables through kAnimator; seed the
     // runtime values from the graph defaults here.
@@ -10586,11 +10726,9 @@ void Manager::stepAnimators(float dt)
                     sec = mEnd;
                 }
 
-                kPoseSample sample;
-                sample.animation = m.clip;
-                sample.time      = sec * m.clip->getTicksPerSecond();
-                sample.weight    = m.weight;
-                samples.push_back(sample);
+                appendMaskedSamples(rt, state, m.clip,
+                                    sec * m.clip->getTicksPerSecond(), m.weight,
+                                    samples);
             }
 
             if (samples.empty())
@@ -10635,10 +10773,19 @@ void Manager::stepAnimators(float dt)
             else if (dominant != nullptr)
                 rt.animator->setBlendRootSource(dominant, dominantTime);
 
+            // Any sample's clip resolves the shared skeleton root; rest-pose
+            // samples (weighted masking) carry no animation and are skipped.
+            kSkeletalAnimation *poseSource = nullptr;
+            for (const kPoseSample &s : samples)
+                if (s.animation != nullptr) { poseSource = s.animation; break; }
+
             try
             {
-                const kNodeData &root = samples.front().animation->getRootNode();
-                rt.animator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+                if (poseSource != nullptr)
+                {
+                    const kNodeData &root = poseSource->getRootNode();
+                    rt.animator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+                }
             }
             catch (const std::exception &)
             {
@@ -10729,16 +10876,39 @@ void Manager::stepAnimators(float dt)
         if (!state->isBlendTree())
         {
             float ticks = animSeconds * clip->getTicksPerSecond();
-            rt.animator->setCurrentTime(ticks);
 
-            try
+            if (rt.hasMaskGroups && !state->maskWeights.empty())
             {
-                const kNodeData &root = clip->getRootNode();
-                rt.animator->calculateBoneTransform(&root, kMat4(1.0f));
+                // Weighted masking routes this state through the blended-pose
+                // pass so per-region weights (blend toward rest) take effect.
+                std::vector<kPoseSample> samples;
+                samples.reserve(rt.maskGroups.size() * 2 + 1);
+                appendMaskedSamples(rt, state, clip, ticks, 1.0f, samples);
+                rt.animator->setBlendRootSource(clip, ticks);
+
+                try
+                {
+                    const kNodeData &root = clip->getRootNode();
+                    rt.animator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+                }
+                catch (const std::exception &)
+                {
+                    // Keep the last successfully computed pose.
+                }
             }
-            catch (const std::exception &)
+            else
             {
-                // Keep the last successfully computed pose.
+                rt.animator->setCurrentTime(ticks);
+
+                try
+                {
+                    const kNodeData &root = clip->getRootNode();
+                    rt.animator->calculateBoneTransform(&root, kMat4(1.0f));
+                }
+                catch (const std::exception &)
+                {
+                    // Keep the last successfully computed pose.
+                }
             }
 
             {

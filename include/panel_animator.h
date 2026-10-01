@@ -122,6 +122,28 @@ struct AnimBlendChild
 };
 
 /**
+ * @brief Per-state weighting of a named bone-mask group.
+ *
+ * A mask group is authored on the mesh asset (see the Mesh Inspector's "Bone
+ * Masks" section) and names a subset of the skeleton's bones. For each
+ * animation state (or blend tree) the group can be given a weight in [0,1] that
+ * controls how strongly that state drives the masked bones:
+ *
+ *   * 1.0 — the state fully drives the region (default).
+ *   * 0.0 — the state leaves the region at the skeleton's rest pose.
+ *   * between — the state's pose is blended toward the rest pose by that amount.
+ *
+ * Weights are applied at playback time by emitting an extra rest-pose sample
+ * for each masked region (see kPoseSample::restPose), so several states or
+ * blend-tree motions can each declare their own influence on a region.
+ */
+struct AnimMaskWeight
+{
+    std::string maskName;       ///< Name of the mesh's bone-mask group.
+    float       weight = 1.0f;  ///< Influence on the masked bones in [0,1].
+};
+
+/**
  * @brief A single node on the animator canvas.
  */
 struct AnimState
@@ -152,6 +174,11 @@ struct AnimState
     float         blendRangeYMin = -1.0f;  ///< Display/authoring range for the y axis (2D).
     float         blendRangeYMax =  1.0f;  ///< Display/authoring range for the y axis (2D).
     std::vector<AnimBlendChild> blendChildren; ///< Motions blended by this node.
+
+    // Per-region influence (used by states and blend trees alike). Each entry
+    // names a bone-mask group authored on the bound mesh and the weight with
+    // which this state drives it at playback time. Empty = full body.
+    std::vector<AnimMaskWeight> maskWeights; ///< Bone-mask group → influence weight.
 
     // Blend-tree blending / timing. Mirrors AnimTransition so a blend tree
     // exposes the same "Blending" + "Timing" options as a state transition.
@@ -428,6 +455,18 @@ private:
     void drawAnimPickerPopup(AnimState* state);
     void collectAnimationAssets(std::vector<std::string>& uuids,
                                 std::vector<std::string>& names) const;
+
+    /** @brief Draws the "Mask Weights" editor for a state / blend tree. */
+    void drawMaskWeightsSection(AnimState* state);
+
+    /**
+     * @brief Collects the bone-mask group names available for a state.
+     *
+     * Resolves the state's animation asset to its bound mesh asset and returns
+     * the mask-group names authored on that mesh, so the inspector only offers
+     * groups that actually exist for the rig.
+     */
+    void collectMaskGroupNames(const AnimState* state, std::vector<std::string>& names) const;
 
     // Coordinate helpers
     ImVec2 canvasToScreen(ImVec2 cp, ImVec2 origin) const;

@@ -3795,6 +3795,154 @@ static void loadMeshSettings(const fs::path &metaPath,
     animCompression = j.value("animCompression", 0);
 }
 
+// --- Bone masks (partial-animation groups) ---------------------------------
+// A named bone range authored on the mesh. The resolved `bones` list is what
+// the runtime turns into a kAnimationMask, letting animator states weight how
+// strongly they drive the region.
+struct MaskGroupEdit
+{
+    std::string              name;
+    std::string              startBone;
+    std::string              endBone;
+    std::vector<std::string> bones;
+};
+
+static std::vector<std::string> resolveBoneRange(const std::vector<std::string> &all,
+                                                 const std::string &a, const std::string &b)
+{
+    std::vector<std::string> out;
+    int ia = -1, ib = -1;
+    for (int i = 0; i < (int)all.size(); ++i)
+    {
+        if (all[i] == a) ia = i;
+        if (all[i] == b) ib = i;
+    }
+    if (ia < 0 && ib < 0)
+        return out;
+    if (ia < 0) ia = ib;
+    if (ib < 0) ib = ia;
+
+    const int lo = std::min(ia, ib);
+    const int hi = std::max(ia, ib);
+    for (int i = lo; i <= hi; ++i)
+        out.push_back(all[i]);
+    return out;
+}
+
+static void loadMaskGroups(const fs::path &metaPath, std::vector<MaskGroupEdit> &groups)
+{
+    groups.clear();
+    auto j = loadMetaJson(metaPath);
+    if (!j.contains("boneMasks") || !j["boneMasks"].is_array())
+        return;
+
+    for (const auto &g : j["boneMasks"])
+    {
+        MaskGroupEdit e;
+        e.name      = g.value("name", std::string());
+        e.startBone = g.value("startBone", std::string());
+        e.endBone   = g.value("endBone", std::string());
+        if (g.contains("bones") && g["bones"].is_array())
+            for (const auto &b : g["bones"])
+                if (b.is_string())
+                    e.bones.push_back(b.get<std::string>());
+        groups.push_back(std::move(e));
+    }
+}
+
+/// @brief Draws the Bone Masks editor. Returns true when anything changed.
+static bool drawBoneMaskGroups(kGuiManager *gui, std::vector<MaskGroupEdit> &groups,
+                               const std::vector<std::string> &boneNames)
+{
+    (void)gui;
+    bool changed = false;
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Bone Masks");
+    ImGui::Separator();
+    ImGui::TextWrapped(
+        "Group bones into named masks (e.g. LowerArm). Animator states can then "
+        "weight how strongly each state drives a group.");
+
+    if (boneNames.empty())
+    {
+        ImGui::TextDisabled("No bones found (import a skinned model first).");
+        return false;
+    }
+
+    // Combo items: index 0 = (none), then every bone name.
+    std::vector<const char *> items;
+    items.reserve(boneNames.size() + 1);
+    items.push_back("(none)");
+    for (const auto &b : boneNames)
+        items.push_back(b.c_str());
+
+    auto boneIndex = [&](const std::string &name) -> int {
+        for (int i = 0; i < (int)boneNames.size(); ++i)
+            if (boneNames[i] == name) return i + 1;
+        return 0;
+    };
+
+    int removeIdx = -1;
+    for (int i = 0; i < (int)groups.size(); ++i)
+    {
+        MaskGroupEdit &g = groups[i];
+        ImGui::PushID(i);
+
+        char nameBuf[128];
+        strncpy_s(nameBuf, sizeof(nameBuf), g.name.c_str(), _TRUNCATE);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputTextWithHint("##maskname", "Group name", nameBuf, sizeof(nameBuf)))
+        {
+            g.name  = nameBuf;
+            changed = true;
+        }
+
+        int si = boneIndex(g.startBone);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##maskstart", &si, items.data(), (int)items.size()))
+        {
+            g.startBone = (si == 0) ? std::string() : boneNames[si - 1];
+            g.bones     = resolveBoneRange(boneNames, g.startBone, g.endBone);
+            changed     = true;
+        }
+
+        int ei = boneIndex(g.endBone);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##maskend", &ei, items.data(), (int)items.size()))
+        {
+            g.endBone = (ei == 0) ? std::string() : boneNames[ei - 1];
+            g.bones   = resolveBoneRange(boneNames, g.startBone, g.endBone);
+            changed   = true;
+        }
+
+        ImGui::TextDisabled("%d bone(s): %s", (int)g.bones.size(),
+                            g.bones.empty() ? "-" : g.bones.front().c_str());
+
+        if (ImGui::SmallButton("Remove Group"))
+            removeIdx = i;
+
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+
+    if (removeIdx >= 0)
+    {
+        groups.erase(groups.begin() + removeIdx);
+        changed = true;
+    }
+
+    if (ImGui::Button("Add Group", ImVec2(-FLT_MIN, 0)))
+    {
+        MaskGroupEdit e;
+        e.name = "NewGroup";
+        groups.push_back(std::move(e));
+        changed = true;
+    }
+
+    return changed;
+}
+
 static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::SelectedProjectAsset &asset, Manager *mgr)
 {
     static kString lastUuid;
@@ -3806,12 +3954,24 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     static bool importAnimation = true;
     static int animCompression = 0;
     static bool dirty = false;
+    static std::vector<MaskGroupEdit> maskGroups;
+    static std::vector<std::string>   boneNames;
 
     if (asset.uuid != lastUuid)
     {
         lastUuid = asset.uuid;
         dirty = false;
         loadMeshSettings(asset.metaPath, scaleFactor, meshCompression, generateCollider, tangents, generateLightmapUV, importAnimation, animCompression);
+        loadMaskGroups(asset.metaPath, maskGroups);
+
+        // Bone list for the range pickers, read from the source model.
+        boneNames.clear();
+        if (mgr)
+        {
+            auto fit = mgr->fileMap.find(asset.uuid);
+            if (fit != mgr->fileMap.end())
+                boneNames = getMeshBoneNames(mgr->projectPath / "Assets" / fit->second.path);
+        }
     }
 
     if (!gui->collapsingHeader("Import Settings", ImGuiTreeNodeFlags_DefaultOpen))
@@ -3866,6 +4026,11 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     gui->tableEnd();
     gui->spacing();
 
+    // Partial-animation bone masks authored on this mesh.
+    if (drawBoneMaskGroups(gui, maskGroups, boneNames))
+        dirty = true;
+    gui->spacing();
+
     bool wasDisabled = !dirty;
     if (wasDisabled)
         gui->beginDisabled(true);
@@ -3880,6 +4045,20 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         j["generateLightmapUV"] = generateLightmapUV;
         j["importAnimation"] = importAnimation;
         j["animCompression"] = animCompression;
+
+        // Bone masks (partial-animation groups) authored on this mesh.
+        nlohmann::json masksArr = nlohmann::json::array();
+        for (const auto &g : maskGroups)
+        {
+            nlohmann::json gj;
+            gj["name"]      = g.name;
+            gj["startBone"] = g.startBone;
+            gj["endBone"]   = g.endBone;
+            gj["bones"]     = g.bones;
+            masksArr.push_back(gj);
+        }
+        j["boneMasks"] = masksArr;
+
         saveMetaJson(asset.metaPath, j);
         dirty = false;
 
@@ -3899,6 +4078,7 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     {
         loadMeshSettings(asset.metaPath, scaleFactor, meshCompression, generateCollider,
                          tangents, generateLightmapUV, importAnimation, animCompression);
+        loadMaskGroups(asset.metaPath, maskGroups);
         dirty = false;
     }
     if (wasDisabled)

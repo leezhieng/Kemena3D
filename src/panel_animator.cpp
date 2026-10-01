@@ -212,6 +212,17 @@ nlohmann::json AnimatorGraph::toJson() const
         }
         sj["blendChildren"] = blendArr;
 
+        // Bone-mask group weights (partial-animation influence per region).
+        json maskArr = json::array();
+        for (const auto& m : s.maskWeights)
+        {
+            json mj;
+            mj["maskName"] = m.maskName;
+            mj["weight"]   = m.weight;
+            maskArr.push_back(mj);
+        }
+        sj["maskWeights"] = maskArr;
+
         statesArr.push_back(sj);
     }
     j["states"] = statesArr;
@@ -328,6 +339,19 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
                     bc.posY      = c.value("posY", 0.0f);
                     bc.speed     = c.value("speed", 1.0f);
                     st.blendChildren.push_back(bc);
+                }
+            }
+
+            // Bone-mask group weights (absent in older files → empty).
+            if (s.contains("maskWeights") && s["maskWeights"].is_array())
+            {
+                for (const auto& m : s["maskWeights"])
+                {
+                    AnimMaskWeight mw;
+                    mw.maskName = m.value("maskName", std::string());
+                    mw.weight   = m.value("weight", 1.0f);
+                    if (!mw.maskName.empty())
+                        st.maskWeights.push_back(mw);
                 }
             }
             states.push_back(st);
@@ -1439,6 +1463,9 @@ void PanelAnimator::drawSelectedStateInspector()
         }
     }
 
+    // Per-region influence over the mesh's authored bone-mask groups.
+    drawMaskWeightsSection(state);
+
     // Delete (never remove the default state)
     if (!state->isDefault)
     {
@@ -2014,6 +2041,123 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
     ImGui::TextDisabled("Drag to orbit, scroll to zoom.");
 }
 
+// ===========================================================================
+// Bone-mask group weights
+//
+// A state or blend tree can weight each named bone-mask group authored on the
+// bound mesh. The groups themselves live on the mesh asset (Mesh Inspector →
+// Bone Masks); here we only pick which of them this node references and how
+// strongly it drives them.
+// ===========================================================================
+
+void PanelAnimator::collectMaskGroupNames(const AnimState* state, std::vector<std::string>& names) const
+{
+    names.clear();
+    if (!manager || !state || state->animationUuid.empty())
+        return;
+
+    fs::path animPath = manager->findAssetPathByUuid(state->animationUuid);
+    if (animPath.empty() || !fs::exists(animPath))
+        return;
+
+    std::string meshUuid;
+    try
+    {
+        std::ifstream f(animPath);
+        if (!f.is_open())
+            return;
+        json j;
+        f >> j;
+        meshUuid = j.value("meshUuid", std::string());
+    }
+    catch (...)
+    {
+        return;
+    }
+    if (meshUuid.empty())
+        return;
+
+    for (const auto& g : manager->getMeshMaskGroups(meshUuid))
+        names.push_back(g.name);
+}
+
+void PanelAnimator::drawMaskWeightsSection(AnimState* state)
+{
+    if (!state)
+        return;
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Mask Weights");
+    ImGui::Separator();
+
+    std::vector<std::string> groups;
+    collectMaskGroupNames(state, groups);
+    if (groups.empty())
+    {
+        ImGui::TextDisabled("No bone masks on this mesh.");
+        ImGui::TextWrapped(
+            "Author groups in the Mesh Inspector (Import Settings > Bone Masks), "
+            "then weight them here.");
+        return;
+    }
+
+    int removeIdx = -1;
+    for (int i = 0; i < (int)state->maskWeights.size(); ++i)
+    {
+        AnimMaskWeight& mw = state->maskWeights[i];
+        ImGui::PushID(i);
+
+        const bool known = std::find(groups.begin(), groups.end(), mw.maskName) != groups.end();
+        std::string label = mw.maskName;
+        if (!known)
+            label += "  (missing)";
+        ImGui::TextUnformatted(label.c_str());
+
+        ImGui::SetNextItemWidth(-34.0f);
+        if (ImGui::SliderFloat("##weight", &mw.weight, 0.0f, 1.0f, "%.2f"))
+            graph.dirty = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x"))
+            removeIdx = i;
+
+        ImGui::PopID();
+    }
+
+    if (removeIdx >= 0)
+    {
+        state->maskWeights.erase(state->maskWeights.begin() + removeIdx);
+        graph.dirty = true;
+    }
+
+    // Add a group this node does not reference yet.
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##addmask", "Add Mask Group"))
+    {
+        bool any = false;
+        for (const auto& g : groups)
+        {
+            bool already = false;
+            for (const auto& mw : state->maskWeights)
+                if (mw.maskName == g) { already = true; break; }
+            if (already)
+                continue;
+
+            any = true;
+            if (ImGui::Selectable(g.c_str()))
+            {
+                AnimMaskWeight mw;
+                mw.maskName = g;
+                mw.weight   = 1.0f;
+                state->maskWeights.push_back(mw);
+                graph.dirty = true;
+            }
+        }
+        if (!any)
+            ImGui::TextDisabled("All groups added");
+        ImGui::EndCombo();
+    }
+}
+
 void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 {
     if (!state) return;
@@ -2145,6 +2289,9 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         if (ImGui::DragFloat("##blendtreeexit", &state->exitTime, 0.01f, 0.0f, 100.0f, "%.2fs"))
             graph.dirty = true;
     }
+
+    // Per-region influence over the mesh's authored bone-mask groups.
+    drawMaskWeightsSection(state);
 
     // -----------------------------------------------------------------------
     // Preview — scrub a parameter and watch the blended pose in the embedded
