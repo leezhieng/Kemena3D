@@ -106,28 +106,12 @@ enum class AnimBlendType
 };
 
 /**
- * @brief A single motion inside a blend tree.
- *
- * The child drives an existing animation state (referenced by id) so the blend
- * tree never duplicates clip assignments. The threshold / x,y values describe
- * where the child sits on the blend axis or plane.
- */
-struct AnimBlendChild
-{
-    int   stateId   = -1;    ///< Id of the linked animation state that plays this motion.
-    float threshold = 0.0f;  ///< 1D position along the blend axis.
-    float posX      = 0.0f;  ///< 2D position (x) on the blend plane.
-    float posY      = 0.0f;  ///< 2D position (y) on the blend plane.
-    float speed     = 1.0f;  ///< Playback speed multiplier for this motion.
-};
-
-/**
  * @brief Per-state weighting of a named bone-mask group.
  *
  * A mask group is authored on the mesh asset (see the Mesh Inspector's "Bone
  * Masks" section) and names a subset of the skeleton's bones. For each
- * animation state (or blend tree) the group can be given a weight in [0,1] that
- * controls how strongly that state drives the masked bones:
+ * animation state (or blend tree motion) the group can be given a weight in
+ * [0,1] that controls how strongly that state drives the masked bones:
  *
  *   * 1.0 — the state fully drives the region (default).
  *   * 0.0 — the state leaves the region at the skeleton's rest pose.
@@ -141,6 +125,29 @@ struct AnimMaskWeight
 {
     std::string maskName;       ///< Name of the mesh's bone-mask group.
     float       weight = 1.0f;  ///< Influence on the masked bones in [0,1].
+};
+
+/**
+ * @brief A single motion inside a blend tree.
+ *
+ * The child drives an existing animation state (referenced by id) so the blend
+ * tree never duplicates clip assignments. The threshold / x,y values describe
+ * where the child sits on the blend axis or plane.
+ */
+struct AnimBlendChild
+{
+    int   stateId   = -1;    ///< Id of the linked animation state that plays this motion.
+    float threshold = 0.0f;  ///< 1D position along the blend axis.
+    float posX      = 0.0f;  ///< 2D position (x) on the blend plane.
+    float posY      = 0.0f;  ///< 2D position (y) on the blend plane.
+    float speed     = 1.0f;  ///< Playback speed multiplier for this motion.
+
+    // Per-motion weighting of the base mesh's authored bone-mask groups. Each
+    // motion (a state added to the blend tree) can drive a masked region
+    // independently of every other motion. Empty = the motion is unmasked.
+    // The blend tree node itself may still carry maskWeights, used as the
+    // fallback for motions that define none (backward compatibility).
+    std::vector<AnimMaskWeight> maskWeights;
 };
 
 /**
@@ -394,6 +401,11 @@ private:
     kMaterial*          previewMat      = nullptr; ///< Fallback material applied when the GLB ships none.
     kAnimator*          previewAnimator = nullptr; ///< Drives the blended pose.
     std::unordered_map<std::string, kSkeletalAnimation*> previewClips; ///< animationUuid → loaded clip (owned).
+    // Masks built from the base mesh's authored bone-mask groups. Used so the
+    // preview honours each motion's Mask Weights the same way the runtime does.
+    std::unordered_map<std::string, std::unique_ptr<kAnimationMask>> previewMaskGroups; ///< groupName → mask (owned).
+    std::unique_ptr<kAnimationMask> previewRestOfBodyMask; ///< Bones no group owns (owned).
+    bool                previewHasMasks = false;      ///< True once preview masks were built.
     std::string         previewMeshUuid;              ///< Mesh UUID currently loaded ("" = none).
     std::vector<std::string> previewMeshUuids;        ///< Selectable mesh UUIDs (derived from the graph).
     std::vector<std::string> previewMeshNames;        ///< Display labels aligned with previewMeshUuids.
@@ -456,17 +468,39 @@ private:
     void collectAnimationAssets(std::vector<std::string>& uuids,
                                 std::vector<std::string>& names) const;
 
-    /** @brief Draws the "Mask Weights" editor for a state / blend tree. */
+    /** @brief Draws the node-level "Mask Weights" editor for a state / blend tree. */
     void drawMaskWeightsSection(AnimState* state);
 
     /**
-     * @brief Collects the bone-mask group names available for a state.
+     * @brief Draws an editable list of mask-group weights (sliders + add/remove).
      *
-     * Resolves the state's animation asset to its bound mesh asset and returns
-     * the mask-group names authored on that mesh, so the inspector only offers
-     * groups that actually exist for the rig.
+     * @param groups  Group names available on the base mesh.
+     * @param weights In/out weight entries, edited in place.
      */
-    void collectMaskGroupNames(const AnimState* state, std::vector<std::string>& names) const;
+    void drawMaskWeightList(const std::vector<std::string>& groups,
+                            std::vector<AnimMaskWeight>& weights);
+
+    /**
+     * @brief Collects the bone-mask group names authored on the *base* mesh.
+     *
+     * Masks belong to the base (driven) mesh, not the animation mesh, so the
+     * inspector only offers groups that actually exist for the rig being shown.
+     */
+    void collectBaseMeshMaskGroupNames(std::vector<std::string>& names) const;
+
+    /**
+     * @brief Resolves the "base mesh" whose authored bone masks drive this graph.
+     *
+     * Prefers the mesh currently selected for preview when it carries masks;
+     * otherwise the first mesh asset in the project that defines mask groups.
+     */
+    std::string resolveBaseMeshUuid() const;
+
+    /** @brief Reads a mesh asset's import scale factor (1.0 when unknown). */
+    float meshScaleFactor(const std::string& uuid) const;
+
+    /** @brief (Re)builds the preview masks from the base mesh's mask groups. */
+    void rebuildPreviewMasks();
 
     // Coordinate helpers
     ImVec2 canvasToScreen(ImVec2 cp, ImVec2 origin) const;

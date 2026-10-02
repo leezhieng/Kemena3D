@@ -519,6 +519,12 @@ public:
     // Per-project config
     void saveProjectConfig();
     fs::path loadLastWorldPath() const;
+
+    /** @brief Persists the game panel's aspect-ratio selection to project config. */
+    void saveGamePanelSettings();
+
+    /** @brief Restores the game panel's aspect-ratio selection from project config. */
+    void loadGamePanelSettings();
     void checkAssetChange();
     void refreshWindowTitle();
     void closeEditor();

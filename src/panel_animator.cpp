@@ -208,6 +208,19 @@ nlohmann::json AnimatorGraph::toJson() const
             cj["posX"]      = c.posX;
             cj["posY"]      = c.posY;
             cj["speed"]     = c.speed;
+
+            // Per-motion bone-mask group weights (this motion's influence on
+            // the base mesh's authored regions).
+            json childMaskArr = json::array();
+            for (const auto& m : c.maskWeights)
+            {
+                json mj;
+                mj["maskName"] = m.maskName;
+                mj["weight"]   = m.weight;
+                childMaskArr.push_back(mj);
+            }
+            cj["maskWeights"] = childMaskArr;
+
             blendArr.push_back(cj);
         }
         sj["blendChildren"] = blendArr;
@@ -338,6 +351,20 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
                     bc.posX      = c.value("posX", 0.0f);
                     bc.posY      = c.value("posY", 0.0f);
                     bc.speed     = c.value("speed", 1.0f);
+
+                    // Per-motion mask weights (absent in older files → empty).
+                    if (c.contains("maskWeights") && c["maskWeights"].is_array())
+                    {
+                        for (const auto& m : c["maskWeights"])
+                        {
+                            AnimMaskWeight mw;
+                            mw.maskName = m.value("maskName", std::string());
+                            mw.weight   = m.value("weight", 1.0f);
+                            if (!mw.maskName.empty())
+                                bc.maskWeights.push_back(mw);
+                        }
+                    }
+
                     st.blendChildren.push_back(bc);
                 }
             }
@@ -1550,6 +1577,11 @@ void PanelAnimator::releasePreviewMesh()
         delete kv.second;
     previewClips.clear();
 
+    // Masks are rebuilt for the newly selected base mesh.
+    previewMaskGroups.clear();
+    previewRestOfBodyMask.reset();
+    previewHasMasks = false;
+
     delete previewAnimator; previewAnimator = nullptr;
     delete previewMat;      previewMat = nullptr;
     previewBlendTime = 0.0f;
@@ -1585,29 +1617,34 @@ void PanelAnimator::refreshPreviewMeshes()
         previewMeshNames.push_back(m.second);
     }
 
-    // On first population, default to the mesh the animator's clips were
-    // authored against (best chance the clip bones bind to the model's bones).
+    // On first population, prefer the base (driven) skeletal mesh — the asset
+    // that authors the bone masks — so the preview shows that model playing
+    // back the animator's blend. Fall back to the mesh the clips were authored
+    // against (guarantees the clip bones bind to the model's bones).
     if (previewMeshUuid.empty())
     {
-        std::string preferred;
-        for (const auto &st : graph.states)
+        std::string preferred = resolveBaseMeshUuid();
+        if (preferred.empty())
         {
-            if (st.animationUuid.empty())
-                continue;
-            fs::path animPath = manager->findAssetPathByUuid(st.animationUuid);
-            if (animPath.empty() || !fs::exists(animPath))
-                continue;
-            json j;
-            try
+            for (const auto &st : graph.states)
             {
-                std::ifstream f(animPath);
-                if (!f.is_open()) continue;
-                f >> j;
+                if (st.animationUuid.empty())
+                    continue;
+                fs::path animPath = manager->findAssetPathByUuid(st.animationUuid);
+                if (animPath.empty() || !fs::exists(animPath))
+                    continue;
+                json j;
+                try
+                {
+                    std::ifstream f(animPath);
+                    if (!f.is_open()) continue;
+                    f >> j;
+                }
+                catch (...) { continue; }
+                preferred = j.value("meshUuid", std::string());
+                if (!preferred.empty())
+                    break;
             }
-            catch (...) { continue; }
-            preferred = j.value("meshUuid", std::string());
-            if (!preferred.empty())
-                break;
         }
         if (!preferred.empty())
         {
@@ -1666,6 +1703,27 @@ void PanelAnimator::ensurePreviewClips()
                 // The preview drives clip time itself; keep the engine from
                 // advancing it a second time.
                 clip->setSpeed(0.0f);
+
+                // Root-motion channels from the .animation asset (parity with
+                // the runtime controller, so the previewed pose matches).
+                clip->setRootMotionRotation(j.value("rootMotionRotation", false));
+                clip->setRootMotionPositionY(j.value("rootMotionPositionY", false));
+                clip->setRootMotionPositionXZ(j.value("rootMotionPositionXZ", false));
+
+                // Compensate for unit-scale differences between the base mesh
+                // being previewed and the animation's own source mesh. Both are
+                // imported independently; without this the base mesh (imported
+                // at e.g. scale 0.02) bound to a clip imported at scale 1.0 has
+                // wildly wrong translations and the model explodes out of view.
+                const float baseScale = meshScaleFactor(previewMeshUuid);
+                const float animScale = meshScaleFactor(meshUuid);
+                if (baseScale > 0.0f && animScale > 0.0f)
+                {
+                    const float ratio = baseScale / animScale;
+                    if (std::fabs(ratio - 1.0f) > 1e-5f)
+                        clip->applyTranslationScale(ratio);
+                }
+
                 previewClips[st.animationUuid] = clip;
             }
         }
@@ -1794,6 +1852,7 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
 
                 previewScene->addMesh(previewMesh);
                 ensurePreviewClips();
+                rebuildPreviewMasks();
                 framePreviewCamera();
                 previewBlendTime = 0.0f;
             }
@@ -1844,6 +1903,7 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         float posX = 0.0f;
         float posY = 0.0f;
         float speed = 1.0f;
+        std::vector<AnimMaskWeight> maskWeights;
     };
     std::vector<PMotion> motions;
     for (const auto &c : state->blendChildren)
@@ -1859,6 +1919,9 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         m.posX = c.posX;
         m.posY = c.posY;
         m.speed = c.speed;
+        // Per-motion masks; fall back to the node's own weights when the motion
+        // defines none (matches the runtime resolution).
+        m.maskWeights = !c.maskWeights.empty() ? c.maskWeights : state->maskWeights;
         motions.push_back(m);
     }
 
@@ -1908,11 +1971,78 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
     // ---- Advance clip time and build the weighted samples -----------------
     previewBlendTime += ImGui::GetIO().DeltaTime;
 
+    // Emit a motion's weighted samples using the same region-participation
+    // semantics as the runtime (see appendMaskedSamples): a group weight of 0
+    // contributes nothing for that region — neither its clip nor a rest pose —
+    // so the region is driven by the other motions that give it a positive
+    // weight instead of collapsing to the bind pose. Regions no group covers
+    // stay fully driven.
+    // Small per-region coverage floor, mirroring the runtime: a motion with mask
+    // weight 0 contributes nothing, but a tiny floor keeps a region whose
+    // weighted motions momentarily reach ~0 driven (and hands ownership over
+    // continuously) rather than snapping to the bind pose.
+    const float kMaskCoverageFloor = 1e-3f;
+
+    auto appendSamples = [&](const PMotion &m, float baseWeight, float ticks,
+                             std::vector<kPoseSample> &out)
+    {
+        const bool useMasks = previewHasMasks && !m.maskWeights.empty();
+        if (!useMasks)
+        {
+            kPoseSample s;
+            s.animation = m.clip;
+            s.time      = ticks;
+            s.weight    = baseWeight;
+            out.push_back(s);
+            return;
+        }
+
+        if (previewRestOfBodyMask)
+        {
+            kPoseSample s;
+            s.animation = m.clip;
+            s.time      = ticks;
+            s.weight    = baseWeight;
+            s.mask      = previewRestOfBodyMask.get();
+            out.push_back(s);
+        }
+
+        // One sample per authored group; unlisted groups default to full weight.
+        for (const auto &gp : previewMaskGroups)
+        {
+            if (!gp.second)
+                continue;
+            const kAnimationMask *mask = gp.second.get();
+
+            float gw = 1.0f;
+            for (const auto &mw : m.maskWeights)
+                if (mw.maskName == gp.first)
+                { gw = std::max(0.0f, std::min(1.0f, mw.weight)); break; }
+
+            // 0 means the motion does not animate the region; a positive weight
+            // contributes the clip plus the coverage floor.
+            if (gw <= 1e-5f)
+                continue;
+
+            const float w = baseWeight * gw + kMaskCoverageFloor * gw;
+            if (w <= 1e-5f)
+                continue;
+
+            kPoseSample s;
+            s.animation = m.clip;
+            s.time      = ticks;
+            s.weight    = w;
+            s.mask      = mask;
+            out.push_back(s);
+        }
+    };
+
+    // Every motion contributes its samples (including ones whose blend weight is
+    // 0 at this instant) so a region can stay driven by a covering motion through
+    // the coverage floor as ownership hands over.
     std::vector<kPoseSample> samples;
-    samples.reserve(motions.size());
     for (size_t i = 0; i < motions.size(); ++i)
     {
-        if (weights[i] <= 1e-5f) continue;
         kSkeletalAnimation *clip = motions[i].clip;
         const float tps = clip->getTicksPerSecond();
         const float durSec = (tps > 1e-3f) ? (clip->getDuration() / tps) : 0.0f;
@@ -1921,41 +2051,45 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         if (durSec > 1e-4f)
             sec = std::fmod(sec, durSec);
 
-        kPoseSample s;
-        s.animation = clip;
-        s.time = sec * tps;
-        s.weight = weights[i];
-        samples.push_back(s);
+        appendSamples(motions[i], weights[i], sec * tps, samples);
     }
 
     if (!samples.empty())
     {
         // Root motion follows the highest-weight motion that has a root-motion
         // channel (not the dominant one), and the source is switched without
-        // resetting the tracker so the preview neither stalls nor pops.
+        // resetting the tracker so the preview neither stalls nor pops. Derived
+        // from the motion blend weights so coverage-floor samples never steer it.
         kSkeletalAnimation *dominant     = nullptr;
         kSkeletalAnimation *rootClip     = nullptr;
         float               dominantTime = 0.0f;
         float               rootTime     = 0.0f;
         float               bestW        = -1.0f;
         float               bestRootW    = -1.0f;
-        for (const auto &s : samples)
+        for (size_t i = 0; i < motions.size(); ++i)
         {
-            if (s.animation == nullptr) continue;
-            if (s.weight > bestW)
+            if (weights[i] <= 1e-5f) continue;
+            kSkeletalAnimation *clip = motions[i].clip;
+            const float tps = clip->getTicksPerSecond();
+            const float durSec = (tps > 1e-3f) ? (clip->getDuration() / tps) : 0.0f;
+            float sec = previewBlendTime * motions[i].speed;
+            if (durSec > 1e-4f) sec = std::fmod(sec, durSec);
+            const float t = sec * tps;
+
+            if (weights[i] > bestW)
             {
-                bestW        = s.weight;
-                dominant     = s.animation;
-                dominantTime = s.time;
+                bestW        = weights[i];
+                dominant     = clip;
+                dominantTime = t;
             }
-            const bool hasRoot = s.animation->getRootMotionRotation() ||
-                                 s.animation->getRootMotionPositionY() ||
-                                 s.animation->getRootMotionPositionXZ();
-            if (hasRoot && s.weight > bestRootW)
+            const bool hasRoot = clip->getRootMotionRotation() ||
+                                 clip->getRootMotionPositionY() ||
+                                 clip->getRootMotionPositionXZ();
+            if (hasRoot && weights[i] > bestRootW)
             {
-                bestRootW = s.weight;
-                rootClip  = s.animation;
-                rootTime  = s.time;
+                bestRootW = weights[i];
+                rootClip  = clip;
+                rootTime  = t;
             }
         }
         if (rootClip != nullptr)
@@ -1963,10 +2097,19 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         else if (dominant != nullptr)
             previewAnimator->setBlendRootSource(dominant, dominantTime);
 
+        // Any sample's clip resolves the shared skeleton root; rest-pose
+        // samples (weighted masking) carry no animation and are skipped.
+        kSkeletalAnimation *poseSource = nullptr;
+        for (const kPoseSample &s : samples)
+            if (s.animation != nullptr) { poseSource = s.animation; break; }
+
         try
         {
-            const kNodeData &root = samples.front().animation->getRootNode();
-            previewAnimator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+            if (poseSource != nullptr)
+            {
+                const kNodeData &root = poseSource->getRootNode();
+                previewAnimator->calculateBlendedBoneTransform(samples, &root, kMat4(1.0f));
+            }
         }
         catch (const std::exception &)
         {
@@ -2044,67 +2187,123 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
 // ===========================================================================
 // Bone-mask group weights
 //
-// A state or blend tree can weight each named bone-mask group authored on the
-// bound mesh. The groups themselves live on the mesh asset (Mesh Inspector →
-// Bone Masks); here we only pick which of them this node references and how
-// strongly it drives them.
+// A state, blend tree or individual blend-tree motion can weight each named
+// bone-mask group authored on the *base* (driven) mesh. The groups themselves
+// live on the base mesh asset (Mesh Inspector → Bone Masks); here we only pick
+// which of them this node/motion references and how strongly it drives them.
 // ===========================================================================
 
-void PanelAnimator::collectMaskGroupNames(const AnimState* state, std::vector<std::string>& names) const
+std::string PanelAnimator::resolveBaseMeshUuid() const
+{
+    if (!manager)
+        return std::string();
+
+    // Prefer the mesh chosen for the embedded preview when it carries masks:
+    // that selection *is* the base skeletal mesh the user is authoring against.
+    if (!previewMeshUuid.empty() && !manager->getMeshMaskGroups(previewMeshUuid).empty())
+        return previewMeshUuid;
+
+    // Otherwise: the first mesh asset that authors mask groups. Bone masks live
+    // on the driven mesh, never on the animation mesh, so this reliably finds
+    // the base skeletal mesh for the rig.
+    for (const auto& kv : manager->fileMap)
+    {
+        if (kv.second.type != "mesh")
+            continue;
+        if (!manager->getMeshMaskGroups(kv.first).empty())
+            return kv.first;
+    }
+
+    // Last resort: whatever mesh is loaded in the preview (may be empty).
+    return previewMeshUuid;
+}
+
+void PanelAnimator::collectBaseMeshMaskGroupNames(std::vector<std::string>& names) const
 {
     names.clear();
-    if (!manager || !state || state->animationUuid.empty())
+    if (!manager)
         return;
-
-    fs::path animPath = manager->findAssetPathByUuid(state->animationUuid);
-    if (animPath.empty() || !fs::exists(animPath))
+    const std::string baseUuid = resolveBaseMeshUuid();
+    if (baseUuid.empty())
         return;
-
-    std::string meshUuid;
-    try
-    {
-        std::ifstream f(animPath);
-        if (!f.is_open())
-            return;
-        json j;
-        f >> j;
-        meshUuid = j.value("meshUuid", std::string());
-    }
-    catch (...)
-    {
-        return;
-    }
-    if (meshUuid.empty())
-        return;
-
-    for (const auto& g : manager->getMeshMaskGroups(meshUuid))
+    for (const auto& g : manager->getMeshMaskGroups(baseUuid))
         names.push_back(g.name);
 }
 
-void PanelAnimator::drawMaskWeightsSection(AnimState* state)
+float PanelAnimator::meshScaleFactor(const std::string& uuid) const
 {
-    if (!state)
-        return;
+    if (!manager || uuid.empty())
+        return 1.0f;
 
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Mask Weights");
-    ImGui::Separator();
+    fs::path metaPath = manager->projectPath / "Library" / "Metadata" / (uuid + ".json");
+    if (!fs::exists(metaPath))
+        return 1.0f;
 
-    std::vector<std::string> groups;
-    collectMaskGroupNames(state, groups);
-    if (groups.empty())
+    try
     {
-        ImGui::TextDisabled("No bone masks on this mesh.");
-        ImGui::TextWrapped(
-            "Author groups in the Mesh Inspector (Import Settings > Bone Masks), "
-            "then weight them here.");
+        std::ifstream mf(metaPath);
+        json mj;
+        mf >> mj;
+        return mj.value("scaleFactor", 1.0f);
+    }
+    catch (...)
+    {
+    }
+    return 1.0f;
+}
+
+void PanelAnimator::rebuildPreviewMasks()
+{
+    previewMaskGroups.clear();
+    previewRestOfBodyMask.reset();
+    previewHasMasks = false;
+
+    if (!manager)
         return;
+
+    const std::string baseUuid = resolveBaseMeshUuid();
+    if (baseUuid.empty())
+        return;
+
+    std::vector<BoneMaskGroup> authored = manager->getMeshMaskGroups(baseUuid);
+    if (authored.empty())
+        return;
+
+    std::vector<std::string> groupedBones;
+    for (const auto& g : authored)
+    {
+        auto mask = std::make_unique<kAnimationMask>(g.name);
+        mask->buildFromBoneNames(g.bones, true);
+        if (mask->empty())
+            continue; // group named no bone actually present on the rig
+
+        for (const auto& b : g.bones)
+            groupedBones.push_back(b);
+        previewMaskGroups[g.name] = std::move(mask);
+    }
+    if (previewMaskGroups.empty())
+        return;
+
+    // Complement mask so bones no group owns are still driven at full strength.
+    if (previewMesh)
+    {
+        auto rest = std::make_unique<kAnimationMask>("__ungrouped");
+        rest->buildFromMesh(previewMesh, true);
+        for (const auto& b : groupedBones)
+            rest->setBoneEnabled(b, false);
+        previewRestOfBodyMask = std::move(rest);
     }
 
+    previewHasMasks = true;
+}
+
+void PanelAnimator::drawMaskWeightList(const std::vector<std::string>& groups,
+                                       std::vector<AnimMaskWeight>& weights)
+{
     int removeIdx = -1;
-    for (int i = 0; i < (int)state->maskWeights.size(); ++i)
+    for (int i = 0; i < (int)weights.size(); ++i)
     {
-        AnimMaskWeight& mw = state->maskWeights[i];
+        AnimMaskWeight& mw = weights[i];
         ImGui::PushID(i);
 
         const bool known = std::find(groups.begin(), groups.end(), mw.maskName) != groups.end();
@@ -2125,11 +2324,11 @@ void PanelAnimator::drawMaskWeightsSection(AnimState* state)
 
     if (removeIdx >= 0)
     {
-        state->maskWeights.erase(state->maskWeights.begin() + removeIdx);
+        weights.erase(weights.begin() + removeIdx);
         graph.dirty = true;
     }
 
-    // Add a group this node does not reference yet.
+    // Add a group this node / motion does not reference yet.
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("##addmask", "Add Mask Group"))
     {
@@ -2137,7 +2336,7 @@ void PanelAnimator::drawMaskWeightsSection(AnimState* state)
         for (const auto& g : groups)
         {
             bool already = false;
-            for (const auto& mw : state->maskWeights)
+            for (const auto& mw : weights)
                 if (mw.maskName == g) { already = true; break; }
             if (already)
                 continue;
@@ -2148,7 +2347,7 @@ void PanelAnimator::drawMaskWeightsSection(AnimState* state)
                 AnimMaskWeight mw;
                 mw.maskName = g;
                 mw.weight   = 1.0f;
-                state->maskWeights.push_back(mw);
+                weights.push_back(mw);
                 graph.dirty = true;
             }
         }
@@ -2156,6 +2355,31 @@ void PanelAnimator::drawMaskWeightsSection(AnimState* state)
             ImGui::TextDisabled("All groups added");
         ImGui::EndCombo();
     }
+}
+
+void PanelAnimator::drawMaskWeightsSection(AnimState* state)
+{
+    if (!state)
+        return;
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Mask Weights");
+    ImGui::Separator();
+
+    std::vector<std::string> groups;
+    collectBaseMeshMaskGroupNames(groups);
+    if (groups.empty())
+    {
+        ImGui::TextDisabled("No bone masks on the base mesh.");
+        ImGui::TextWrapped(
+            "Author groups in the Mesh Inspector (Import Settings > Bone Masks) "
+            "on the base (driven) mesh, then weight them here.");
+        return;
+    }
+
+    ImGui::PushID("nodemasks");
+    drawMaskWeightList(groups, state->maskWeights);
+    ImGui::PopID();
 }
 
 void PanelAnimator::drawBlendTreeInspector(AnimState* state)
@@ -2417,6 +2641,28 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::DragFloat("##motionspeed", &child.speed, 0.05f, 0.0f, 10.0f))
             graph.dirty = true;
+
+        // Per-motion Mask Weights. The groups come from the *base* mesh (the
+        // driven skeletal mesh), never the animation mesh, so each motion can
+        // drive a body region independently of the others at playback time.
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Mask Weights");
+        ImGui::Separator();
+        {
+            std::vector<std::string> maskGroups;
+            collectBaseMeshMaskGroupNames(maskGroups);
+            if (maskGroups.empty())
+            {
+                ImGui::TextDisabled("No bone masks on the base mesh.");
+                ImGui::TextWrapped(
+                    "Author groups in the Mesh Inspector (Import Settings > "
+                    "Bone Masks) on the base (driven) mesh.");
+            }
+            else
+            {
+                drawMaskWeightList(maskGroups, child.maskWeights);
+            }
+        }
 
         if (ImGui::Button("Remove Motion"))
             removeIdx = i;

@@ -486,6 +486,77 @@ std::vector<std::string> getMeshBoneNames(const fs::path &inputPath)
     return out;
 }
 
+BoneTree getMeshBoneTree(const fs::path &inputPath)
+{
+    BoneTree tree;
+
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(inputPath.string(), 0);
+    if (!scene || !scene->mRootNode)
+        return tree;
+
+    // Names actually referenced as skinning bones by any mesh (same filter as
+    // getMeshBoneNames). Falls back to every node when the model exposes none.
+    std::set<std::string> boneSet;
+    for (unsigned int mi = 0; mi < scene->mNumMeshes; ++mi)
+    {
+        const aiMesh *mesh = scene->mMeshes[mi];
+        if (!mesh)
+            continue;
+        for (unsigned int b = 0; b < mesh->mNumBones; ++b)
+        {
+            const aiBone *bone = mesh->mBones[b];
+            if (bone && bone->mName.length > 0)
+                boneSet.insert(std::string(bone->mName.C_Str()));
+        }
+    }
+
+    // Iterative top-down walk. Children are pushed in reverse so the leftmost
+    // child is processed first, preserving the hierarchy order used elsewhere.
+    // A filtered (non-bone) node passes its own parent index down so its bone
+    // descendants attach to the nearest included ancestor.
+    struct Frame
+    {
+        const aiNode *node;
+        int           parent; ///< Index of the nearest included ancestor, or -1.
+    };
+
+    std::set<std::string> seen;
+    std::vector<Frame>    stack;
+    stack.push_back({ scene->mRootNode, -1 });
+
+    while (!stack.empty())
+    {
+        Frame f = stack.back();
+        stack.pop_back();
+        if (!f.node)
+            continue;
+
+        std::string name = (f.node->mName.length > 0) ? std::string(f.node->mName.C_Str())
+                                                      : std::string();
+        int myIndex = f.parent;
+
+        const bool isBone = !name.empty() && (boneSet.empty() || boneSet.count(name));
+        if (isBone && seen.insert(name).second)
+        {
+            BoneTreeNode node;
+            node.name = name;
+            myIndex   = (int)tree.nodes.size();
+            tree.nodes.push_back(std::move(node));
+
+            if (f.parent >= 0)
+                tree.nodes[f.parent].children.push_back(myIndex);
+            else
+                tree.roots.push_back(myIndex);
+        }
+
+        for (unsigned int i = f.node->mNumChildren; i-- > 0;)
+            stack.push_back({ f.node->mChildren[i], myIndex });
+    }
+
+    return tree;
+}
+
 int getMaxAnimationFrames(const fs::path &inputPath, float fps)
 {
     if (fps <= 0.0f)

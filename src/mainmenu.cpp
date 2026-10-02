@@ -708,6 +708,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				// (Logic Graph, Animator, Shader Graph, Cinematic) so it can be
 				// restored when the project is opened again.
 				manager->saveOpenEditorFiles(workspacePath);
+				// Persist the game panel's aspect-ratio selection.
+				manager->saveGamePanelSettings();
 				SDL_Log("Saved workspace to: %s", workspacePath.string().c_str());
 			}
 			gui->separator();

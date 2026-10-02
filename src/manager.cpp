@@ -3,6 +3,7 @@
 #include "blend_weights.h" // shared 1D/2D blend-tree weighting (also used by the editor preview)
 #include "panel_logicgraph.h" // for panelLogicGraph->notifyAssetMoved()
 #include "panel_shadergraph.h" // for panelShaderGraph->getFilePath()
+#include "panel_game.h" // for game-panel aspect-ratio persistence
 #include "mainmenu.h" // for showPanel / savedWorkspaceFileName
 
 #include <kemena/kpackage.h>
@@ -364,6 +365,9 @@ bool Manager::executeNewProject(const kString& name, const fs::path& dir, bool c
     // Clear any previously opened world and start fresh.
     resetToFreshWorld();
 
+    // Reset the game panel to its default aspect ratio for the new project.
+    loadGamePanelSettings();
+
     checkAssetChange();
 
     if (panelProject != nullptr)
@@ -517,6 +521,9 @@ bool Manager::openProject()
             resetToFreshWorld();
     }
 
+    // Restore the game panel's aspect-ratio selection recorded in this project.
+    loadGamePanelSettings();
+
     addRecentProject(projectPath.string());
 
     return true;
@@ -605,6 +612,9 @@ bool Manager::openProjectFromPath(const kString &path)
         else
             resetToFreshWorld();
     }
+
+    // Restore the game panel's aspect-ratio selection recorded in this project.
+    loadGamePanelSettings();
 
     addRecentProject(path);
 
@@ -5273,6 +5283,74 @@ void Manager::saveProjectConfig()
     catch (const std::exception &e)
     {
         std::cerr << "saveProjectConfig: " << e.what() << "\n";
+    }
+}
+
+void Manager::saveGamePanelSettings()
+{
+    if (!projectOpened || projectPath.empty() || !panelGame)
+        return;
+
+    fs::path cfgPath = projectPath / "Config" / "project.json";
+    json cfg = json::object();
+    if (fs::exists(cfgPath))
+    {
+        std::ifstream f(cfgPath);
+        if (f.is_open())
+        {
+            try { cfg = json::parse(f); } catch (...) { cfg = json::object(); }
+            f.close();
+        }
+    }
+
+    json gp = json::object();
+    gp["aspect_ratio"]    = (int)panelGame->getAspectRatio();
+    gp["custom_aspect_w"] = panelGame->getCustomAspectW();
+    gp["custom_aspect_h"] = panelGame->getCustomAspectH();
+    cfg["game_panel"] = gp;
+
+    std::ofstream f(cfgPath);
+    if (f.is_open())
+        f << cfg.dump(4);
+}
+
+void Manager::loadGamePanelSettings()
+{
+    // Reset to defaults first so a newly created, or older project without a
+    // recorded selection, falls back to Free aspect.
+    if (panelGame)
+    {
+        panelGame->setAspectRatio(GameAspectRatio::Free);
+        panelGame->setCustomAspectW(16.0f);
+        panelGame->setCustomAspectH(9.0f);
+
+        if (projectOpened && !projectPath.empty())
+        {
+            fs::path cfgPath = projectPath / "Config" / "project.json";
+            if (fs::exists(cfgPath))
+            {
+                std::ifstream f(cfgPath);
+                json cfg;
+                if (f.is_open())
+                {
+                    try { cfg = json::parse(f); } catch (...) { cfg = json::object(); }
+                    f.close();
+                }
+                if (cfg.contains("game_panel") && cfg["game_panel"].is_object())
+                {
+                    const json &gp = cfg["game_panel"];
+                    int ar = gp.value("aspect_ratio", 0);
+                    if (ar < (int)GameAspectRatio::Free || ar > (int)GameAspectRatio::Custom)
+                        ar = (int)GameAspectRatio::Free;
+                    panelGame->setAspectRatio((GameAspectRatio)ar);
+
+                    float w = gp.value("custom_aspect_w", 16.0f);
+                    float h = gp.value("custom_aspect_h", 9.0f);
+                    if (w > 0.0f) panelGame->setCustomAspectW(w);
+                    if (h > 0.0f) panelGame->setCustomAspectH(h);
+                }
+            }
+        }
     }
 }
 
@@ -10136,17 +10214,32 @@ static AnimState *evaluateAnimatorTransitions(RuntimeAnimator &rt, AnimState *st
 //
 // A state (or blend-tree motion) may declare, per named mask group, how
 // strongly it drives the masked bones. The engine blends a pose from weighted
-// kPoseSamples; to make a group weight of w mean "w of this state's pose plus
-// (1 - w) of the rest pose" we emit, for each masked region, a clip sample of
-// weight (base * w) and a rest-pose sample of weight (base * (1 - w)) carrying
-// the same mask. Regions not covered by any group are driven at full strength
-// by a sample masked to the complement of every group.
+// kPoseSamples. Two modes are supported:
+//
+//   * Absolute weighting (single-clip states, regionParticipation == false):
+//     a group weight of w means "w of this state's pose plus (1 - w) of the
+//     rest pose", so we emit a clip sample of weight (base * w) and a rest-pose
+//     sample of weight (base * (1 - w)) carrying the same mask.
+//
+//   * Region participation (blend trees, regionParticipation == true): the mask
+//     weight says how strongly this motion takes part in the region. A weight
+//     of 0 contributes NOTHING — no clip sample and, crucially, no rest sample —
+//     so the region is driven by the other motions that give it a positive
+//     weight (the blended-pose pass normalises across the contributing samples).
+//     This stops a zero-weight motion from dragging its bones back to the bind
+//     pose instead of blending with its neighbours in the same blend tree.
+//
+// Regions not covered by any group are always driven at full strength by a
+// sample masked to the complement of every group.
 // ---------------------------------------------------------------------------
-static void appendMaskedSamples(const RuntimeAnimator &rt, const AnimState *state,
+static void appendMaskedSamples(const RuntimeAnimator &rt,
+                                const std::vector<AnimMaskWeight> &maskWeights,
                                 kSkeletalAnimation *clip, float time, float baseWeight,
-                                std::vector<kPoseSample> &out)
+                                std::vector<kPoseSample> &out,
+                                bool regionParticipation = false,
+                                float participationFloor = 0.0f)
 {
-    const bool useMasks = rt.hasMaskGroups && state != nullptr && !state->maskWeights.empty();
+    const bool useMasks = rt.hasMaskGroups && !maskWeights.empty();
     if (!useMasks)
     {
         kPoseSample s;
@@ -10178,8 +10271,32 @@ static void appendMaskedSamples(const RuntimeAnimator &rt, const AnimState *stat
         const kAnimationMask *mask = rt.maskGroups[idx].get();
 
         float gw = 1.0f;
-        for (const auto &mw : state->maskWeights)
+        for (const auto &mw : maskWeights)
             if (mw.maskName == name) { gw = std::max(0.0f, std::min(1.0f, mw.weight)); break; }
+
+        if (regionParticipation)
+        {
+            // A weight of 0 means this motion does not animate the region: skip
+            // it entirely (no clip, no rest pose) so the region is driven by the
+            // other motions. Positive weights contribute the clip plus a small
+            // coverage floor: when every covering motion's weighted contribution
+            // momentarily reaches ~0 the floor keeps the region driven and hands
+            // ownership over smoothly instead of snapping to the bind pose.
+            if (gw <= 1e-5f)
+                continue;
+
+            const float w = baseWeight * gw + participationFloor * gw;
+            if (w <= 1e-5f)
+                continue;
+
+            kPoseSample s;
+            s.animation = clip;
+            s.time      = time;
+            s.weight    = w;
+            s.mask      = mask;
+            out.push_back(s);
+            continue;
+        }
 
         if (baseWeight * gw > 1e-5f)
         {
@@ -10511,6 +10628,11 @@ float Manager::getRuntimeAnimatorVariable(const std::string &graphUuid,
 void Manager::stepAnimators(float dt)
 {
     const float kAnimFps = 30.0f;
+    // Tiny per-region coverage floor for blend-tree masks. A motion with mask
+    // weight 0 never contributes, but a small floor keeps any region that its
+    // covering motions momentarily weight at ~0 still driven, handing ownership
+    // over continuously instead of popping to the bind pose.
+    const float kRegionCoverageFloor = 1e-3f;
 
     for (auto &rt : runtimeAnimators)
     {
@@ -10701,12 +10823,15 @@ void Manager::stepAnimators(float dt)
             }
 
             // Advance each motion's own clip time and build the weighted samples.
+            // Every motion's clock is advanced (including ones whose blend weight
+            // is 0) so a region whose weighted motions momentarily fall to zero
+            // can still be driven by a covering motion at the correct time.
             std::vector<kPoseSample> samples;
-            samples.reserve(motions.size());
-            for (const auto &m : motions)
+            samples.reserve(motions.size() * 2);
+            std::vector<float> motionTicks(motions.size(), 0.0f);
+            for (size_t mi = 0; mi < motions.size(); ++mi)
             {
-                if (m.weight <= 1e-5f)
-                    continue;
+                const BlendMotion &m = motions[mi];
 
                 auto frameIt = rt.clipFrames.find(m.uuid);
                 const float sFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
@@ -10725,10 +10850,20 @@ void Manager::stepAnimators(float dt)
                 {
                     sec = mEnd;
                 }
+                motionTicks[mi] = sec * m.clip->getTicksPerSecond();
 
-                appendMaskedSamples(rt, state, m.clip,
-                                    sec * m.clip->getTicksPerSecond(), m.weight,
-                                    samples);
+                // Each motion carries its own Mask Weights; when a motion defines
+                // none, fall back to the blend-tree node's weights so older files
+                // keep their previous per-region behaviour. Blend-tree motions use
+                // region-participation semantics with a small coverage floor: a
+                // mask weight of 0 never contributes to the region, and the floor
+                // keeps a region whose weighted motions reach ~0 driven and hands
+                // ownership over continuously (no bind-pose pop).
+                const std::vector<AnimMaskWeight> &motionMasks =
+                    !m.child->maskWeights.empty() ? m.child->maskWeights : state->maskWeights;
+                appendMaskedSamples(rt, motionMasks, m.clip, motionTicks[mi], m.weight,
+                                    samples, /*regionParticipation=*/true,
+                                    /*participationFloor=*/kRegionCoverageFloor);
             }
 
             if (samples.empty())
@@ -10742,30 +10877,34 @@ void Manager::stepAnimators(float dt)
             // motion fades out together with the pose instead of lingering on
             // the last root-bearing clip. setBlendRootSource() switches the
             // source without resetting time or popping the pose.
+            //
+            // It is derived from the real blend weights (not the sample list) so
+            // the coverage-floor samples can never steer root motion.
             kSkeletalAnimation *dominant     = nullptr;
             kSkeletalAnimation *rootClip     = nullptr;
             float               dominantTime = 0.0f;
             float               rootTime     = 0.0f;
             float               bestWeight   = -1.0f;
             float               bestRootW    = -1.0f;
-            for (const auto &s : samples)
+            for (size_t mi = 0; mi < motions.size(); ++mi)
             {
-                if (s.animation == nullptr)
+                if (motions[mi].weight <= 1e-5f)
                     continue;
-                if (s.weight > bestWeight)
+                kSkeletalAnimation *clip = motions[mi].clip;
+                if (motions[mi].weight > bestWeight)
                 {
-                    bestWeight   = s.weight;
-                    dominant     = s.animation;
-                    dominantTime = s.time;
+                    bestWeight   = motions[mi].weight;
+                    dominant     = clip;
+                    dominantTime = motionTicks[mi];
                 }
-                const bool hasRoot = s.animation->getRootMotionRotation() ||
-                                     s.animation->getRootMotionPositionY() ||
-                                     s.animation->getRootMotionPositionXZ();
-                if (hasRoot && s.weight > bestRootW)
+                const bool hasRoot = clip->getRootMotionRotation() ||
+                                     clip->getRootMotionPositionY() ||
+                                     clip->getRootMotionPositionXZ();
+                if (hasRoot && motions[mi].weight > bestRootW)
                 {
-                    bestRootW = s.weight;
-                    rootClip  = s.animation;
-                    rootTime  = s.time;
+                    bestRootW = motions[mi].weight;
+                    rootClip  = clip;
+                    rootTime  = motionTicks[mi];
                 }
             }
             if (rootClip != nullptr)
@@ -10883,7 +11022,7 @@ void Manager::stepAnimators(float dt)
                 // pass so per-region weights (blend toward rest) take effect.
                 std::vector<kPoseSample> samples;
                 samples.reserve(rt.maskGroups.size() * 2 + 1);
-                appendMaskedSamples(rt, state, clip, ticks, 1.0f, samples);
+                appendMaskedSamples(rt, state->maskWeights, clip, ticks, 1.0f, samples);
                 rt.animator->setBlendRootSource(clip, ticks);
 
                 try

@@ -120,6 +120,24 @@ public:
     /** @brief Stop playing: restore the scene snapshot and return to Stopped state. */
     void pressStop();
 
+    /** @brief Get the selected game-viewport aspect-ratio preset. */
+    GameAspectRatio getAspectRatio() const { return aspectRatio; }
+
+    /** @brief Set the game-viewport aspect-ratio preset. */
+    void setAspectRatio(GameAspectRatio value) { aspectRatio = value; }
+
+    /** @brief Get the custom preset width component. */
+    float getCustomAspectW() const { return customAspectW; }
+
+    /** @brief Set the custom preset width component. */
+    void setCustomAspectW(float value) { customAspectW = value; }
+
+    /** @brief Get the custom preset height component. */
+    float getCustomAspectH() const { return customAspectH; }
+
+    /** @brief Set the custom preset height component. */
+    void setCustomAspectH(float value) { customAspectH = value; }
+
     Manager*     manager; ///< Owning editor manager (world, scene, object lookup).
     kGuiManager* gui;     ///< GUI manager used for ImGui rendering.
 

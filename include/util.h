@@ -155,6 +155,53 @@ bool convertMeshToGlb(const fs::path& inputPath, const fs::path& outputPath);
 std::vector<std::string> getMeshBoneNames(const fs::path& inputPath);
 
 /**
+ * @brief One bone in the skeleton tree returned by getMeshBoneTree().
+ */
+struct BoneTreeNode
+{
+    std::string      name;      ///< Bone name.
+    std::vector<int> children;  ///< Indices into BoneTree::nodes (parent first).
+};
+
+/**
+ * @brief A skeleton hierarchy of a model's skinning bones.
+ *
+ * Nodes are stored parent-before-child. Non-bone nodes (mesh / transform nodes)
+ * are filtered out and their bone descendants re-parented to the nearest bone
+ * ancestor, so the tree stays connected for a checkbox bone-selection UI.
+ */
+struct BoneTree
+{
+    std::vector<BoneTreeNode> nodes; ///< All bones, parents before children.
+    std::vector<int>          roots; ///< Indices of the top-level bones.
+
+    /** @brief True when the model exposed no bones. */
+    bool empty() const { return nodes.empty(); }
+
+    /** @brief Index of the bone named @p name, or -1 when absent. */
+    int indexOf(const std::string& name) const
+    {
+        for (int i = 0; i < (int)nodes.size(); ++i)
+            if (nodes[i].name == name)
+                return i;
+        return -1;
+    }
+};
+
+/**
+ * @brief Enumerate a model's skinning bones as a hierarchy tree.
+ *
+ * Like getMeshBoneNames(), but keeps the parent/child relationships so an
+ * editor can present a checkbox tree and let one click select a whole subtree
+ * (e.g. both arms, or every finger). When the model exposes no skins at all,
+ * every node is included so a group can still be authored.
+ *
+ * @param inputPath Path to the source model file (FBX/GLB/…).
+ * @return The bone tree; empty (no nodes) on load failure.
+ */
+BoneTree getMeshBoneTree(const fs::path& inputPath);
+
+/**
  * @brief Determine the largest animation frame index present in a model file.
  *
  * Loads @p inputPath with Assimp and inspects every animation clip. For each

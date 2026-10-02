@@ -9,8 +9,11 @@
 #include <cctype>
 #include <cmath>
 #include <regex>
+#include <functional>
+#include <unordered_set>
 #include <GL/glew.h>
 #include <kemena/kanimator.h>
+#include <kemena/kanimationmask.h>
 #include <kemena/kskelanimation.h>
 #include <kemena/kdecal.h>
 
@@ -3796,17 +3799,21 @@ static void loadMeshSettings(const fs::path &metaPath,
 }
 
 // --- Bone masks (partial-animation groups) ---------------------------------
-// A named bone range authored on the mesh. The resolved `bones` list is what
-// the runtime turns into a kAnimationMask, letting animator states weight how
-// strongly they drive the region.
+// A named set of bones authored on the mesh. The explicit `bones` list is the
+// source of truth (the runtime turns it into a kAnimationMask). The hierarchy
+// tree edits it by whole subtrees; the body-part buttons add a region in one
+// click. Legacy files that stored only a start/end range are expanded on load.
 struct MaskGroupEdit
 {
-    std::string              name;
+    std::string              name;      ///< Group name (unique per mesh).
+    std::vector<std::string> bones;     ///< Explicit bone set (authoritative).
+    // Read-only legacy fields, kept so files that only stored a range still load.
     std::string              startBone;
     std::string              endBone;
-    std::vector<std::string> bones;
 };
 
+// Legacy helper: expands a start/end bone range over a flat, hierarchy-ordered
+// bone list. Retained so old assets that only stored a range still load.
 static std::vector<std::string> resolveBoneRange(const std::vector<std::string> &all,
                                                  const std::string &a, const std::string &b)
 {
@@ -3850,44 +3857,117 @@ static void loadMaskGroups(const fs::path &metaPath, std::vector<MaskGroupEdit> 
     }
 }
 
+// Flatten a BoneTree into a parent-before-child name list (hierarchy order).
+static std::vector<std::string> flattenBoneTree(const BoneTree &tree)
+{
+    std::vector<std::string> out;
+    std::function<void(int)> walk = [&](int idx)
+    {
+        if (idx < 0 || idx >= (int)tree.nodes.size())
+            return;
+        out.push_back(tree.nodes[idx].name);
+        for (int c : tree.nodes[idx].children)
+            walk(c);
+    };
+    for (int r : tree.roots)
+        walk(r);
+    return out;
+}
+
+static std::string toLowerCopy(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return s;
+}
+
+// Draws a tri-state checkbox (all / partial / none). Returns true when clicked.
+static bool triStateCheckbox(const char *id, bool all, bool partial)
+{
+    ImGui::PushID(id);
+    const float  s   = ImGui::GetFrameHeight();
+    const ImVec2 p   = ImGui::GetCursorScreenPos();
+    const bool   hit = ImGui::InvisibleButton("##hit", ImVec2(s, s));
+
+    ImDrawList  *dl  = ImGui::GetWindowDrawList();
+    const float  pad = 2.0f;
+    const ImVec2 a(p.x + pad, p.y + pad);
+    const ImVec2 b(p.x + s - pad, p.y + s - pad);
+    const ImU32  bg  = ImGui::GetColorU32(ImGuiCol_FrameBg);
+    const ImU32  bd  = ImGui::GetColorU32(ImGuiCol_Border);
+    const ImU32  fg  = ImGui::GetColorU32(ImGuiCol_CheckMark);
+
+    dl->AddRectFilled(a, b, bg, 2.0f);
+    dl->AddRect(a, b, bd, 2.0f);
+
+    const float w = b.x - a.x, h = b.y - a.y;
+    if (all)
+    {
+        dl->AddLine({ a.x + w * 0.18f, a.y + h * 0.52f },
+                    { a.x + w * 0.43f, a.y + h * 0.78f }, fg, 2.0f);
+        dl->AddLine({ a.x + w * 0.43f, a.y + h * 0.78f },
+                    { a.x + w * 0.84f, a.y + h * 0.22f }, fg, 2.0f);
+    }
+    else if (partial)
+    {
+        dl->AddLine({ a.x + w * 0.22f, a.y + h * 0.5f },
+                    { a.x + w * 0.78f, a.y + h * 0.5f }, fg, 2.0f);
+    }
+
+    ImGui::PopID();
+    return hit;
+}
+
+// Adds/removes every bone classified into one of @p parts (side-aware, so
+// "both arms" / "both legs" is a single call).
+static void applyBodyParts(std::unordered_set<std::string> &sel,
+                           const std::vector<std::string> &flatNames,
+                           std::initializer_list<kAvatarBodyPart> parts, bool add)
+{
+    for (const auto &n : flatNames)
+    {
+        const kAvatarBodyPart p = kAnimationMask::classifyBone(n);
+        bool match = false;
+        for (kAvatarBodyPart want : parts)
+            if (p == want) { match = true; break; }
+        if (!match)
+            continue;
+        if (add) sel.insert(n);
+        else     sel.erase(n);
+    }
+}
+
 /// @brief Draws the Bone Masks editor. Returns true when anything changed.
 static bool drawBoneMaskGroups(kGuiManager *gui, std::vector<MaskGroupEdit> &groups,
-                               const std::vector<std::string> &boneNames)
+                               const BoneTree &tree)
 {
     (void)gui;
-    bool changed = false;
+    bool         changed = false;
+    static char  search[128] = { 0 };
 
     ImGui::Spacing();
     ImGui::TextUnformatted("Bone Masks");
     ImGui::Separator();
     ImGui::TextWrapped(
-        "Group bones into named masks (e.g. LowerArm). Animator states can then "
-        "weight how strongly each state drives a group.");
+        "Group bones into named masks (e.g. UpperBody). Tick bones in the "
+        "hierarchy (a parent toggles its whole subtree) or use the body-part "
+        "buttons - both limbs at once. Animator states then weight how strongly "
+        "they drive a group.");
 
-    if (boneNames.empty())
+    if (tree.empty())
     {
         ImGui::TextDisabled("No bones found (import a skinned model first).");
         return false;
     }
 
-    // Combo items: index 0 = (none), then every bone name.
-    std::vector<const char *> items;
-    items.reserve(boneNames.size() + 1);
-    items.push_back("(none)");
-    for (const auto &b : boneNames)
-        items.push_back(b.c_str());
-
-    auto boneIndex = [&](const std::string &name) -> int {
-        for (int i = 0; i < (int)boneNames.size(); ++i)
-            if (boneNames[i] == name) return i + 1;
-        return 0;
-    };
+    const std::vector<std::string> flatNames = flattenBoneTree(tree);
+    const int                      n         = (int)tree.nodes.size();
 
     int removeIdx = -1;
-    for (int i = 0; i < (int)groups.size(); ++i)
+    for (int gi = 0; gi < (int)groups.size(); ++gi)
     {
-        MaskGroupEdit &g = groups[i];
-        ImGui::PushID(i);
+        MaskGroupEdit &g = groups[gi];
+        ImGui::PushID(gi);
 
         char nameBuf[128];
         strncpy_s(nameBuf, sizeof(nameBuf), g.name.c_str(), _TRUNCATE);
@@ -3898,29 +3978,177 @@ static bool drawBoneMaskGroups(kGuiManager *gui, std::vector<MaskGroupEdit> &gro
             changed = true;
         }
 
-        int si = boneIndex(g.startBone);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##maskstart", &si, items.data(), (int)items.size()))
+        // Working selection set (the explicit bone set, edited in place).
+        std::unordered_set<std::string> sel(g.bones.begin(), g.bones.end());
+
+        // Per-node selection flags for the tri-state display.
+        std::vector<char> nodeSel(n, 0);
+        for (int i = 0; i < n; ++i)
+            nodeSel[i] = sel.count(tree.nodes[i].name) ? 1 : 0;
+
+        // --- Body-part quick-add -----------------------------------------
+        ImGui::TextDisabled("Quick add:");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("All"))
         {
-            g.startBone = (si == 0) ? std::string() : boneNames[si - 1];
-            g.bones     = resolveBoneRange(boneNames, g.startBone, g.endBone);
-            changed     = true;
+            for (const auto &b : flatNames) sel.insert(b);
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("None"))
+        {
+            sel.clear();
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Spine"))
+        {
+            applyBodyParts(sel, flatNames, { kAvatarBodyPart::Root, kAvatarBodyPart::Spine }, true);
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Head"))
+        {
+            applyBodyParts(sel, flatNames, { kAvatarBodyPart::Head }, true);
+            changed = true;
+        }
+        if (ImGui::SmallButton("Arms L+R"))
+        {
+            applyBodyParts(sel, flatNames, { kAvatarBodyPart::LeftArm, kAvatarBodyPart::RightArm }, true);
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Hands L+R"))
+        {
+            applyBodyParts(sel, flatNames, { kAvatarBodyPart::LeftHand, kAvatarBodyPart::RightHand }, true);
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Legs L+R"))
+        {
+            applyBodyParts(sel, flatNames, { kAvatarBodyPart::LeftLeg, kAvatarBodyPart::RightLeg }, true);
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Feet L+R"))
+        {
+            applyBodyParts(sel, flatNames, { kAvatarBodyPart::LeftFoot, kAvatarBodyPart::RightFoot }, true);
+            changed = true;
         }
 
-        int ei = boneIndex(g.endBone);
+        // --- Search ------------------------------------------------------
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##maskend", &ei, items.data(), (int)items.size()))
+        ImGui::InputTextWithHint("##masksearch", "Search bones...", search, sizeof(search));
+        const std::string filter = toLowerCopy(search);
+
+        // --- Selection roll-up helpers -----------------------------------
+        auto subtreeAll = [&](auto &&self, int idx) -> bool
         {
-            g.endBone = (ei == 0) ? std::string() : boneNames[ei - 1];
-            g.bones   = resolveBoneRange(boneNames, g.startBone, g.endBone);
-            changed   = true;
+            if (!nodeSel[idx]) return false;
+            for (int c : tree.nodes[idx].children)
+                if (!self(self, c)) return false;
+            return true;
+        };
+        auto subtreeAny = [&](auto &&self, int idx) -> bool
+        {
+            if (nodeSel[idx]) return true;
+            for (int c : tree.nodes[idx].children)
+                if (self(self, c)) return true;
+            return false;
+        };
+        auto setSubtree = [&](auto &&self, int idx, bool on) -> void
+        {
+            if (on) sel.insert(tree.nodes[idx].name);
+            else    sel.erase(tree.nodes[idx].name);
+            nodeSel[idx] = on ? 1 : 0;
+            for (int c : tree.nodes[idx].children)
+                self(self, c, on);
+        };
+
+        ImGui::BeginChild("##bonetree", ImVec2(-FLT_MIN, 190.0f), true);
+
+        if (!filter.empty())
+        {
+            // Flat filtered list: only bones whose name matches the search.
+            bool anyMatch = false;
+            for (int i = 0; i < n; ++i)
+            {
+                if (toLowerCopy(tree.nodes[i].name).find(filter) == std::string::npos)
+                    continue;
+                anyMatch = true;
+                ImGui::PushID(i);
+                bool on = nodeSel[i] != 0;
+                if (ImGui::Checkbox(tree.nodes[i].name.c_str(), &on))
+                {
+                    if (on) sel.insert(tree.nodes[i].name);
+                    else    sel.erase(tree.nodes[i].name);
+                    nodeSel[i] = on ? 1 : 0;
+                    changed = true;
+                }
+                ImGui::PopID();
+            }
+            if (!anyMatch)
+                ImGui::TextDisabled("No bones match the search.");
         }
+        else
+        {
+            // Hierarchy tree with tri-state parent checkboxes.
+            std::function<void(int)> drawNode = [&](int idx)
+            {
+                const BoneTreeNode &node = tree.nodes[idx];
+                const bool all = subtreeAll(subtreeAll, idx);
+                const bool any = subtreeAny(subtreeAny, idx);
 
-        ImGui::TextDisabled("%d bone(s): %s", (int)g.bones.size(),
-                            g.bones.empty() ? "-" : g.bones.front().c_str());
+                ImGui::PushID(idx);
+                if (triStateCheckbox("##chk", all, any))
+                {
+                    setSubtree(setSubtree, idx, !all);
+                    changed = true;
+                }
+                ImGui::SameLine();
 
+                if (node.children.empty())
+                {
+                    ImGui::TextUnformatted(node.name.c_str());
+                }
+                else if (ImGui::TreeNodeEx("##node", ImGuiTreeNodeFlags_None,
+                                           "%s", node.name.c_str()))
+                {
+                    for (int c : node.children)
+                        drawNode(c);
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            };
+            for (int r : tree.roots)
+                drawNode(r);
+        }
+        ImGui::EndChild();
+
+        // Normalise back to hierarchy order (unknown-but-selected bones kept).
+        std::vector<std::string> ordered;
+        for (const auto &nm : flatNames)
+            if (sel.count(nm))
+                ordered.push_back(nm);
+        for (const auto &nm : g.bones)
+            if (sel.count(nm) &&
+                std::find(ordered.begin(), ordered.end(), nm) == ordered.end())
+                ordered.push_back(nm);
+
+        bool sameSet = (ordered.size() == g.bones.size());
+        if (sameSet)
+            for (const auto &b : ordered)
+                if (std::find(g.bones.begin(), g.bones.end(), b) == g.bones.end())
+                { sameSet = false; break; }
+
+        g.bones = std::move(ordered);
+        if (!sameSet)
+            changed = true;
+
+        ImGui::TextDisabled("%d bone(s) selected", (int)g.bones.size());
+        ImGui::SameLine();
         if (ImGui::SmallButton("Remove Group"))
-            removeIdx = i;
+            removeIdx = gi;
 
         ImGui::Separator();
         ImGui::PopID();
@@ -3955,7 +4183,7 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     static int animCompression = 0;
     static bool dirty = false;
     static std::vector<MaskGroupEdit> maskGroups;
-    static std::vector<std::string>   boneNames;
+    static BoneTree                   boneTree;
 
     if (asset.uuid != lastUuid)
     {
@@ -3964,13 +4192,22 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         loadMeshSettings(asset.metaPath, scaleFactor, meshCompression, generateCollider, tangents, generateLightmapUV, importAnimation, animCompression);
         loadMaskGroups(asset.metaPath, maskGroups);
 
-        // Bone list for the range pickers, read from the source model.
-        boneNames.clear();
+        // Bone hierarchy for the checkbox tree, read from the source model.
+        boneTree = BoneTree{};
         if (mgr)
         {
             auto fit = mgr->fileMap.find(asset.uuid);
             if (fit != mgr->fileMap.end())
-                boneNames = getMeshBoneNames(mgr->projectPath / "Assets" / fit->second.path);
+                boneTree = getMeshBoneTree(mgr->projectPath / "Assets" / fit->second.path);
+        }
+
+        // Back-compat: expand legacy start/end ranges into the explicit set.
+        if (!boneTree.empty())
+        {
+            const std::vector<std::string> names = flattenBoneTree(boneTree);
+            for (auto &g : maskGroups)
+                if (g.bones.empty() && (!g.startBone.empty() || !g.endBone.empty()))
+                    g.bones = resolveBoneRange(names, g.startBone, g.endBone);
         }
     }
 
@@ -4027,7 +4264,7 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     gui->spacing();
 
     // Partial-animation bone masks authored on this mesh.
-    if (drawBoneMaskGroups(gui, maskGroups, boneNames))
+    if (drawBoneMaskGroups(gui, maskGroups, boneTree))
         dirty = true;
     gui->spacing();
 
@@ -4051,10 +4288,8 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         for (const auto &g : maskGroups)
         {
             nlohmann::json gj;
-            gj["name"]      = g.name;
-            gj["startBone"] = g.startBone;
-            gj["endBone"]   = g.endBone;
-            gj["bones"]     = g.bones;
+            gj["name"]  = g.name;
+            gj["bones"] = g.bones;   // explicit set is authoritative
             masksArr.push_back(gj);
         }
         j["boneMasks"] = masksArr;
