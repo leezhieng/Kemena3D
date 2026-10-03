@@ -35,6 +35,20 @@ static ImVec2 operator+(ImVec2 a, ImVec2 b) { return { a.x + b.x, a.y + b.y }; }
 static ImVec2 operator-(ImVec2 a, ImVec2 b) { return { a.x - b.x, a.y - b.y }; }
 static ImVec2 operator*(ImVec2 a, float s)  { return { a.x * s,   a.y * s   }; }
 
+// Property row helper for the animator inspectors: draws a field caption on the
+// left, then continues on the same line so the input widget sits to its right.
+// This replaces ImGui's default right-side labels and the stacked
+// label-above-widget layout previously used for state / transition / blend-tree
+// fields, keeping every caption on the left, on the same line as its input.
+static constexpr float PROP_LABEL_W = 120.0f;
+static void propLabelLeft(const char* label)
+{
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(PROP_LABEL_W);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
 static const char* animVarTypeName(AnimVariableType t)
 {
     switch (t)
@@ -1396,10 +1410,10 @@ void PanelAnimator::drawSelectedStateInspector()
     bool isDefaultState = state->isDefault;
     char nameBuf[128];
     strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Name");
     if (isDefaultState)
         ImGui::BeginDisabled();
-    if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+    if (ImGui::InputText("##name", nameBuf, sizeof(nameBuf)))
     {
         state->name = nameBuf;
         graph.dirty = true;
@@ -1408,7 +1422,7 @@ void PanelAnimator::drawSelectedStateInspector()
         ImGui::EndDisabled();
 
     // Assign animation via a picker window (same pattern as "Select Texture").
-    ImGui::Spacing();
+    propLabelLeft("Animation");
     {
         std::vector<std::string> animUuids, animNames;
         collectAnimationAssets(animUuids, animNames);
@@ -1464,14 +1478,13 @@ void PanelAnimator::drawSelectedStateInspector()
     }
 
     // Speed
-    ImGui::Spacing();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::DragFloat("Speed", &state->speed, 0.05f, 0.0f, 10.0f))
+    propLabelLeft("Speed");
+    if (ImGui::DragFloat("##speed", &state->speed, 0.05f, 0.0f, 10.0f))
         graph.dirty = true;
 
     // Loop
-    ImGui::Spacing();
-    if (ImGui::Checkbox("Loop", &state->loop))
+    propLabelLeft("Loop");
+    if (ImGui::Checkbox("##loop", &state->loop))
         graph.dirty = true;
 
     // Default state indicator / set as default
@@ -2154,7 +2167,8 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         }
     }
 
-    ImGui::Checkbox("Lit", &previewLightOn);
+    propLabelLeft("Lit");
+    ImGui::Checkbox("##lit", &previewLightOn);
     ImGui::SameLine();
     if (ImGui::Button("Reset View"))
     {
@@ -2392,14 +2406,13 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Fields use a label-on-its-own-line layout: the previous full-width
-    // widgets (-FLT_MIN) left no room for their right-hand captions, which
-    // were drawn outside the panel and clipped.
+    // Fields use a left-aligned caption with the input on the same line
+    // (propLabelLeft): captions stay inside the panel instead of being drawn
+    // to the right of, or above, the widget.
     char nameBuf[128];
     strncpy_s(nameBuf, state->name.c_str(), sizeof(nameBuf));
     nameBuf[sizeof(nameBuf) - 1] = '\0';
-    ImGui::TextUnformatted("Name");
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Name");
     if (ImGui::InputText("##blendname", nameBuf, sizeof(nameBuf)))
     {
         state->name = nameBuf;
@@ -2407,11 +2420,9 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     }
 
     // Blend type: a single axis (1D) or a plane (2D).
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Blend Type");
     const char* blendTypes[] = { "1D", "2D" };
     int bt = (int)state->blendType;
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Blend Type");
     if (ImGui::Combo("##blendtype", &bt, blendTypes, IM_ARRAYSIZE(blendTypes)))
     {
         state->blendType = (AnimBlendType)bt;
@@ -2431,9 +2442,8 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     };
 
     ImGui::Spacing();
-    ImGui::TextUnformatted("Parameter X");
     int px = paramIndex(state->blendParamX);
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Parameter X");
     if (ImGui::Combo("##paramx", &px, floatVars.data(), (int)floatVars.size()))
     {
         state->blendParamX = (px == 0) ? std::string() : std::string(floatVars[px]);
@@ -2442,9 +2452,8 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 
     if (state->blendType == AnimBlendType::TwoD)
     {
-        ImGui::TextUnformatted("Parameter Y");
         int py = paramIndex(state->blendParamY);
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        propLabelLeft("Parameter Y");
         if (ImGui::Combo("##paramy", &py, floatVars.data(), (int)floatVars.size()))
         {
             state->blendParamY = (py == 0) ? std::string() : std::string(floatVars[py]);
@@ -2454,9 +2463,8 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
 
     // Authoring range for the diagram axes.
     ImGui::Spacing();
-    ImGui::TextUnformatted("Axis Range X");
     float rangeX[2] = { state->blendRangeXMin, state->blendRangeXMax };
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Axis Range X");
     if (ImGui::DragFloat2("##rangex", rangeX, 0.05f))
     {
         state->blendRangeXMin = rangeX[0];
@@ -2465,9 +2473,8 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     }
     if (state->blendType == AnimBlendType::TwoD)
     {
-        ImGui::TextUnformatted("Axis Range Y");
         float rangeY[2] = { state->blendRangeYMin, state->blendRangeYMax };
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        propLabelLeft("Axis Range Y");
         if (ImGui::DragFloat2("##rangey", rangeY, 0.05f))
         {
             state->blendRangeYMin = rangeY[0];
@@ -2485,18 +2492,16 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     ImGui::TextUnformatted("Blending");
     ImGui::Separator();
 
-    ImGui::TextUnformatted("Blend Mode");
     const char* blendModes[] = { "Instant", "Cross Fade" };
     int mode = (int)state->blendMode;
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Blend Mode");
     if (ImGui::Combo("##blendtreemode", &mode, blendModes, IM_ARRAYSIZE(blendModes)))
     {
         state->blendMode = (AnimBlendMode)mode;
         graph.dirty = true;
     }
 
-    ImGui::TextUnformatted("Blend Duration");
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    propLabelLeft("Blend Duration");
     if (ImGui::DragFloat("##blendtreedur", &state->blendDuration, 0.01f, 0.0f, 10.0f, "%.2fs"))
         graph.dirty = true;
 
@@ -2504,12 +2509,12 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     ImGui::TextUnformatted("Timing");
     ImGui::Separator();
 
-    if (ImGui::Checkbox("Has Exit Time", &state->hasExitTime))
+    propLabelLeft("Has Exit Time");
+    if (ImGui::Checkbox("##hasExitTime", &state->hasExitTime))
         graph.dirty = true;
     if (state->hasExitTime)
     {
-        ImGui::TextUnformatted("Exit Time");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        propLabelLeft("Exit Time");
         if (ImGui::DragFloat("##blendtreeexit", &state->exitTime, 0.01f, 0.0f, 100.0f, "%.2fs"))
             graph.dirty = true;
     }
@@ -2552,8 +2557,7 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
             blendPreviewValues[varName] = value;
         }
 
-        ImGui::TextUnformatted(varName.c_str());
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        propLabelLeft(varName.c_str());
         if (ImGui::SliderFloat("##paramval", &value, lo, hi, "%.3f"))
         {
             blendPreviewValues[varName] = value;
@@ -2609,8 +2613,7 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
             if (candIds[c] == child.stateId) cur = (int)c + 1;
         }
 
-        ImGui::TextUnformatted("State");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        propLabelLeft("State");
         if (ImGui::Combo("##motionstate", &cur, labels.data(), (int)labels.size()))
         {
             child.stateId = (cur == 0) ? -1 : candIds[cur - 1];
@@ -2620,8 +2623,7 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         if (state->blendType == AnimBlendType::TwoD)
         {
             float xy[2] = { child.posX, child.posY };
-            ImGui::TextUnformatted("Position (X, Y)");
-            ImGui::SetNextItemWidth(-FLT_MIN);
+            propLabelLeft("Position (X, Y)");
             if (ImGui::DragFloat2("##motionpos", xy, 0.05f))
             {
                 child.posX = xy[0];
@@ -2631,14 +2633,12 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         }
         else
         {
-            ImGui::TextUnformatted("Threshold");
-            ImGui::SetNextItemWidth(-FLT_MIN);
+            propLabelLeft("Threshold");
             if (ImGui::DragFloat("##motionthresh", &child.threshold, 0.05f))
                 graph.dirty = true;
         }
 
-        ImGui::TextUnformatted("Speed");
-        ImGui::SetNextItemWidth(-FLT_MIN);
+        propLabelLeft("Speed");
         if (ImGui::DragFloat("##motionspeed", &child.speed, 0.05f, 0.0f, 10.0f))
             graph.dirty = true;
 
@@ -2737,27 +2737,28 @@ void PanelAnimator::drawSelectedTransitionInspector()
 
     const char* blendModes[] = { "Instant", "Cross Fade" };
     int mode = (int)trans->blendMode;
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("Blend Mode", &mode, blendModes, IM_ARRAYSIZE(blendModes)))
+    propLabelLeft("Blend Mode");
+    if (ImGui::Combo("##blendmode", &mode, blendModes, IM_ARRAYSIZE(blendModes)))
     {
         trans->blendMode = (AnimBlendMode)mode;
         graph.dirty = true;
     }
 
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::DragFloat("Blend Duration", &trans->blendDuration, 0.01f, 0.0f, 10.0f, "%.2fs"))
+    propLabelLeft("Blend Duration");
+    if (ImGui::DragFloat("##blendduration", &trans->blendDuration, 0.01f, 0.0f, 10.0f, "%.2fs"))
         graph.dirty = true;
 
     ImGui::Spacing();
     ImGui::TextUnformatted("Timing");
     ImGui::Separator();
 
-    if (ImGui::Checkbox("Has Exit Time", &trans->hasExitTime))
+    propLabelLeft("Has Exit Time");
+    if (ImGui::Checkbox("##hasExitTime", &trans->hasExitTime))
         graph.dirty = true;
     if (trans->hasExitTime)
     {
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::DragFloat("Exit Time", &trans->exitTime, 0.01f, 0.0f, 100.0f, "%.2fs"))
+        propLabelLeft("Exit Time");
+        if (ImGui::DragFloat("##exittime", &trans->exitTime, 0.01f, 0.0f, 100.0f, "%.2fs"))
             graph.dirty = true;
     }
 

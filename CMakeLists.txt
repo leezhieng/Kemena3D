@@ -39,17 +39,14 @@ set(SOURCES
     resources.rc
 )
 
-# Miniaudio custom decoder backends (libvorbis, libopus).
-# Compiled directly so their symbols (ma_decoding_backend_libvorbis,
-# ma_decoding_backend_libopus) are always available regardless of
-# the SDK build state.  The audio codec libs (ogg, vorbis, opus, etc.)
-# are already linked below.
-set(MINIAUDIO_DECODER_SRC
-    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libvorbis/miniaudio_libvorbis.c"
-    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libopus/miniaudio_libopus.c"
-)
-
-add_executable(${PROJECT_NAME} ${SOURCES} ${MINIAUDIO_DECODER_SRC})
+# Miniaudio custom decoder backends (libvorbis, libopus) are owned and
+# compiled by the Kemena3D SDK into Kemena3DSDK.lib, not by the editor.
+# The editor consumes the exported symbols (ma_decoding_backend_libvorbis,
+# ma_decoding_backend_libopus) through the SDK's installed headers, so the
+# decoder sources must NOT be compiled here (doing so duplicated the
+# definitions and risked LNK2005).  The audio codec libs (ogg, vorbis, opus,
+# etc.) are still linked below because Kemena3DSDK.lib references them.
+add_executable(${PROJECT_NAME} ${SOURCES})
 
 # ---------------------------------------------------------------------------
 # DirectX 11 backend
@@ -101,9 +98,13 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include/src>"
     "$<$<CONFIG:Debug>:${KEMENA3D_SOURCE_DIR}/Dependencies/assimp/build_Debug/include>"
     "$<$<CONFIG:Release>:${KEMENA3D_SOURCE_DIR}/Dependencies/assimp/build_Release/include>"
-    # Miniaudio custom decoder headers (libvorbis, libopus)
-    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libvorbis"
-    "${KEMENA3D_SOURCE_DIR}/Dependencies/miniaudio/extras/decoders/libopus"
+    # Miniaudio custom decoder headers (libvorbis, libopus).  These are shipped
+    # by the SDK output under include/extras/decoders/; the matching
+    # implementations are compiled into Kemena3DSDK.lib.
+    "$<$<CONFIG:Debug>:${KEMENA3D_SDK_DIR}/Debug/include/extras/decoders/libvorbis>"
+    "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include/extras/decoders/libvorbis>"
+    "$<$<CONFIG:Debug>:${KEMENA3D_SDK_DIR}/Debug/include/extras/decoders/libopus>"
+    "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include/extras/decoders/libopus>"
     # Audio codec headers (ogg, vorbis, opus, opusfile)
     "${KEMENA3D_SOURCE_DIR}/Dependencies/ogg/include"
     "${KEMENA3D_SOURCE_DIR}/Dependencies/vorbis/include"

@@ -5378,9 +5378,12 @@ void PanelInspector::drawAnimationPreview(const PanelProject::SelectedProjectAss
     // -----------------------------------------------------------------------
     // Layout
     // -----------------------------------------------------------------------
-    float avail = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize;
+    // Left-align the .animation interface. It keeps the Inspector's default
+    // window padding (the same value every other asset type uses) but drops
+    // the horizontal centering margin so the content hugs the left edge.
+    float avail = ImGui::GetContentRegionAvail().x;
     float sz = std::min(std::max(avail, 1.0f), 256.0f);
-    float ox = std::max((avail - sz) * 0.5f, 0.0f);
+    float ox = 0.0f;
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ox);
@@ -5790,6 +5793,9 @@ void PanelInspector::draw(bool &opened)
     if (!manager->projectOpened)
         gui->beginDisabled(true);
 
+    // The .animation inspector keeps the default Inspector window padding like
+    // every other asset type; its content is merely left-aligned (see
+    // drawAnimationPreview) rather than horizontally centered.
     gui->windowStart("Inspector", &opened);
     focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
