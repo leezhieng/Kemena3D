@@ -665,8 +665,13 @@ AnimState* PanelAnimator::findAnyState()
 
 AnimState* PanelAnimator::findDefaultState()
 {
+    // A blend tree can be the entry state too (it is parameter-driven), so it
+    // must satisfy the "exactly one Default State must exist" rule. Only
+    // checking plain states made the editor re-add a plain Default State
+    // whenever the user set a blend tree as default, leaving two defaults and
+    // sending the runtime into the idle clip instead of the blend tree.
     for (auto& s : graph.states)
-        if (s.isState() && s.isDefault) return &s;
+        if ((s.isState() || s.isBlendTree()) && s.isDefault) return &s;
     return nullptr;
 }
 

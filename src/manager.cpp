@@ -10554,6 +10554,17 @@ static AnimState *findDefaultAnimatorState(AnimatorGraph &graph)
     // default is silently skipped and the controller boots into some other
     // state (so its parameters, e.g. front/right, never drive anything).
     auto playable = [](const AnimState &s) { return s.isState() || s.isBlendTree(); };
+
+    // Prefer a default blend tree over a default plain clip state. A
+    // parameter-driven blend tree is the gameplay entry state; the editor used
+    // to enforce the default flag only on plain states, so a controller whose
+    // blend tree was marked default can also carry a stale plain "Default
+    // State" still flagged. Returning the first match in that case would boot
+    // into the idle clip and leave front/right driving nothing.
+    for (auto &s : graph.states)
+        if (s.isBlendTree() && s.isDefault)
+            return &s;
+
     for (auto &s : graph.states)
         if (playable(s) && s.isDefault)
             return &s;
