@@ -354,7 +354,13 @@ void PanelGame::pressStop()
 void PanelGame::draw(bool &isOpened)
 {
     if (!isOpened)
+    {
+        // Never report a hidden panel as focused/hovered: the main loop reads
+        // these to pick the active Hierarchy context.
+        hovered = false;
+        focused = false;
         return;
+    }
 
     bool enabled = manager->projectOpened;
     bool isStopped = (playState == GamePlayState::Stopped);
@@ -365,6 +371,11 @@ void PanelGame::draw(bool &isOpened)
     // Disable keyboard/gamepad navigation inside the game panel so the arrow
     // keys (and Tab) never move focus between the Play/Pause/Stop buttons.
     gui->windowStart("Game", &isOpened, ImGuiWindowFlags_NoNavInputs);
+
+    // Publish focus/hover so the main loop can treat the Game panel like the
+    // World panel for the active Hierarchy context (see main.cpp).
+    hovered = gui->isWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+    focused = gui->isWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
     // ---- Toolbar: status (right) + transport buttons (centred) -------------
     // While the game is playing, sample a live FPS readout (frames counted over

@@ -1880,7 +1880,23 @@ void Manager::drawImportPopup(PanelConsole *console)
                             if (task.success)
                                 applyAssetReload(task.uuid);
                             reimportReloadPending.erase(pit);
+                            task.reloadHandled = true;
                         }
+                    }
+
+                    // A newly imported asset that the currently open world/scene
+                    // already references — most commonly a mesh whose converted
+                    // .glb did not exist when the world was loaded, leaving a
+                    // placeholder object behind — is pushed back into the live
+                    // scene here, once its conversion has actually finished. The
+                    // completion loop re-runs every frame while this popup is
+                    // shown, so reloadHandled keeps the relatedness scan and the
+                    // refresh to a single attempt per task.
+                    if (task.success && !task.reloadHandled && !task.uuid.empty())
+                    {
+                        task.reloadHandled = true;
+                        if (isAssetReferencedByOpenScene(task.uuid))
+                            applyAssetReload(task.uuid);
                     }
                 }
 
@@ -2314,12 +2330,22 @@ kObject *Manager::findObjectByUuid(const kString &uuid)
         return find(s->getRootNode());
     };
 
-    // Fallback: traverse the game scene graph.
+    // Fallback: traverse the scene graph of the active editing context first —
+    // the prefab world while the Prefab panel drives the Hierarchy, the game
+    // world otherwise — then the other one so cross-context lookups (e.g. an
+    // object referenced while World is focused during prefab editing) still
+    // resolve.
+    if (hierarchyShowsPrefab)
+    {
+        if (kObject *found = findInScene(prefabScene, uuid))
+            return found;
+        return findInScene(scene, uuid);
+    }
+
     if (kObject *found = findInScene(scene, uuid))
         return found;
 
-    // Also search the prefab scene when prefab editing is active (objects
-    // in the prefab world are separate from the game world's scene graph).
+    // Objects in the prefab world are separate from the game world's graph.
     if (prefabEditing && prefabScene)
         return findInScene(prefabScene, uuid);
 
@@ -5480,12 +5506,12 @@ kString Manager::promptWorldSavePath()
     return p.string();
 }
 
-void Manager::applyDefaultSkybox(kScene *target)
+// Builds the bundled default skybox using a specific asset manager. Kept as a
+// free helper so both the game/preview worlds (game asset manager) and the
+// prefab editor (prefab asset manager) can build one in the correct GL context.
+static void buildDefaultSkybox(kAssetManager *am, kScene *target)
 {
-    if (!target)
-        return;
-    kAssetManager *am = getAssetManager();
-    if (!am)
+    if (!am || !target)
         return;
 
     kShader *skyShader = am->loadGlslFromResource("SHADER_SKYBOX");
@@ -5501,6 +5527,39 @@ void Manager::applyDefaultSkybox(kScene *target)
     kMesh *skyMesh = kMeshGenerator::generateCube();
     skyMesh->setMaterial(skyMat);
     target->setSkybox(skyMat, skyMesh);
+}
+
+void Manager::applyDefaultSkybox(kScene *target)
+{
+    buildDefaultSkybox(getAssetManager(), target);
+}
+
+void Manager::applyDefaultSkyboxToPrefab()
+{
+    if (!prefabScene || !prefabAssetManager)
+        return;
+
+    // The prefab editor's shaders/textures/VAOs belong to its own driver
+    // context. Building the skybox with the *game* asset manager (as
+    // applyDefaultSkybox would) yields resource IDs that are invalid in the
+    // prefab context, so the sky silently fails to render. Switch to the prefab
+    // driver and use the prefab asset manager instead.
+    kDriver *savedDriver = kDriver::getCurrent();
+    bool switched = false;
+    if (prefabRenderer && prefabRenderer->getDriver())
+    {
+        prefabRenderer->getDriver()->makeCurrent(window);
+        kDriver::setCurrent(prefabRenderer->getDriver());
+        switched = true;
+    }
+
+    buildDefaultSkybox(prefabAssetManager, prefabScene);
+
+    if (switched && savedDriver)
+    {
+        savedDriver->makeCurrent(window);
+        kDriver::setCurrent(savedDriver);
+    }
 }
 
 void Manager::saveWorld()
@@ -6660,8 +6719,17 @@ void Manager::saveOpenEditorFiles(const fs::path &workspacePath)
     if (showPanel.guiEditor && panelGui)
         guiFile = panelGui->getFilePath();
 
+    // The prefab editor is a dedicated sub-editor: remember which .prefab was
+    // open so reopening the project also restores the Prefab panel (the panel
+    // is auto-hidden unless a prefab is being edited, so its visibility alone
+    // is not enough to bring it back).
+    std::string prefabFile;
+    if (prefabEditing && !editingPrefabPath.empty())
+        prefabFile = editingPrefabPath.string();
+
     if (logicGraphFile.empty() && animatorFile.empty() &&
-        shaderGraphFile.empty() && animationFile.empty() && guiFile.empty())
+        shaderGraphFile.empty() && animationFile.empty() && guiFile.empty() &&
+        prefabFile.empty())
         return;
 
     // Store paths relative to the project so the workspace stays portable.
@@ -6687,6 +6755,7 @@ void Manager::saveOpenEditorFiles(const fs::path &workspacePath)
     if (!shaderGraphFile.empty()) f << "ShaderGraphFile=" << relPath(shaderGraphFile) << "\n";
     if (!animationFile.empty())   f << "CinematicFile="   << relPath(animationFile)   << "\n";
     if (!guiFile.empty())         f << "GuiFile="         << relPath(guiFile)         << "\n";
+    if (!prefabFile.empty())      f << "PrefabFile="      << relPath(prefabFile)      << "\n";
     f << "\n";
     f.close();
 }
@@ -6701,6 +6770,7 @@ void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
         return;
 
     std::string logicGraphFile, animatorFile, shaderGraphFile, animationFile, guiFile;
+    std::string prefabFile;
     bool inOpenFiles = false;
     std::string line;
     while (std::getline(f, line))
@@ -6733,6 +6803,7 @@ void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
         else if (key == "ShaderGraphFile") shaderGraphFile = val;
         else if (key == "CinematicFile")   animationFile   = val;
         else if (key == "GuiFile")         guiFile         = val;
+        else if (key == "PrefabFile")      prefabFile      = val;
     }
     f.close();
 
@@ -6776,6 +6847,14 @@ void Manager::restoreOpenEditorFiles(const fs::path &workspacePath)
         if (!guiFile.empty())
         {
             fs::path p = resolvePath(guiFile);
+            if (fs::exists(p))
+                panelProject->onFileDoubleClicked(p.string());
+        }
+        // Re-open the prefab editor last: this recreates the Prefab panel and
+        // sets prefabEditing, which the panel's auto-show logic keys off.
+        if (!prefabFile.empty())
+        {
+            fs::path p = resolvePath(prefabFile);
             if (fs::exists(p))
                 panelProject->onFileDoubleClicked(p.string());
         }
@@ -6936,6 +7015,31 @@ kObject *Manager::instantiatePrefabInScene(const fs::path &prefabPath)
     return root;
 }
 
+// Reads the optional top-level "settings" object from a .prefab file. The
+// template itself is loaded through kPrefab (which ignores this field), so the
+// editor reads it separately and kPrefab's {type,uuid,name,root} format stays
+// untouched.
+static bool readPrefabSettingsJson(const fs::path &path, nlohmann::json &out)
+{
+    std::ifstream f(path);
+    if (!f.is_open())
+        return false;
+    try
+    {
+        nlohmann::json data = nlohmann::json::parse(f);
+        if (data.contains("settings") && data["settings"].is_object())
+        {
+            out = data["settings"];
+            return true;
+        }
+    }
+    catch (const std::exception &)
+    {
+        // Malformed file — caller falls back to defaults.
+    }
+    return false;
+}
+
 void Manager::editPrefab(const fs::path &prefabPath)
 {
     if (!projectOpened)
@@ -6987,8 +7091,9 @@ void Manager::editPrefab(const fs::path &prefabPath)
                                     prefabScene, prefabWorld, am,
                                     projectPath, editorCamera, nullptr);
 
-    // Apply skybox — its cube mesh VAO must also live in the prefab context.
-    applyDefaultSkybox(prefabScene);
+    // Apply skybox — its cube mesh VAO, shader and cubemap must all live in the
+    // prefab context, so build it with the prefab asset manager/driver.
+    applyDefaultSkyboxToPrefab();
 
     // Add a default sun light to the prefab scene so objects are lit.
     // Name starts with '_' so the hierarchy panel hides it.
@@ -7000,6 +7105,7 @@ void Manager::editPrefab(const fs::path &prefabPath)
             kVec3(1.0f, 1.0f, 1.0f));
         sun->setName("_SunLight_");
         sun->setPower(1.5f);
+        prefabSunLight = sun;
     }
 
     // Duplicate the editor grid scene for the prefab panel.
@@ -7019,6 +7125,14 @@ void Manager::editPrefab(const fs::path &prefabPath)
         gridMesh->setMaterial(gridMat);
     }
 
+    // Rebuild the runtime materials for the prefab subtree now that the prefab
+    // driver is current. Unlike a world load, the prefab scene lives in its own
+    // kWorld, so reapplyStoredMaterials() — which only walks the game world —
+    // never touched it. Without this every prefab mesh kept the default
+    // material applied at load and its assigned .mat was never realized, which
+    // is why materials did not render in the Prefab panel.
+    reapplyStoredMaterialsInWorld(prefabWorld);
+
     // Restore the previously-current driver so the caller (ImGui / main loop)
     // continues to operate with the correct GL context.
     if (savedDriver)
@@ -7035,8 +7149,29 @@ void Manager::editPrefab(const fs::path &prefabPath)
     prefabCamera->setName("__PrefabEditCamera__");
     prefabWorld->addCamera(prefabCamera, prefabCamera->getUuid());
 
+    // Load any persisted prefab scene settings (lighting / sky / sky ambient /
+    // preview camera) and apply them to the freshly-built prefab scene. Older
+    // prefabs have no "settings" block, in which case the defaults are kept.
+    prefabSceneSettings = PrefabSceneSettings();
+    {
+        nlohmann::json savedSettings;
+        if (readPrefabSettingsJson(prefabPath, savedSettings))
+            prefabSceneSettingsFromJson(savedSettings);
+    }
+    applyPrefabSceneSettings();
+
+    // Baseline snapshots back the Apply/Revert dirty indicator. Capturing them
+    // now guarantees the freshly-opened prefab starts out "clean".
+    prefabBaselineRoot = prefabRoot ? prefabRoot->serialize() : nlohmann::json();
+    prefabBaselineSettings = prefabSceneSettingsToJson();
+    prefabEditorModified = false;
+
     prefabEditing = true;
     hierarchyShowsPrefab = true; // hierarchy now shows prefab scene graph
+    // Make the Prefab viewport the sticky active context immediately, so the
+    // Hierarchy/Inspector show the prefab on the very first frame rather than
+    // waiting for the user to click the panel.
+    lastFocusedPanel = FocusedPanel::Prefab;
 
     // No auto-selection — the user can click to select objects as needed.
     prefabSelectedObjects.clear();
@@ -7056,11 +7191,10 @@ void Manager::closePrefabEditor(bool saveChanges)
 
     if (saveChanges && prefabRoot)
     {
-        // Serialize the (possibly-edited) root subtree back into the prefab JSON
-        // and write the .prefab file. UUIDs are preserved because we never
-        // re-randomized them on load.
-        editingPrefab.setRootJson(prefabRoot->serialize());
-        savedSuccessfully = editingPrefab.saveToFile(editingPrefabPath.string());
+        // Serialize the (possibly-edited) root subtree and write the .prefab
+        // file together with the scene settings (lighting / sky / camera).
+        // UUIDs are preserved because we never re-randomized them on load.
+        savedSuccessfully = saveEditingPrefabFile();
         savedPrefabUuid = editingPrefab.getUuid();
     }
 
@@ -7107,8 +7241,12 @@ void Manager::closePrefabEditor(bool saveChanges)
     }
 
     prefabRoot = nullptr;
+    prefabSunLight = nullptr; // owned + freed with the scene's graph above
     prefabEditing = false;
     hierarchyShowsPrefab = false; // hierarchy returns to game world scene graph
+    // The Prefab viewport is gone; hand the active context back to the scene so
+    // the Inspector does not keep showing prefab-specific content.
+    lastFocusedPanel = FocusedPanel::Scene;
 
     // Clear prefab-specific selection so nothing leaks to the world panel.
     prefabSelectedObjects.clear();
@@ -7124,10 +7262,255 @@ void Manager::closePrefabEditor(bool saveChanges)
     // refreshAllPrefabInstances; per-instance subtree edits are dropped, since
     // those are only kept until the user clicks "Apply to Prefab".
     if (savedSuccessfully && !savedPrefabUuid.empty())
-        refreshAllPrefabInstances(savedPrefabUuid);
+    {
+        clearPrefabTemplateCache();
+        reloadOpenWorldForPrefab(savedPrefabUuid);
+    }
 
     if (panelHierarchy)
         panelHierarchy->refreshList();
+}
+
+// ---------------------------------------------------------------------------
+// Prefab editor scene settings (lighting / sky / sky ambient / preview camera)
+// ---------------------------------------------------------------------------
+
+nlohmann::json Manager::prefabSceneSettingsToJson() const
+{
+    const PrefabSceneSettings &s = prefabSceneSettings;
+    return nlohmann::json{
+        {"lighting", {
+            {"sun_enabled", s.sunEnabled},
+            {"sun_power", s.sunPower},
+            {"sun_diffuse", {s.sunDiffuse.x, s.sunDiffuse.y, s.sunDiffuse.z}},
+            {"sun_pitch", s.sunPitch},
+            {"sun_yaw", s.sunYaw},
+            {"ambient", {s.ambientColor.x, s.ambientColor.y, s.ambientColor.z}},
+        }},
+        {"sky", {
+            {"skybox_enabled", s.skyboxEnabled},
+        }},
+        {"sky_ambient", {
+            {"enabled", s.skyAmbientEnabled},
+            {"strength", s.skyAmbientStrength},
+        }},
+        {"preview_camera", {
+            {"fov", s.camFOV},
+            {"near", s.camNearClip},
+            {"far", s.camFarClip},
+            {"orbit_distance", s.camOrbitDistance},
+        }},
+    };
+}
+
+void Manager::prefabSceneSettingsFromJson(const nlohmann::json &j)
+{
+    auto readVec3 = [](const nlohmann::json &v, kVec3 def) -> kVec3
+    {
+        if (v.is_array() && v.size() >= 3)
+            return kVec3(v[0].get<float>(), v[1].get<float>(), v[2].get<float>());
+        return def;
+    };
+
+    if (j.contains("lighting") && j["lighting"].is_object())
+    {
+        const auto &l = j["lighting"];
+        prefabSceneSettings.sunEnabled = l.value("sun_enabled", prefabSceneSettings.sunEnabled);
+        prefabSceneSettings.sunPower   = l.value("sun_power", prefabSceneSettings.sunPower);
+        if (l.contains("sun_diffuse"))
+            prefabSceneSettings.sunDiffuse = readVec3(l["sun_diffuse"], prefabSceneSettings.sunDiffuse);
+        prefabSceneSettings.sunPitch = l.value("sun_pitch", prefabSceneSettings.sunPitch);
+        prefabSceneSettings.sunYaw   = l.value("sun_yaw", prefabSceneSettings.sunYaw);
+        if (l.contains("ambient"))
+            prefabSceneSettings.ambientColor = readVec3(l["ambient"], prefabSceneSettings.ambientColor);
+    }
+
+    if (j.contains("sky") && j["sky"].is_object())
+        prefabSceneSettings.skyboxEnabled = j["sky"].value("skybox_enabled", prefabSceneSettings.skyboxEnabled);
+
+    if (j.contains("sky_ambient") && j["sky_ambient"].is_object())
+    {
+        prefabSceneSettings.skyAmbientEnabled  = j["sky_ambient"].value("enabled", prefabSceneSettings.skyAmbientEnabled);
+        prefabSceneSettings.skyAmbientStrength = j["sky_ambient"].value("strength", prefabSceneSettings.skyAmbientStrength);
+    }
+
+    if (j.contains("preview_camera") && j["preview_camera"].is_object())
+    {
+        const auto &c = j["preview_camera"];
+        prefabSceneSettings.camFOV           = c.value("fov", prefabSceneSettings.camFOV);
+        prefabSceneSettings.camNearClip      = c.value("near", prefabSceneSettings.camNearClip);
+        prefabSceneSettings.camFarClip       = c.value("far", prefabSceneSettings.camFarClip);
+        prefabSceneSettings.camOrbitDistance = c.value("orbit_distance", prefabSceneSettings.camOrbitDistance);
+    }
+}
+
+void Manager::applyPrefabSceneSettings()
+{
+    if (!prefabScene)
+        return;
+
+    PrefabSceneSettings &s = prefabSceneSettings;
+
+    // --- Lighting ---------------------------------------------------------
+    if (prefabSunLight)
+    {
+        prefabSunLight->setActive(s.sunEnabled);
+        prefabSunLight->setPower(s.sunPower);
+        prefabSunLight->setDiffuseColor(s.sunDiffuse);
+        // The renderer derives a sun's direction from its world rotation
+        // (see kRenderer), so drive the orientation, not just setDirection().
+        prefabSunLight->setRotation(kVec3(s.sunPitch, s.sunYaw, 0.0f));
+        float pr = glm::radians(s.sunPitch);
+        float yr = glm::radians(s.sunYaw);
+        kVec3 dir(std::cos(pr) * std::sin(yr), std::sin(pr), std::cos(pr) * std::cos(yr));
+        if (glm::length(dir) > 0.0001f)
+            prefabSunLight->setDirection(glm::normalize(dir));
+    }
+    prefabScene->setAmbientLightColor(s.ambientColor);
+
+    // --- Sky --------------------------------------------------------------
+    if (s.skyboxEnabled)
+    {
+        if (prefabScene->getSkyboxMaterial() == nullptr)
+            applyDefaultSkyboxToPrefab();
+    }
+    else
+    {
+        prefabScene->setSkybox(nullptr, nullptr);
+    }
+
+    // --- Sky ambient ------------------------------------------------------
+    prefabScene->setSkyboxAmbientEnabled(s.skyAmbientEnabled);
+    prefabScene->setSkyboxAmbientStrength(s.skyAmbientStrength);
+
+    // --- Preview camera ---------------------------------------------------
+    if (prefabCamera)
+    {
+        prefabCamera->setFOV(s.camFOV);
+        prefabCamera->setNearClip(s.camNearClip);
+        prefabCamera->setFarClip(s.camFarClip);
+    }
+    prefabOrbitDistance = s.camOrbitDistance;
+}
+
+bool Manager::saveEditingPrefabFile()
+{
+    if (!prefabEditing || !prefabRoot || editingPrefabPath.empty())
+        return false;
+
+    // Capture the current subtree, then write the .prefab file with the scene
+    // settings appended as an additive top-level "settings" block.
+    editingPrefab.setRootJson(prefabRoot->serialize());
+
+    nlohmann::json data = {
+        {"type", "prefab"},
+        {"uuid", editingPrefab.getUuid()},
+        {"name", editingPrefab.getName()},
+        {"root", editingPrefab.getRootJson()},
+        {"settings", prefabSceneSettingsToJson()},
+    };
+
+    std::ofstream f(editingPrefabPath.string());
+    if (!f.is_open())
+    {
+        std::cerr << "saveEditingPrefabFile: cannot open " << editingPrefabPath << "\n";
+        return false;
+    }
+    f << data.dump(4);
+    f.close();
+
+    // The saved state becomes the new clean baseline for the Apply/Revert UI.
+    prefabBaselineRoot = editingPrefab.getRootJson();
+    prefabBaselineSettings = prefabSceneSettingsToJson();
+    prefabEditorModified = false;
+    return true;
+}
+
+bool Manager::computePrefabEditorModified()
+{
+    if (!prefabEditing || !prefabRoot)
+        return false;
+
+    // The preview camera's orbit distance is driven by mouse-wheel zoom, which
+    // is transient viewport navigation rather than an edit to the prefab. Strip
+    // it from both snapshots so zooming never flags the prefab as modified,
+    // while every other real setting change still does.
+    nlohmann::json currentSettings  = prefabSceneSettingsToJson();
+    nlohmann::json baselineSettings = prefabBaselineSettings;
+    if (currentSettings.contains("preview_camera") && currentSettings["preview_camera"].is_object())
+        currentSettings["preview_camera"].erase("orbit_distance");
+    if (baselineSettings.contains("preview_camera") && baselineSettings["preview_camera"].is_object())
+        baselineSettings["preview_camera"].erase("orbit_distance");
+    if (currentSettings != baselineSettings)
+        return true;
+
+    return prefabRoot->serialize() != prefabBaselineRoot;
+}
+
+void Manager::reloadOpenWorldForPrefab(const kString &prefabUuid)
+{
+    if (prefabUuid.empty() || !world)
+        return;
+
+    // Only touch the open world when it actually contains an instance of this
+    // prefab; otherwise there is nothing to refresh.
+    bool used = false;
+    std::function<void(kObject *)> scan = [&](kObject *node)
+    {
+        if (!node || used)
+            return;
+        if (node->getPrefabRef() == prefabUuid)
+        {
+            used = true;
+            return;
+        }
+        for (kObject *c : node->getChildren())
+            scan(c);
+    };
+    for (kScene *s : world->getScenes())
+    {
+        if (!s || !s->getRootNode())
+            continue;
+        for (kObject *c : s->getRootNode()->getChildren())
+            scan(c);
+    }
+    if (!used)
+        return;
+
+    // Re-expand every instance in the open world from the freshly saved
+    // template, preserving each instance's transform and placement.
+    refreshAllPrefabInstances(prefabUuid);
+}
+
+void Manager::applyPrefabEditorChanges()
+{
+    if (!prefabEditing || !prefabRoot)
+        return;
+
+    kString uuid = editingPrefab.getUuid();
+    if (!saveEditingPrefabFile())
+        return;
+
+    // Force dirty checks against the new file, then refresh the open world.
+    clearPrefabTemplateCache();
+    reloadOpenWorldForPrefab(uuid);
+
+    projectSaved = false;
+    refreshWindowTitle();
+    if (panelHierarchy)
+        panelHierarchy->refreshList();
+}
+
+void Manager::revertPrefabEditorChanges()
+{
+    if (!prefabEditing)
+        return;
+
+    // Reload the prefab editor from the on-disk file, discarding unsaved edits.
+    fs::path path = editingPrefabPath;
+    closePrefabEditor(/*saveChanges*/ false);
+    if (!path.empty())
+        editPrefab(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -8294,13 +8677,6 @@ void Manager::setEditorMode(EditorMode mode, const kString &assetPath, const kSt
         placeholder->setName(fs::path(assetPath).stem().string());
         previewScene->addObject(placeholder);
     }
-    else if (assetType == ".animator" && !assetPath.empty())
-    {
-        // Placeholder for animator preview.
-        kObject *placeholder = new kObject();
-        placeholder->setName(fs::path(assetPath).stem().string());
-        previewScene->addObject(placeholder);
-    }
 
     // Frame the camera to the loaded content.
     framePreviewCamera();
@@ -8704,6 +9080,12 @@ void Manager::refreshAllPrefabInstances(const kString &prefabUuid)
             selectedObjects.push_back(i.rootUuid);
         }
     }
+
+    // The instances above were rebuilt from raw JSON (loadObjectFromJson only
+    // restores the default material and the stored material_uuid reference).
+    // Rebuild the assigned .mat materials now so refreshing a prefab doesn't
+    // leave its instances in the world/game view with the default material.
+    reapplyStoredMaterialsInWorld(world);
 
     if (panelHierarchy)
         panelHierarchy->refreshList();
@@ -9512,6 +9894,118 @@ void Manager::applyAssetReload(const kString &uuid)
     }
 }
 
+bool Manager::isAssetReferencedByOpenScene(const kString &uuid)
+{
+    if (uuid.empty())
+        return false;
+
+    // Distinct material UUIDs found while walking the scene graph. Image and
+    // shader references are not stored on the object directly — they live in
+    // the .mat files the objects point at — so they are resolved afterwards.
+    std::set<kString> materialUuids;
+
+    std::function<bool(kObject *)> walk = [&](kObject *node) -> bool
+    {
+        if (!node)
+            return false;
+
+        if (kMesh *mesh = dynamic_cast<kMesh *>(node))
+        {
+            if (mesh->getRefName() == uuid)
+                return true;
+        }
+        if (node->getMaterialUuid() == uuid)
+            return true;
+        if (node->getPrefabRef() == uuid)
+            return true;
+        if (node->getTemplateUuid() == uuid)
+            return true;
+        if (node->getAnimatorRef() == uuid)
+            return true;
+
+        if (!node->getMaterialUuid().empty())
+            materialUuids.insert(node->getMaterialUuid());
+
+        for (kObject *child : node->getChildren())
+            if (walk(child))
+                return true;
+        return false;
+    };
+
+    auto scanWorld = [&](kWorld *w) -> bool
+    {
+        if (!w)
+            return false;
+        for (kScene *s : w->getScenes())
+        {
+            if (!s || !s->getRootNode())
+                continue;
+            for (kObject *child : s->getRootNode()->getChildren())
+                if (walk(child))
+                    return true;
+        }
+        return false;
+    };
+
+    if (scanWorld(world))
+        return true;
+    // The prefab world is only live while the prefab editor is active.
+    if (prefabEditing && scanWorld(prefabWorld))
+        return true;
+
+    // Only images and shaders are referenced indirectly (through a material's
+    // .mat file); for every other type the scene-graph walk above is decisive,
+    // so skip the file reads.
+    auto assetIt = fileMap.find(uuid);
+    if (assetIt == fileMap.end())
+        return false;
+    const kString &assetType = assetIt->second.type;
+    if (assetType != "image" && assetType != "shader")
+        return false;
+
+    // Resolve each material the scene references and look for the asset UUID in
+    // its shader link, its dynamic sampler parameters or its legacy texture keys.
+    for (const kString &matUuid : materialUuids)
+    {
+        auto fit = fileMap.find(matUuid);
+        if (fit == fileMap.end() || fit->second.type != "material")
+            continue;
+
+        json matJson;
+        try
+        {
+            std::ifstream f(projectPath / "Assets" / fit->second.path);
+            if (!f)
+                continue;
+            matJson = json::parse(f);
+        }
+        catch (...)
+        {
+            continue;
+        }
+
+        if (matJson.value("shader_uuid", kString("")) == uuid)
+            return true;
+
+        if (matJson.contains("params") && matJson["params"].is_object())
+        {
+            for (const auto &param : matJson["params"].items())
+                if (param.value().is_string() && param.value().get<kString>() == uuid)
+                    return true;
+        }
+
+        for (const char *key : {"texture_albedo", "texture_normal", "texture_specular",
+                                "texture_glossiness", "texture_metallic_roughness",
+                                "texture_ao", "texture_emissive"})
+        {
+            if (matJson.value(key, kString("")) == uuid)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 kShader *Manager::getRawShader(const kString &shaderUuid)
 {
     if (shaderUuid.empty())
@@ -9820,9 +10314,34 @@ static void reapplyMaterialsRecursive(Manager *mgr, kObject *node,
 
 void Manager::reapplyStoredMaterials()
 {
-    if (!world)
+    reapplyStoredMaterialsInWorld(world);
+
+    // The prefab editor renders its own isolated world. Rebuild that world's
+    // materials too so a material edit shows in the prefab panel while it is
+    // open. Its shaders/textures belong to the prefab driver's context, so make
+    // that driver current for the rebuild (mirrors processPendingMeshReloads).
+    if (prefabEditing && prefabWorld)
+    {
+        kDriver *savedDriver = kDriver::getCurrent();
+        if (prefabRenderer && prefabRenderer->getDriver())
+        {
+            prefabRenderer->getDriver()->makeCurrent(window);
+            kDriver::setCurrent(prefabRenderer->getDriver());
+        }
+        reapplyStoredMaterialsInWorld(prefabWorld);
+        if (savedDriver)
+        {
+            savedDriver->makeCurrent(window);
+            kDriver::setCurrent(savedDriver);
+        }
+    }
+}
+
+void Manager::reapplyStoredMaterialsInWorld(kWorld *w)
+{
+    if (!w)
         return;
-    for (kScene *s : world->getScenes())
+    for (kScene *s : w->getScenes())
         if (s && s->getRootNode())
             for (kObject *child : s->getRootNode()->getChildren())
                 reapplyMaterialsRecursive(this, child, projectPath);
@@ -9983,12 +10502,15 @@ static kMesh *findFirstMeshInSubtree(kObject *node)
     return nullptr;
 }
 
+// Collect every mesh part under `mesh` (the model root and all of its
+// sub-meshes), regardless of bone count. The runtime animator is attached to
+// all of them so whichever part the renderer draws receives the skinned pose;
+// restricting this to bone-bearing parts left the drawn mesh in bind pose.
 static void collectBoneMeshes(kMesh *mesh, std::vector<kMesh *> &out)
 {
     if (!mesh)
         return;
-    if (mesh->getBoneCount() > 0)
-        out.push_back(mesh);
+    out.push_back(mesh);
     for (kObject *child : mesh->getChildren())
         if (child && child->getType() == NODE_TYPE_MESH)
             collectBoneMeshes(static_cast<kMesh *>(child), out);
@@ -10026,11 +10548,21 @@ static float readMeshScaleFactor(const fs::path &projectPath, const std::string 
 
 static AnimState *findDefaultAnimatorState(AnimatorGraph &graph)
 {
+    // A blend tree is a playable entry state too (kind == BlendTree), not just
+    // a plain clip state — isState() only covers kind == State. Selecting the
+    // default must therefore consider both, otherwise a Blend Tree marked as
+    // default is silently skipped and the controller boots into some other
+    // state (so its parameters, e.g. front/right, never drive anything).
+    auto playable = [](const AnimState &s) { return s.isState() || s.isBlendTree(); };
     for (auto &s : graph.states)
-        if (s.isState() && s.isDefault)
+        if (playable(s) && s.isDefault)
             return &s;
+    // Prefer a concrete clip state as the fallback, then any playable node.
     for (auto &s : graph.states)
         if (s.isState())
+            return &s;
+    for (auto &s : graph.states)
+        if (playable(s))
             return &s;
     return nullptr;
 }
@@ -10127,8 +10659,7 @@ static std::string animatorStateClipUuid(RuntimeAnimator &rt, const AnimState *s
         if (outSpeed) *outSpeed = childSpeed * state->speed;
         if (!child || !rt.graph)
             return std::string();
-        AnimState *linked = rt.graph->findState(child->stateId);
-        return linked ? linked->animationUuid : std::string();
+        return rt.graph->blendChildAnimationUuid(*child);
     }
 
     if (outSpeed) *outSpeed = state->speed;
@@ -10362,16 +10893,30 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
     for (auto &v : rt.graph->variables)
         rt.variables[v.name] = v.defaultValue;
 
-    // Load the clip referenced by each state. Clips for one model resolve to
-    // the same imported GLB; one load per animation UUID is sufficient.
+    // Load the clip referenced by each state and each blend-tree motion. Clips
+    // for one model resolve to the same imported GLB; one load per animation
+    // UUID is sufficient. A blend-tree motion may reference a clip no state
+    // plays, so those UUIDs are collected alongside the states' own clips.
+    std::vector<std::string> animUuids;
+    auto addAnimUuid = [&](const std::string &u)
+    {
+        if (!u.empty() && std::find(animUuids.begin(), animUuids.end(), u) == animUuids.end())
+            animUuids.push_back(u);
+    };
     for (auto &st : rt.graph->states)
     {
-        if (st.animationUuid.empty())
-            continue;
-        if (rt.clipForState.count(st.animationUuid))
+        addAnimUuid(st.animationUuid);
+        if (st.isBlendTree())
+            for (auto &c : st.blendChildren)
+                addAnimUuid(rt.graph->blendChildAnimationUuid(c));
+    }
+
+    for (const std::string &animUuid : animUuids)
+    {
+        if (rt.clipForState.count(animUuid))
             continue;
 
-        fs::path clipPath = mgr->findAssetPathByUuid(st.animationUuid);
+        fs::path clipPath = mgr->findAssetPathByUuid(animUuid);
         if (clipPath.empty() || !fs::exists(clipPath))
             continue;
 
@@ -10394,14 +10939,14 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
 
         float startFrame = aj.value("startFrame", 0.0f);
         float endFrame   = aj.value("endFrame", 30.0f);
-        rt.clipFrames[st.animationUuid] = { startFrame, endFrame };
+        rt.clipFrames[animUuid] = { startFrame, endFrame };
 
         // Root-motion options from the .animation asset: which channels are
         // extracted for scripts and baked out of the pose (see kAnimator).
         bool rootMotionRotation = aj.value("rootMotionRotation", false);
         bool rootMotionPositionY = aj.value("rootMotionPositionY", false);
         bool rootMotionPositionXZ = aj.value("rootMotionPositionXZ", false);
-        rt.clipRootMotion[st.animationUuid] = { rootMotionRotation, rootMotionPositionY, rootMotionPositionXZ };
+        rt.clipRootMotion[animUuid] = { rootMotionRotation, rootMotionPositionY, rootMotionPositionXZ };
 
         fs::path glbPath = mgr->projectPath / "Library" / "ImportedAssets" / (meshUuid + ".glb");
         if (!fs::exists(glbPath))
@@ -10418,14 +10963,14 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
 
             // Apply the .animation asset's root-motion options so scripts can
             // read the extracted deltas and the pose is baked accordingly.
-            auto rmIt = rt.clipRootMotion.find(st.animationUuid);
+            auto rmIt = rt.clipRootMotion.find(animUuid);
             if (rmIt != rt.clipRootMotion.end())
             {
                 clip->setRootMotionRotation(rmIt->second[0]);
                 clip->setRootMotionPositionY(rmIt->second[1]);
                 clip->setRootMotionPositionXZ(rmIt->second[2]);
             }
-            animatorDebugLog("[Animator] rootMotion clip=" + st.animationUuid +
+            animatorDebugLog("[Animator] rootMotion clip=" + animUuid +
                              " read(rot,y,xz)=(" +
                              std::to_string(rootMotionRotation ? 1 : 0) + "," +
                              std::to_string(rootMotionPositionY ? 1 : 0) + "," +
@@ -10447,7 +10992,7 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
                 float ratio = meshScale / animScale;
                 if (std::fabs(ratio - 1.0f) > 1e-5f)
                     clip->applyTranslationScale(ratio);
-                std::string dbg = "[Animator] clip=" + st.animationUuid +
+                std::string dbg = "[Animator] clip=" + animUuid +
                                   " tps=" + std::to_string(clip->getTicksPerSecond()) +
                                   " dur=" + std::to_string(clip->getDuration()) +
                                   " meshScale=" + std::to_string(meshScale) +
@@ -10457,7 +11002,7 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
             }
 
             rt.ownedClips.push_back(clip);
-            rt.clipForState[st.animationUuid] = clip;
+            rt.clipForState[animUuid] = clip;
         }
         catch (const std::exception &)
         {
@@ -10513,7 +11058,10 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
     // Enter a playable state immediately so the renderer never observes a
     // kAnimator whose currentAnimation is nullptr.
     AnimState *defaultState = findDefaultAnimatorState(*rt.graph);
-    if (defaultState && rt.clipForState.count(defaultState->animationUuid) == 0)
+    // Only plain clip states need the clip-availability fallback; a blend tree
+    // has no single animationUuid and must be kept as the entry state.
+    if (defaultState && defaultState->isState() &&
+        rt.clipForState.count(defaultState->animationUuid) == 0)
     {
         for (auto &st : rt.graph->states)
             if (st.isState() && rt.clipForState.count(st.animationUuid))
@@ -10531,9 +11079,18 @@ static bool buildRuntimeAnimator(Manager *mgr, kObject *obj)
     }
     enterAnimatorState(rt, defaultState);
 
-    std::vector<kMesh *> boneMeshes;
-    collectBoneMeshes(rootMesh, boneMeshes);
-    for (kMesh *m : boneMeshes)
+    // Attach the animator to EVERY mesh in the model, not only those whose
+    // bone count is non-zero. The mesh the renderer actually draws (and the one
+    // that carries the skinned geometry) can differ from the first mesh found,
+    // and any mesh left without an animator renders in its bind pose — which
+    // made the character appear completely frozen even though the animator was
+    // computing a valid pose. kMesh::setAnimator() also flags the mesh (and its
+    // child meshes) as skinned so the renderer uploads the bone matrices.
+    std::vector<kMesh *> modelMeshes;
+    collectBoneMeshes(rootMesh, modelMeshes);
+    if (std::find(modelMeshes.begin(), modelMeshes.end(), rootMesh) == modelMeshes.end())
+        modelMeshes.push_back(rootMesh);
+    for (kMesh *m : modelMeshes)
         m->setAnimator(rt.animator);
 
     mgr->runtimeAnimators.push_back(std::move(rt));
@@ -10709,16 +11266,16 @@ void Manager::stepAnimators(float dt)
             motions.reserve(state->blendChildren.size());
             for (const auto &c : state->blendChildren)
             {
-                AnimState *linked = rt.graph->findState(c.stateId);
-                if (!linked || linked->animationUuid.empty())
+                const std::string childAnim = rt.graph->blendChildAnimationUuid(c);
+                if (childAnim.empty())
                     continue;
-                auto cIt = rt.clipForState.find(linked->animationUuid);
+                auto cIt = rt.clipForState.find(childAnim);
                 if (cIt == rt.clipForState.end() || !cIt->second)
                     continue;
                 BlendMotion m;
                 m.child = &c;
                 m.clip  = cIt->second;
-                m.uuid  = linked->animationUuid;
+                m.uuid  = childAnim;
                 motions.push_back(m);
             }
 
@@ -10837,7 +11394,19 @@ void Manager::stepAnimators(float dt)
                 const float sFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.first : 0.0f;
                 const float eFrame = (frameIt != rt.clipFrames.end()) ? frameIt->second.second : 0.0f;
                 const float mStart = sFrame / kAnimFps;
-                const float mEnd   = eFrame / kAnimFps;
+                // The .animation frame range can exceed the imported clip's own
+                // length (e.g. an endFrame authored against the source's frame
+                // count). Clamp the loop window to the clip duration so a motion
+                // loops continuously instead of playing once then freezing on
+                // its last keyframe.
+                float mEnd = eFrame / kAnimFps;
+                const float clipDurSec = (m.clip->getTicksPerSecond() > 1e-3f)
+                                             ? (m.clip->getDuration() / m.clip->getTicksPerSecond())
+                                             : 0.0f;
+                if (clipDurSec > 1e-4f && mEnd > clipDurSec)
+                    mEnd = clipDurSec;
+                if (mEnd <= mStart)
+                    mEnd = mStart + clipDurSec;
 
                 float sec = mStart + rt.blendStateTime * m.child->speed;
                 if (state->loop)
@@ -10953,6 +11522,15 @@ void Manager::stepAnimators(float dt)
 
             float startSec = startFrame / kAnimFps;
             float endSec   = endFrame / kAnimFps;
+            // Clamp to the clip's real length so the state loops instead of
+            // freezing once the pose passes the last keyframe.
+            const float clipDurSec = (clip->getTicksPerSecond() > 1e-3f)
+                                         ? (clip->getDuration() / clip->getTicksPerSecond())
+                                         : 0.0f;
+            if (clipDurSec > 1e-4f && endSec > clipDurSec)
+                endSec = clipDurSec;
+            if (endSec <= startSec)
+                endSec = startSec + clipDurSec;
 
             rt.stateTimeSeconds += dt;
             animSeconds = startSec + rt.stateTimeSeconds * stateSpeed;

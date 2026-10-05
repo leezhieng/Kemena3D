@@ -61,6 +61,14 @@ public:
 private:
     bool wasGizmoUsing = false; ///< Tracks whether the gizmo was being manipulated last frame, to detect drag start/end for undo/redo.
     std::vector<TransformState> gizmoStartStates; ///< Snapshot of selected transforms captured at the start of a gizmo drag, used to build the undo command.
+
+    /// Lazy offscreen renderer for the selected camera's preview overlay,
+    /// mirroring the World panel. Lives in the prefab driver's GL context.
+    kOffscreenRenderer *cameraPreview = nullptr;
+    /// Asset manager the preview renderer was built against; when the prefab
+    /// editor is reopened the prefab asset manager changes, so the renderer is
+    /// recreated to keep its GL resources valid.
+    kAssetManager      *cameraPreviewAsset = nullptr;
 };
 
 #endif

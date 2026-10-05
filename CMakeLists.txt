@@ -129,6 +129,11 @@ endif()
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
         /W3
+        # Serialize writes to the shared program database. MSBuild compiles
+        # several translation units in parallel while /Zi directs them all at
+        # one .pdb; without /FS the concurrent writers fail with C1041
+        # ("cannot open program database ... use /FS").
+        /FS
         # Treat source and execution charsets as UTF-8. Without this MSVC assumes
         # the active code page (e.g. 936/GBK) and emits C4819 for UTF-8 files
         # containing non-ASCII characters (e.g. ©, –, emoji in comments).

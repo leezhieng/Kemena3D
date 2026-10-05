@@ -67,7 +67,15 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     enabled = manager->projectOpened;
 
     if (!isOpened || renderer == nullptr || editorCamera == nullptr)
+    {
+        // When the panel is not on screen it must never be reported as
+        // focused/hovered: the main loop's hierarchy-context tracking reads
+        // these flags, and a stale `focused` would wrongly force the Hierarchy
+        // back to the game world while the Prefab panel is the active context.
+        hovered = false;
+        focused = false;
         return;
+    }
 
     gui->beginDisabled(!enabled);
     gui->windowStart("World", &isOpened);
@@ -192,7 +200,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         ImGui::EndPopup();
     }
 
-    // Preview mode indicator (particle / animator only — prefab has its own panel)
+    // Preview mode indicator (particle only — prefab has its own panel)
     if (manager->activeMode != Manager::EditorMode::GameWorld &&
         manager->activeMode != Manager::EditorMode::PrefabPreview)
     {
@@ -200,7 +208,6 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         switch (manager->activeMode)
         {
         case Manager::EditorMode::ParticlePreview: modeLabel = "Particle Preview"; break;
-        case Manager::EditorMode::AnimatorPreview: modeLabel = "Animator Preview"; break;
         default: break;
         }
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
@@ -791,7 +798,14 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
             // Compute pivot matrix
             glm::mat4 pivotMatrix;
-            if (manager->pivotMode == PivotMode::Center)
+            if (selObjs.size() == 1)
+            {
+                // A single object's gizmo always sits on its WORLD transform so
+                // the manipulated matrix can be converted back into local space
+                // correctly, even for nested objects.
+                pivotMatrix = selObjs[0]->getModelMatrixWorld();
+            }
+            else if (manager->pivotMode == PivotMode::Center)
             {
                 glm::vec3 center(0.0f);
                 for (kObject *obj : selObjs)
@@ -808,7 +822,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
             glm::mat4 pivotCopy = pivotMatrix;
 
-            ImGuizmo::BeginFrame();
+            // BeginFrame() is called once per frame by the main loop (see
+            // main.cpp). Calling it here as well would overwrite the gizmo-hover
+            // snapshot for other panels drawn earlier in the frame.
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
             ImGuizmo::SetRect(panelPos.x, panelPos.y, panelSize.x, panelSize.y);
 
@@ -834,12 +850,19 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     // blocks runtime (gameplay) modifications.
                     if (selObjs.size() == 1)
                     {
-                        // pivotMatrix started as this object's world matrix,
-                        // so pivotCopy IS the new world matrix — use it directly.
+                        // pivotMatrix started as this object's world matrix, so
+                        // pivotCopy IS the new WORLD matrix. Convert it back to
+                        // LOCAL space using the parent's world matrix before
+                        // writing: writing world values as local made nested
+                        // objects (e.g. a prefab child) absorb their parent's
+                        // transform and jump to the wrong place once saved.
+                        glm::mat4 localMatrix = pivotCopy;
+                        if (obj->getParent())
+                            localMatrix = glm::inverse(obj->getParent()->getModelMatrixWorld()) * pivotCopy;
                         glm::vec3 pos, scale, skew;
                         glm::quat rot;
                         glm::vec4 persp;
-                        glm::decompose(pivotCopy, scale, rot, pos, skew, persp);
+                        glm::decompose(localMatrix, scale, rot, pos, skew, persp);
                         obj->setPositionForced(pos);
                         obj->setRotationForced(glm::normalize(rot));
                         obj->setScaleForced(scale);
@@ -871,12 +894,18 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     }
                     else
                     {
-                        // Center / LastSelected: apply full delta to world matrix
+                        // Center / LastSelected: apply the full world-space delta,
+                        // then convert the resulting world matrix back into the
+                        // object's local space (via its parent) so nested objects
+                        // keep a correct relative transform.
                         glm::mat4 newWorld = delta * obj->getModelMatrixWorld();
+                        glm::mat4 localMatrix = newWorld;
+                        if (obj->getParent())
+                            localMatrix = glm::inverse(obj->getParent()->getModelMatrixWorld()) * newWorld;
                         glm::vec3 pos, scale, skew;
                         glm::quat rot;
                         glm::vec4 persp;
-                        glm::decompose(newWorld, scale, rot, pos, skew, persp);
+                        glm::decompose(localMatrix, scale, rot, pos, skew, persp);
                         obj->setPositionForced(pos);
                         obj->setRotationForced(glm::normalize(rot));
                         obj->setScaleForced(scale);

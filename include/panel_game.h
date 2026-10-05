@@ -144,6 +144,9 @@ public:
     int width  = 0; ///< Last viewport width published by draw(); consumed by the main-loop render.
     int height = 0; ///< Last viewport height published by draw(); consumed by the main-loop render.
 
+    bool hovered = false; ///< True while the mouse is over the panel.
+    bool focused = false; ///< True while the panel has keyboard focus (drives the active Hierarchy context).
+
 private:
     GamePlayState playState = GamePlayState::Stopped;        ///< Current play state.
     GameAspectRatio aspectRatio = GameAspectRatio::Free;     ///< Viewport aspect-ratio preset.

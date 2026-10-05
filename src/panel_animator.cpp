@@ -128,6 +128,16 @@ AnimTransition* AnimatorGraph::findTransition(int id)
     return nullptr;
 }
 
+std::string AnimatorGraph::blendChildAnimationUuid(const AnimBlendChild& child)
+{
+    // Motions now reference their clip directly; fall back to the legacy linked
+    // state's clip for .animator files written before that change.
+    if (!child.animationUuid.empty())
+        return child.animationUuid;
+    AnimState* linked = findState(child.stateId);
+    return linked ? linked->animationUuid : std::string();
+}
+
 void AnimatorGraph::removeState(int stateId)
 {
     removeTransitionsForState(stateId);
@@ -217,6 +227,7 @@ nlohmann::json AnimatorGraph::toJson() const
         for (const auto& c : s.blendChildren)
         {
             json cj;
+            cj["animationUuid"] = c.animationUuid;
             cj["stateId"]   = c.stateId;
             cj["threshold"] = c.threshold;
             cj["posX"]      = c.posX;
@@ -360,6 +371,7 @@ void AnimatorGraph::fromJson(const nlohmann::json& j)
                 for (const auto& c : s["blendChildren"])
                 {
                     AnimBlendChild bc;
+                    bc.animationUuid = c.value("animationUuid", std::string());
                     bc.stateId   = c.value("stateId", -1);
                     bc.threshold = c.value("threshold", 0.0f);
                     bc.posX      = c.value("posX", 0.0f);
@@ -1050,14 +1062,21 @@ void PanelAnimator::drawBlendTreeNode(ImDrawList* dl, AnimState& state, ImVec2 o
     // Each blend child as a labelled dot.
     for (const auto& child : state.blendChildren)
     {
-        AnimState* linked = graph.findState(child.stateId);
+        const std::string childAnim = graph.blendChildAnimationUuid(child);
         float cx = mapX(is2D ? child.posX : child.threshold);
         float cy = is2D ? mapY(child.posY) : (dtl.y + dbr.y) * 0.5f;
-        ImU32 dotCol = linked ? IM_COL32(255, 180, 80, 255) : IM_COL32(200, 90, 90, 255);
+        ImU32 dotCol = !childAnim.empty() ? IM_COL32(255, 180, 80, 255) : IM_COL32(200, 90, 90, 255);
         dl->AddCircleFilled({ cx, cy }, 5.f * zoom, dotCol);
         dl->AddCircle({ cx, cy }, 5.f * zoom, IM_COL32(20, 20, 20, 220), 0, 1.5f);
 
-        std::string label = linked ? linked->name : std::string("(none)");
+        std::string label = "(none)";
+        if (!childAnim.empty())
+        {
+            auto cit = graph.clips.find(childAnim);
+            label = (cit != graph.clips.end() && !cit->second.name.empty())
+                        ? cit->second.name
+                        : childAnim.substr(0, 8) + "...";
+        }
         ImVec2 ls = ImGui::CalcTextSize(label.c_str());
         dl->AddText({ cx - ls.x * 0.5f, cy + 7.f * zoom }, IM_COL32(220, 220, 220, 220), label.c_str());
     }
@@ -1680,14 +1699,28 @@ void PanelAnimator::ensurePreviewClips()
     if (!am)
         return;
 
+    // Every clip the graph can preview: each state's own clip plus each
+    // blend-tree motion's clip (a motion may reference a clip no state plays).
+    std::vector<std::string> animUuids;
+    auto addAnimUuid = [&](const std::string &u)
+    {
+        if (!u.empty() && std::find(animUuids.begin(), animUuids.end(), u) == animUuids.end())
+            animUuids.push_back(u);
+    };
     for (const auto &st : graph.states)
     {
-        if (st.animationUuid.empty())
-            continue;
-        if (previewClips.count(st.animationUuid))
+        addAnimUuid(st.animationUuid);
+        if (st.isBlendTree())
+            for (const auto &c : st.blendChildren)
+                addAnimUuid(graph.blendChildAnimationUuid(c));
+    }
+
+    for (const std::string &animUuid : animUuids)
+    {
+        if (previewClips.count(animUuid))
             continue;
 
-        fs::path animPath = manager->findAssetPathByUuid(st.animationUuid);
+        fs::path animPath = manager->findAssetPathByUuid(animUuid);
         if (animPath.empty() || !fs::exists(animPath))
             continue;
 
@@ -1737,7 +1770,7 @@ void PanelAnimator::ensurePreviewClips()
                         clip->applyTranslationScale(ratio);
                 }
 
-                previewClips[st.animationUuid] = clip;
+                previewClips[animUuid] = clip;
             }
         }
         catch (const std::exception &)
@@ -1785,11 +1818,21 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
     // so this does not re-read the .animation files every frame.
     std::string sig;
     for (const auto &st : graph.states)
+    {
         sig += st.animationUuid + "|";
+        for (const auto &c : st.blendChildren)
+            sig += c.animationUuid + "|";
+    }
     if (sig != previewSig)
     {
         previewSig = sig;
         refreshPreviewMeshes();
+        // The graph gained or changed clips (e.g. the user added a motion or
+        // swapped its animation). Load any newly referenced .animation into the
+        // preview immediately so the model updates without having to reopen the
+        // .animator file. Idempotent — already-loaded clips are skipped.
+        if (previewMesh)
+            ensurePreviewClips();
     }
 
     ImGui::TextUnformatted("Preview Model");
@@ -1921,9 +1964,8 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
     std::vector<PMotion> motions;
     for (const auto &c : state->blendChildren)
     {
-        AnimState *linked = graph.findState(c.stateId);
-        if (!linked) continue;
-        auto it = previewClips.find(linked->animationUuid);
+        const std::string childAnim = graph.blendChildAnimationUuid(c);
+        auto it = previewClips.find(childAnim);
         if (it == previewClips.end() || !it->second) continue;
 
         PMotion m;
@@ -2314,6 +2356,25 @@ void PanelAnimator::rebuildPreviewMasks()
 void PanelAnimator::drawMaskWeightList(const std::vector<std::string>& groups,
                                        std::vector<AnimMaskWeight>& weights)
 {
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    // Caption column width: match the inspector's standard field column, but
+    // never let it squeeze the slider (plus the trailing remove button) below a
+    // comfortable grab width when the panel is narrow. Reserving the space up
+    // front keeps the slider at a real, positive width so it always stays
+    // interactive instead of collapsing under the caption offset.
+    const float removeW    = ImGui::GetFrameHeight();
+    const float minSliderW = 80.0f;
+    const float availW     = ImGui::GetContentRegionAvail().x;
+    const float maxLabelW  = availW - removeW - style.ItemSpacing.x - minSliderW;
+    float labelW = PROP_LABEL_W;
+    if (labelW > maxLabelW)
+        labelW = maxLabelW;
+    if (labelW < 0.0f)
+        labelW = 0.0f;
+
+    const float rowStartX = ImGui::GetCursorPosX();
+
     int removeIdx = -1;
     for (int i = 0; i < (int)weights.size(); ++i)
     {
@@ -2324,9 +2385,32 @@ void PanelAnimator::drawMaskWeightList(const std::vector<std::string>& groups,
         std::string label = mw.maskName;
         if (!known)
             label += "  (missing)";
-        ImGui::TextUnformatted(label.c_str());
 
-        ImGui::SetNextItemWidth(-34.0f);
+        // Caption on the left, on the same line as its slider. The caption is
+        // clipped to its column so a long mask name can never draw over — and
+        // visually mask — the slider.
+        ImGui::AlignTextToFramePadding();
+        const ImVec2 capMin = ImGui::GetCursorScreenPos();
+        const float  capW   = labelW - style.ItemInnerSpacing.x;
+        if (capW > 0.0f)
+        {
+            ImGui::PushClipRect(capMin,
+                                ImVec2(capMin.x + capW,
+                                       capMin.y + ImGui::GetTextLineHeight()),
+                                true);
+            ImGui::TextUnformatted(label.c_str());
+            ImGui::PopClipRect();
+        }
+        else
+        {
+            ImGui::TextUnformatted(label.c_str());
+        }
+        ImGui::SameLine(rowStartX + labelW);
+
+        float sliderW = ImGui::GetContentRegionAvail().x - removeW - style.ItemSpacing.x;
+        if (sliderW < 1.0f)
+            sliderW = 1.0f;
+        ImGui::SetNextItemWidth(sliderW);
         if (ImGui::SliderFloat("##weight", &mw.weight, 0.0f, 1.0f, "%.2f"))
             graph.dirty = true;
         ImGui::SameLine();
@@ -2519,9 +2603,6 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
             graph.dirty = true;
     }
 
-    // Per-region influence over the mesh's authored bone-mask groups.
-    drawMaskWeightsSection(state);
-
     // -----------------------------------------------------------------------
     // Preview — scrub a parameter and watch the blended pose in the embedded
     // 3D view, all without entering the Game panel's Play mode. While playing,
@@ -2577,21 +2658,16 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     if (state->blendType == AnimBlendType::TwoD)
         drawParamPreview(state->blendParamY, state->blendRangeYMin, state->blendRangeYMax);
 
-    // Motions: each drives an existing animation state.
+    // Motions: each plays a project .animation clip directly.
     ImGui::Spacing();
     ImGui::TextUnformatted(state->blendType == AnimBlendType::TwoD
                                ? "Motions (each has its own X / Y)"
                                : "Motions (ordered by threshold)");
     ImGui::Separator();
 
-    std::vector<int>         candIds;
-    std::vector<std::string> candNames;
-    for (const auto& s : graph.states)
-    {
-        if (!s.isState()) continue;
-        candIds.push_back(s.id);
-        candNames.push_back(s.name.empty() ? ("State " + std::to_string(s.id)) : s.name);
-    }
+    // Project .animation assets a motion can be assigned directly.
+    std::vector<std::string> animUuids, animNames;
+    collectAnimationAssets(animUuids, animNames);
 
     if (state->blendChildren.empty())
         ImGui::TextDisabled("No motions yet. Add one below.");
@@ -2603,20 +2679,21 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
         ImGui::PushID(i);
         ImGui::Separator();
 
-        // Linked-state combo.
+        // Animation clip combo — the motion plays a project .animation directly.
         int cur = 0;
         std::vector<const char*> labels;
         labels.push_back("(none)");
-        for (size_t c = 0; c < candNames.size(); ++c)
+        for (size_t a = 0; a < animNames.size(); ++a)
         {
-            labels.push_back(candNames[c].c_str());
-            if (candIds[c] == child.stateId) cur = (int)c + 1;
+            labels.push_back(animNames[a].c_str());
+            if (animUuids[a] == child.animationUuid) cur = (int)a + 1;
         }
 
-        propLabelLeft("State");
-        if (ImGui::Combo("##motionstate", &cur, labels.data(), (int)labels.size()))
+        propLabelLeft("Animation");
+        if (ImGui::Combo("##motionanim", &cur, labels.data(), (int)labels.size()))
         {
-            child.stateId = (cur == 0) ? -1 : candIds[cur - 1];
+            child.animationUuid = (cur == 0) ? std::string() : animUuids[cur - 1];
+            child.stateId = -1; // a direct clip supersedes any legacy state link
             graph.dirty = true;
         }
 
@@ -2680,7 +2757,6 @@ void PanelAnimator::drawBlendTreeInspector(AnimState* state)
     if (ImGui::Button("Add Motion", ImVec2(-1, 0)))
     {
         AnimBlendChild child;
-        if (!candIds.empty()) child.stateId = candIds[0];
         child.threshold = (float)state->blendChildren.size();
         state->blendChildren.push_back(child);
         graph.dirty = true;
@@ -3098,7 +3174,10 @@ void PanelAnimator::drawVariablesPanel()
         const float xBtn = ImGui::GetFrameHeight();
         const float xCol = xBtn + ImGui::GetStyle().CellPadding.x * 2.0f + 2.0f;
 
-        const char* types[] = { "int", "float", "bool" };
+        // Order MUST match AnimVariableType (Bool=0, Float=1, Int=2) because the
+        // combo index is cast straight to the enum below. Previously this read
+        // { "int", "float", "bool" }, which swapped Bool and Int.
+        const char* types[] = { "bool", "float", "int" };
 
         if (ImGui::BeginTable("##animvarstable", 4,
                               ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH))

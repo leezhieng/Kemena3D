@@ -108,6 +108,12 @@ struct ImportTask
     /// project moved between machines through git would otherwise re-import with
     /// default settings and silently reset the user's FBX scale, tangents, etc.
     json settings = json::object();
+
+    /// Set once drawImportPopup has considered this finished task for a live
+    /// world/scene refresh. The completion loop re-runs every frame while the
+    /// popup is shown, so this keeps the relatedness scan and the reload to a
+    /// single attempt per task.
+    bool reloadHandled = false;
 };
 
 /**
@@ -251,7 +257,7 @@ public:
      * When editing a prefab, new objects are added to the prefab's isolated
      * world; otherwise they go to the game world.
      */
-    kWorld *getCreationWorld() { return prefabEditing ? prefabWorld : world; }
+    kWorld *getCreationWorld() { return hierarchyShowsPrefab ? prefabWorld : world; }
 
     /**
      * @brief Returns the scene where new objects should be created.
@@ -259,7 +265,7 @@ public:
      * When editing a prefab, new objects are added to the prefab scene;
      * otherwise they go to the active game scene.
      */
-    kScene *getCreationScene() { return prefabEditing ? prefabScene : scene; }
+    kScene *getCreationScene() { return hierarchyShowsPrefab ? prefabScene : scene; }
 
     // --- Edit actions -------------------------------------------------------
     void selectAll();
@@ -536,6 +542,9 @@ public:
     void saveWorldAs();
     kString promptWorldSavePath();
     void applyDefaultSkybox(kScene *target);
+    /** Builds the default skybox for the prefab scene, in the prefab driver's
+     *  context and with the prefab asset manager (see the note in the impl). */
+    void applyDefaultSkyboxToPrefab();
     void loadWorld(const kString &path);
     void loadDefaultWorldInto(kScene *target);
     void loadDefaultWorkspace();
@@ -564,6 +573,24 @@ public:
     void editPrefab(const fs::path &prefabPath);
     void closePrefabEditor(bool saveChanges);
 
+    // --- Prefab editor settings & apply/revert ------------------------------
+    /** Serializes prefabSceneSettings to JSON (matches the .prefab "settings" block). */
+    nlohmann::json prefabSceneSettingsToJson() const;
+    /** Applies a parsed "settings" object onto prefabSceneSettings (missing keys keep defaults). */
+    void prefabSceneSettingsFromJson(const nlohmann::json &j);
+    /** Pushes prefabSceneSettings onto the prefab scene, sun light and preview camera. */
+    void applyPrefabSceneSettings();
+    /** Writes the .prefab file (subtree + settings) and resets the clean baseline. */
+    bool saveEditingPrefabFile();
+    /** Whether the prefab subtree or its settings diverge from the last saved state. */
+    bool computePrefabEditorModified();
+    /** Refreshes every instance of a prefab in the currently open world (if any). */
+    void reloadOpenWorldForPrefab(const kString &prefabUuid);
+    /** Saves the prefab editor's changes and reloads its instances in the open world. */
+    void applyPrefabEditorChanges();
+    /** Discards the prefab editor's unsaved changes by reloading from disk. */
+    void revertPrefabEditorChanges();
+
     bool prefabEditing = false;
     fs::path editingPrefabPath;
     kPrefab editingPrefab;
@@ -579,6 +606,40 @@ public:
     kAssetManager *prefabAssetManager = nullptr;  ///< Asset manager for the prefab world (loads shaders/textures).
     kObject       *prefabRoot         = nullptr;  ///< Root object of the prefab subtree being edited.
     kScene        *prefabEditorScene  = nullptr;  ///< Editor overlay scene (grid) duplicated for the prefab panel.
+
+    // --- Prefab editor scene settings -------------------------------------
+    // Editable, persisted-with-the-prefab rendering/preview options surfaced by
+    // the Prefab panel's top toolbar: lighting, sky, sky ambient and the
+    // preview camera. Stored in the .prefab file's top-level "settings" object
+    // so kPrefab's own {type,uuid,name,root} format stays unchanged.
+    struct PrefabSceneSettings
+    {
+        // Lighting
+        bool  sunEnabled = true;            ///< Whether the default sun light is active.
+        float sunPower = 1.5f;              ///< Sun light intensity.
+        kVec3 sunDiffuse = kVec3(1.0f);     ///< Sun light colour.
+        float sunPitch = -35.0f;            ///< Sun rotation pitch (degrees).
+        float sunYaw = -45.0f;              ///< Sun rotation yaw (degrees).
+        kVec3 ambientColor = kVec3(0.1f);   ///< Scene ambient colour.
+        // Sky
+        bool  skyboxEnabled = true;         ///< Whether the skybox is rendered.
+        // Sky ambient
+        bool  skyAmbientEnabled = false;    ///< Image-based ambient from the skybox.
+        float skyAmbientStrength = 1.0f;    ///< Skybox ambient multiplier.
+        // Preview camera
+        float camFOV = 60.0f;               ///< Prefab preview camera field of view.
+        float camNearClip = 0.1f;           ///< Prefab preview camera near plane.
+        float camFarClip = 10000.0f;        ///< Prefab preview camera far plane.
+        float camOrbitDistance = 9.0f;      ///< Prefab preview camera orbit distance.
+    };
+
+    PrefabSceneSettings prefabSceneSettings;          ///< Current (edited) settings.
+    kLight *prefabSunLight = nullptr;                 ///< Default sun light in the prefab scene.
+    nlohmann::json prefabBaselineRoot;                ///< Serialized subtree at open/apply time.
+    nlohmann::json prefabBaselineSettings;            ///< Settings at open/apply time.
+    bool  prefabEditorModified = false;               ///< Whether unsaved prefab edits exist.
+    kVec3 prefabOrbitPivot = kVec3(0.0f, 1.0f, 0.0f); ///< Prefab preview camera orbit pivot.
+    float prefabOrbitDistance = 9.0f;                 ///< Prefab preview camera orbit distance.
 
     // --- Game panel's dedicated renderer -------------------------------------
     // The in-editor game view shares the world/scene with the World panel, but
@@ -762,6 +823,22 @@ public:
     void applyAssetReload(const kString &uuid);
 
     /**
+     * @brief Whether the currently open world/scene references an asset.
+     *
+     * Used to decide if finishing an import (see @ref drawImportPopup) should
+     * refresh live scene objects. It checks the direct references a scene
+     * object can carry — mesh reference, assigned material, prefab link and
+     * animator — and, for images and shaders, resolves each distinct material's
+     * .mat file and looks for the asset UUID among its texture / shader
+     * references. When prefab editing is active the prefab world's scenes are
+     * searched as well.
+     *
+     * @param uuid Asset UUID as tracked in the asset registry.
+     * @return true when at least one live object depends on the asset.
+     */
+    bool isAssetReferencedByOpenScene(const kString &uuid);
+
+    /**
      * @brief Records an asset's import settings in the git-tracked settings store.
      *
      * Called by the inspector when the user applies new mesh/texture import
@@ -797,6 +874,19 @@ public:
     kString getMaterialShaderSource(const nlohmann::json &matJson);
     void applyDefaultMaterialToObject(kObject *obj);
     void reapplyStoredMaterials();
+
+    /**
+     * @brief Rebuilds stored-material assignments for every scene in @p w.
+     *
+     * @ref reapplyStoredMaterials covers the game world; the prefab editor uses a
+     * separate kWorld, so this lets the prefab subtree get its assigned .mat
+     * materials instead of falling back to the default. Call while the target
+     * world's driver is current so any newly created shaders/textures land in
+     * the right context.
+     *
+     * @param w World whose scenes' objects should have their materials rebuilt.
+     */
+    void reapplyStoredMaterialsInWorld(kWorld *w);
     std::vector<MaterialSnapshot> captureMaterialSubtree(kObject *root);
     void restoreMaterialSubtree(const std::vector<MaterialSnapshot> &snap);
     void assignImportChildUuids(kObject *root);
@@ -858,6 +948,7 @@ public:
         Shader,      ///< Shader node-graph editor.
         Animation,   ///< Cinematic / animation timeline editor.
         Gui,         ///< In-game GUI (PanelGui) editor.
+        Prefab,      ///< Prefab editor viewport (isolated prefab world).
     };
 
     // Editor mode — controls what the World panel renders
@@ -865,8 +956,7 @@ public:
     {
         GameWorld,        ///< Normal scene editing
         PrefabPreview,    ///< Previewing/editing a .prefab asset
-        ParticlePreview,  ///< Previewing a .particle asset
-        AnimatorPreview   ///< Previewing an .animator asset
+        ParticlePreview   ///< Previewing a .particle asset
     };
     EditorMode activeMode = EditorMode::GameWorld;
 
@@ -908,7 +998,7 @@ public:
     kWorld *previewWorld = nullptr;    ///< Standalone world for asset preview, separate from the game world.
     kCamera *previewCamera = nullptr;  ///< Camera for the preview world (orbit-style).
     kString previewAssetPath;          ///< Current asset file being previewed.
-    kString previewAssetType;          ///< Extension of the previewed asset (".prefab", ".particle", ".animator").
+    kString previewAssetType;          ///< Extension of the previewed asset (".prefab", ".particle").
 
     // Preview-camera orbit state (reset every time a new asset is opened)
     float previewCamPitch = 24.09f;  ///< Orbit pitch (degrees), matches model viewer default.

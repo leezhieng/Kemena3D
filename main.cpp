@@ -180,9 +180,10 @@ int main()
 		}
 		else if (endsWith(".animator"))
 		{
+			// The Animator Editor has its own panel; opening an .animator must
+			// not hijack the World/Scene viewport with an animator preview.
 			showPanel.animatorEditor = true;
 			panelAnimator->openFile(path);
-			manager->setEditorMode(Manager::EditorMode::AnimatorPreview, path, ".animator");
 			pendingFocusWindow = "AnimatorEditor";
 		}
 		else if (endsWith(".cinematic"))
@@ -292,8 +293,21 @@ int main()
 	kVec3 prefabPanStartCamPos;
 	kVec3 prefabPanStartPivot;
 
-	kVec3 prefabOrbitPivot = kVec3(0.0f, 1.0f, 0.0f);
-	float prefabOrbitDistance = 9.0f;
+	// --- Game panel camera controls (mirrors world / prefab panels) ---
+	// While the Game viewport is hovered/focused and the game is running, the
+	// mouse drives the game camera that the panel actually renders through
+	// (look = Alt + Left drag, pan = Middle drag, wheel = dolly). Without this
+	// there was no way to steer the camera shown in the Game panel.
+	bool  gameDragging = false;
+	kVec2 gameDragStart;
+	kQuat gameCamRot;
+
+	bool  gamePanning = false;
+	kVec2 gamePanStart;
+	kVec3 gamePanStartCamPos;
+
+	// The prefab preview camera's orbit pivot/distance live on the Manager so
+	// the Prefab panel's Preview Camera settings can read and persist them.
 
 	bool altPressed = false;
 	bool ctrlPressed = false;
@@ -603,8 +617,31 @@ int main()
 						if (manager->prefabCamera)
 						{
 							prefabPanStartCamPos = manager->prefabCamera->getPosition();
-							prefabPanStartPivot = prefabOrbitPivot;
+							prefabPanStartPivot = manager->prefabOrbitPivot;
 						}
+					}
+				}
+
+				// --- Game panel mouse-down (steer the game camera) ---
+				if (panelGame->hovered && panelGame->focused &&
+				    manager->defaultGameCamera &&
+				    manager->defaultGameCamera != manager->editorCamera &&
+				    panelGame->getPlayState() != GamePlayState::Stopped)
+				{
+					kCamera *gcam = manager->defaultGameCamera;
+					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && altPressed)
+					{
+						gameDragging = true;
+						gameDragStart.x = event.getMouseX();
+						gameDragStart.y = event.getMouseY();
+						gameCamRot = gcam->getRotation();
+					}
+					else if (event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
+					{
+						gamePanning = true;
+						gamePanStart.x = event.getMouseX();
+						gamePanStart.y = event.getMouseY();
+						gamePanStartCamPos = gcam->getPosition();
 					}
 				}
 			}
@@ -629,6 +666,12 @@ int main()
 					prefabDragging = false;
 				if (prefabPanning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
 					prefabPanning = false;
+
+				// --- Game panel mouse-up ---
+				if (gameDragging && event.getMouseButton() == K_MOUSEBUTTON_LEFT)
+					gameDragging = false;
+				if (gamePanning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
+					gamePanning = false;
 			}
 			else if (eventType == K_EVENT_MOUSEMOTION)
 			{
@@ -674,20 +717,44 @@ int main()
 
 						pcam->rotateByMouse(prefabCamRot, -deltaX, -deltaY);
 						kVec3 fwd = pcam->calculateForward();
-						pcam->setPosition(prefabOrbitPivot - fwd * prefabOrbitDistance);
+						pcam->setPosition(manager->prefabOrbitPivot - fwd * manager->prefabOrbitDistance);
 					}
 					else if (prefabPanning)
 					{
 						float deltaX = event.getMouseX() - prefabPanStart.x;
 						float deltaY = event.getMouseY() - prefabPanStart.y;
 
-						float panScale = prefabOrbitDistance * 0.0025f;
+						float panScale = manager->prefabOrbitDistance * 0.0025f;
 						kVec3 right = pcam->calculateRight();
 						kVec3 up = pcam->calculateUp();
 						kVec3 offset = (right * deltaX + up * deltaY) * panScale;
 
 						pcam->setPosition(prefabPanStartCamPos + offset);
-						prefabOrbitPivot = prefabPanStartPivot + offset;
+						manager->prefabOrbitPivot = prefabPanStartPivot + offset;
+					}
+				}
+
+				// --- Game panel camera motion (look / pan) ---
+				if (panelGame->hovered && manager->defaultGameCamera &&
+				    manager->defaultGameCamera != manager->editorCamera &&
+				    panelGame->getPlayState() != GamePlayState::Stopped)
+				{
+					kCamera *gcam = manager->defaultGameCamera;
+					if (gameDragging)
+					{
+						float deltaX = gameDragStart.x - event.getMouseX();
+						float deltaY = gameDragStart.y - event.getMouseY();
+						gcam->rotateByMouse(gameCamRot, -deltaX, -deltaY);
+					}
+					else if (gamePanning)
+					{
+						float deltaX = event.getMouseX() - gamePanStart.x;
+						float deltaY = event.getMouseY() - gamePanStart.y;
+						float panScale = 0.01f;
+						kVec3 right = gcam->calculateRight();
+						kVec3 up    = gcam->calculateUp();
+						kVec3 offset = (right * deltaX + up * deltaY) * panScale;
+						gcam->setPosition(gamePanStartCamPos + offset);
 					}
 				}
 			}
@@ -707,9 +774,23 @@ int main()
 				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera)
 				{
 					float wheel = event.getMouseWheelY();
-					prefabOrbitDistance = std::max(0.1f, prefabOrbitDistance - wheel * 2.0f);
+					manager->prefabOrbitDistance = std::max(0.1f, manager->prefabOrbitDistance - wheel * 2.0f);
+					// Keep the persisted Preview Camera setting in step with the
+					// interactive zoom so the panel slider reflects it.
+					manager->prefabSceneSettings.camOrbitDistance = manager->prefabOrbitDistance;
 					kVec3 fwd = manager->prefabCamera->calculateForward();
-					manager->prefabCamera->setPosition(prefabOrbitPivot - fwd * prefabOrbitDistance);
+					manager->prefabCamera->setPosition(manager->prefabOrbitPivot - fwd * manager->prefabOrbitDistance);
+				}
+
+				// --- Game panel camera dolly ---
+				if (panelGame->hovered && manager->defaultGameCamera &&
+				    manager->defaultGameCamera != manager->editorCamera &&
+				    panelGame->getPlayState() != GamePlayState::Stopped)
+				{
+					kCamera *gcam = manager->defaultGameCamera;
+					float wheel = event.getMouseWheelY();
+					kVec3 fwd = gcam->calculateForward();
+					gcam->setPosition(gcam->getPosition() + fwd * (wheel * 0.5f));
 				}
 			}
 			else if (eventType == K_EVENT_KEYDOWN)
@@ -998,58 +1079,60 @@ int main()
 		int viewportW = panelWorld->width;
 		int viewportH = panelWorld->height;
 
-		// Fix aspect ratio
+		// Pass 0 as deltaTime when paused so physics/animations freeze.
+		float gameDt = panelGame->getEffectiveDeltaTime(deltaTime);
+
+		// Game-specific logic — runs regardless of the World panel's viewport
+		// size so Play keeps simulating when the World panel is hidden and the
+		// user drives the game from the Game panel alone (which has its own
+		// renderer). Physics/scripts are also allowed during prefab editing:
+		// the prefab editor operates on a fully isolated world.
+		if (!isPreviewMode)
+		{
+			// Physics/scripts tick while Playing (not Paused/Stopped). gameDt is
+			// already 0 when Paused, but we also gate on play state so a Stopped
+			// editor session never builds momentum or does collision callbacks.
+			if (panelGame->getPlayState() == GamePlayState::Playing && gameDt > 0.0f)
+			{
+				manager->stepPhysics(gameDt);
+				// Advance named input so scripts see fresh getAction()/getAxis() state.
+				manager->stepInput();
+				// Dispatch FixedUpdate() then Update()/LateUpdate() to scripts.
+				world->fixedUpdateScripts(gameDt);
+				world->updateScripts(gameDt);
+			}
+
+			// Advance .animator controllers (no-op when stopped; frozen
+			// when paused because gameDt is 0).
+			manager->stepAnimators(gameDt);
+
+			// While stopped, watch script source files and recompile on save.
+			if (panelGame->getPlayState() == GamePlayState::Stopped)
+				manager->pollScriptChanges(deltaTime);
+
+			// Mirror the active scene's shadow toggle into the renderer.
+			// setEnableShadow is lazy/idempotent in the SDK so this is cheap.
+			renderer->setEnableShadow(scene ? scene->getShadowsEnabled() : true);
+			if (scene)
+			{
+				renderer->setShadowBias(scene->getShadowBias());
+				renderer->setShadowNormalBias(scene->getShadowNormalBias());
+				renderer->setShadowNormalOffset(scene->getShadowNormalOffset());
+				renderer->setShadowSoftness(scene->getShadowSoftness());
+				if (renderer->getShadowResolution() != scene->getShadowMapResolution())
+					renderer->setShadowResolution(scene->getShadowMapResolution());
+			}
+		}
+		else
+		{
+			// Preview mode: enable shadows on the preview scene.
+			if (scene)
+				renderer->setEnableShadow(scene->getShadowsEnabled());
+		}
+
+		// World-panel viewport render (only when the panel has a valid size).
 		if (viewportW > 0 && viewportH > 0)
 		{
-			// Pass 0 as deltaTime when paused so physics/animations freeze
-			float gameDt = panelGame->getEffectiveDeltaTime(deltaTime);
-
-			// Game-specific logic — only in GameWorld mode.
-			if (!isPreviewMode)
-			{
-				// Physics only ticks while Playing (not Paused, not Stopped, never
-				// during prefab editing). gameDt is already 0 when Paused, but we
-				// also gate on play state so a Stopped editor session never builds
-				// momentum or does collision callbacks.
-				if (panelGame->getPlayState() == GamePlayState::Playing &&
-					!manager->prefabEditing && gameDt > 0.0f)
-				{
-					manager->stepPhysics(gameDt);
-					// Advance named input so scripts see fresh getAction()/getAxis() state.
-					manager->stepInput();
-					// Dispatch FixedUpdate() then Update()/LateUpdate() to scripts.
-					world->fixedUpdateScripts(gameDt);
-					world->updateScripts(gameDt);
-				}
-
-				// Advance .animator controllers (no-op when stopped; frozen
-				// when paused because gameDt is 0).
-				manager->stepAnimators(gameDt);
-
-				// While stopped, watch script source files and recompile on save.
-				if (panelGame->getPlayState() == GamePlayState::Stopped)
-					manager->pollScriptChanges(deltaTime);
-
-				// Mirror the active scene's shadow toggle into the renderer.
-				// setEnableShadow is lazy/idempotent in the SDK so this is cheap.
-				renderer->setEnableShadow(scene ? scene->getShadowsEnabled() : true);
-				if (scene)
-				{
-					renderer->setShadowBias(scene->getShadowBias());
-					renderer->setShadowNormalBias(scene->getShadowNormalBias());
-					renderer->setShadowNormalOffset(scene->getShadowNormalOffset());
-					renderer->setShadowSoftness(scene->getShadowSoftness());
-					if (renderer->getShadowResolution() != scene->getShadowMapResolution())
-						renderer->setShadowResolution(scene->getShadowMapResolution());
-				}
-			}
-			else
-			{
-				// Preview mode: enable shadows on the preview scene.
-				if (scene)
-					renderer->setEnableShadow(scene->getShadowsEnabled());
-			}
-
 			renderer->render(world, scene, 0, 0, viewportW * 2, viewportH * 2, gameDt, false);
 
 			// Editor scene (grid) only in GameWorld mode.
@@ -1198,6 +1281,15 @@ int main()
 		}
 
 		gui->canvasStart();
+
+		// ImGuizmo must be told a frame has begun exactly once per frame, before
+		// any panel calls Manipulate(). Both the World and Prefab panels host a
+		// gizmo; calling BeginFrame() from each of them in the same frame made the
+		// later call overwrite the earlier panel's "gizmo hovered" snapshot, so
+		// clicking the Prefab gizmo registered as a viewport click and deselected
+		// the object instead of starting a drag. One call here fixes that.
+		ImGuizmo::BeginFrame();
+
 		gui->dockSpaceStart("MainDockSpace");
 
 		mainmenu->draw(window, showPanel);
@@ -1252,30 +1344,25 @@ int main()
 		applyPendingFocus("IngameUI", showPanel.guiEditor);
 		panelGui->draw(showPanel.guiEditor);
 
-		// Track which panel was last focused to drive the hierarchy panel.
-		// When the world panel is focused, the hierarchy shows the game world's
-		// scene graph.  When the prefab panel is focused, it shows the prefab's
-		// isolated scene graph.
-		{
-			bool oldPrefabFocus = manager->hierarchyShowsPrefab;
-			if (panelPrefab->enabled && panelPrefab->focused)
-				manager->hierarchyShowsPrefab = true;
-			else if (panelWorld->enabled && panelWorld->focused)
-				manager->hierarchyShowsPrefab = false;
-			// If focus changed, rebuild the hierarchy tree.
-			if (manager->hierarchyShowsPrefab != oldPrefabFocus)
-				panelHierarchy->refreshList();
-		}
-
-		// Track the last focused panel to drive what the Inspector displays.
-		// The Inspector reads this on the next frame, so whichever panel the
-		// user interacted with most recently becomes the active context.
+		// Track the last focused panel to drive what the Inspector displays and
+		// which world the Hierarchy edits. The Inspector reads this on the next
+		// frame, so whichever panel the user interacted with most recently
+		// becomes the active context. The flags are only trusted while the
+		// owning panel is actually visible (a hidden panel clears its own
+		// focused flag in its draw(), but the visibility check makes this
+		// explicit and avoids stale state).
 		{
 			if (panelProject->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Project;
 			else if (panelHierarchy->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Hierarchy;
-			else if (panelWorld->enabled && panelWorld->focused)
+			else if (panelPrefab->enabled && showPanel.prefab && panelPrefab->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Prefab;
+			else if (panelWorld->enabled && showPanel.world && panelWorld->focused)
+				manager->lastFocusedPanel = Manager::FocusedPanel::Scene;
+			else if (panelGame->focused)
+				// The Game panel is another view of the game world, so focusing
+				// it selects the same Hierarchy context as the World panel.
 				manager->lastFocusedPanel = Manager::FocusedPanel::Scene;
 			else if (panelLogicGraph->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Logic;
@@ -1289,6 +1376,28 @@ int main()
 				manager->lastFocusedPanel = Manager::FocusedPanel::Animation;
 			else if (panelGui->focused)
 				manager->lastFocusedPanel = Manager::FocusedPanel::Gui;
+		}
+
+		// Drive the Hierarchy's editing context from the *sticky* last-focused
+		// panel rather than the transient per-frame focus flags. This makes the
+		// switch reliable: it follows the Prefab viewport while that panel is
+		// the active context, returns to the game world as soon as the World
+		// viewport takes focus, and stays put when the user clicks the Hierarchy
+		// or Inspector (so prefab children can be selected and edited without
+		// the tree snapping back to the world). Any other panel also holds the
+		// current context. Once prefab editing ends the hierarchy always shows
+		// the game world again.
+		{
+			bool oldPrefabFocus = manager->hierarchyShowsPrefab;
+			if (!manager->prefabEditing)
+				manager->hierarchyShowsPrefab = false;
+			else if (manager->lastFocusedPanel == Manager::FocusedPanel::Prefab)
+				manager->hierarchyShowsPrefab = true;
+			else if (manager->lastFocusedPanel == Manager::FocusedPanel::Scene)
+				manager->hierarchyShowsPrefab = false;
+			// If the context changed, rebuild the hierarchy tree.
+			if (manager->hierarchyShowsPrefab != oldPrefabFocus)
+				panelHierarchy->refreshList();
 		}
 
 		// If there's a need to import assets

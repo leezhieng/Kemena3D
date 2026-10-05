@@ -130,13 +130,15 @@ struct AnimMaskWeight
 /**
  * @brief A single motion inside a blend tree.
  *
- * The child drives an existing animation state (referenced by id) so the blend
- * tree never duplicates clip assignments. The threshold / x,y values describe
- * where the child sits on the blend axis or plane.
+ * The motion plays an .animation clip referenced directly by UUID. The
+ * threshold / x,y values describe where the child sits on the blend axis or
+ * plane. Older files linked a state instead of a clip; that legacy link is
+ * still resolved through stateId when animationUuid is empty.
  */
 struct AnimBlendChild
 {
-    int   stateId   = -1;    ///< Id of the linked animation state that plays this motion.
+    std::string animationUuid; ///< UUID of the .animation clip this motion plays (preferred).
+    int   stateId   = -1;    ///< Legacy: id of a linked state whose clip was used (older files).
     float threshold = 0.0f;  ///< 1D position along the blend axis.
     float posX      = 0.0f;  ///< 2D position (x) on the blend plane.
     float posY      = 0.0f;  ///< 2D position (y) on the blend plane.
@@ -253,6 +255,15 @@ struct AnimatorGraph
 
     /** @brief Find a state by id, or nullptr. */
     AnimState* findState(int id);
+
+    /**
+     * @brief Resolve the .animation clip UUID a blend-tree motion plays.
+     *
+     * Motions reference their clip directly via @ref AnimBlendChild::animationUuid.
+     * Files written before that — where a motion linked an existing animation
+     * state — are still supported by falling back to the linked state's clip.
+     */
+    std::string blendChildAnimationUuid(const AnimBlendChild& child);
 
     /** @brief Find a transition by id, or nullptr. */
     AnimTransition* findTransition(int id);
