@@ -56,6 +56,7 @@ namespace
             case kScriptNodeType::Translate:
             case kScriptNodeType::Rotate:
             case kScriptNodeType::SetActive:
+            case kScriptNodeType::DestroyObject:
             case kScriptNodeType::SetVariable:
             case kScriptNodeType::PlaySound:
             case kScriptNodeType::StopAllSounds:
@@ -1154,6 +1155,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Translate", kScriptNodeType::Translate},
         {"Rotate", kScriptNodeType::Rotate},
         {"Set Active", kScriptNodeType::SetActive},
+        {"Destroy GameObject", kScriptNodeType::DestroyObject},
         {"Set Variable", kScriptNodeType::SetVariable},
         {"Compare Tag", kScriptNodeType::CompareTag},
     };

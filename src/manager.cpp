@@ -6146,15 +6146,12 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         decal->setStatic(obj.value("static", false));
         decal->setShaderType(obj.value("decal_shader", std::string("flat")));
         decal->setSurfaceOffset(obj.value("decal_offset", 0.01f));
-        // Projection parameters (older world files omit these and keep defaults).
-        if (obj.contains("decal_dir") && obj["decal_dir"].is_array() && obj["decal_dir"].size() == 3)
-            decal->setProjectionDirection(kVec3(obj["decal_dir"][0].get<float>(),
-                                                obj["decal_dir"][1].get<float>(),
-                                                obj["decal_dir"][2].get<float>()));
-        decal->setProjectionDistance(obj.value("decal_distance", 2.0f));
-        if (obj.contains("decal_size") && obj["decal_size"].is_array() && obj["decal_size"].size() == 2)
-            decal->setProjectionSize(kVec2(obj["decal_size"][0].get<float>(),
-                                           obj["decal_size"][1].get<float>()));
+        // The projection volume is derived from the object's transform, so the
+        // legacy decal_dir / decal_distance / decal_size keys are ignored.
+        // Projection layer mask — which object layers this decal projects onto.
+        // Older world files predate this field, so default to all layers.
+        decal->setProjectionLayerMask(
+            static_cast<uint32_t>(obj.value("decal_layers", 4294967295u)));
         if (topLevel)
         {
             scene->addObject(decal, uuid);
@@ -6327,6 +6324,19 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             desc.angularDamping = phys.value("angular_damping", 0.05f);
             desc.gravityFactor = phys.value("gravity_factor", 1.0f);
             desc.layer = phys.value("layer", std::string("Default"));
+            // Collider offset from the object's pivot (older files omit these).
+            if (phys.contains("offset_position") && phys["offset_position"].is_object())
+            {
+                const auto &op = phys["offset_position"];
+                desc.offsetPosition = kVec3(op.value("x", 0.0f), op.value("y", 0.0f),
+                                            op.value("z", 0.0f));
+            }
+            if (phys.contains("offset_rotation") && phys["offset_rotation"].is_object())
+            {
+                const auto &orr = phys["offset_rotation"];
+                desc.offsetRotation = kQuat(orr.value("w", 1.0f), orr.value("x", 0.0f),
+                                            orr.value("y", 0.0f), orr.value("z", 0.0f));
+            }
             result->setHasPhysicsDesc(true);
         }
 
@@ -7630,9 +7640,11 @@ void Manager::startPhysicsSimulation()
             kPhysicsObjectDesc desc = node->getPhysicsDesc();
             // Seed the body from the object's current world transform so it
             // appears where the editor placed it, not at the descriptor's
-            // (default-zero) position.
-            desc.position = node->getGlobalPosition();
-            desc.rotation = node->getGlobalRotation();
+            // (default-zero) position. Compose the collider offset so the
+            // collider sits at its authored offset from the object's pivot.
+            kQuat worldRot = node->getGlobalRotation();
+            desc.position = node->getGlobalPosition() + worldRot * desc.offsetPosition;
+            desc.rotation = worldRot * desc.offsetRotation;
             kPhysicsObject *body = physicsManager->createObject(desc);
             if (body)
             {
