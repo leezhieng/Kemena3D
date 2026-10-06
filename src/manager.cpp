@@ -2614,6 +2614,22 @@ static void applyAudioListenerIcon(kObject *obj, kAssetManager *am)
     obj->setMaterial(mat);
 }
 
+// Apply the GIZMO_DECAL icon material to a decal as its editor gizmo billboard.
+// The decal's projection material carries the decal artwork, so the icon uses a
+// separate slot on kDecal instead of overwriting it.
+static void applyDecalIcon(kDecal *decal, kAssetManager *am)
+{
+    if (!decal || !am)
+        return;
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+    kTexture2D *tex = am->loadTexture2DFromResource("GIZMO_DECAL", "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
+    mat->addTexture(tex);
+    decal->setIconMaterial(mat);
+}
+
 // ---------------------------------------------------------------------------
 // Edit — selection helpers
 // ---------------------------------------------------------------------------
@@ -2692,6 +2708,11 @@ void Manager::invertSelection()
 static void finishCreate(Manager *mgr, kObject *obj, kScene *scene,
                          std::function<void()> undoFn, std::function<void()> redoFn)
 {
+    // Place the new object at the editor camera's look-at point so it appears
+    // where the user is looking. After an F-focus this is the framed object's
+    // position; in prefab editing it is the prefab preview orbit pivot.
+    obj->setPositionForced(mgr->getCreationPosition());
+
     kString uuid = obj->getUuid();
     mgr->selectedObject = obj;
     mgr->selectObject(uuid, true);
@@ -2701,6 +2722,15 @@ static void finishCreate(Manager *mgr, kObject *obj, kScene *scene,
 
     mgr->undoRedo.push(std::make_unique<PropertyCommand>(
         std::move(undoFn), std::move(redoFn)));
+}
+
+kVec3 Manager::getCreationPosition() const
+{
+    // The editor camera's live orbit pivot is its look-at point; F-focus sets it
+    // to the framed object's centre. The prefab editor uses its own pivot.
+    if (hierarchyShowsPrefab)
+        return prefabOrbitPivot;
+    return editorCamOrbitPivot;
 }
 
 // ---------------------------------------------------------------------------
@@ -3242,6 +3272,14 @@ bool Manager::applyDecalShaderType(kDecal *decal, const kString &type)
     return true;
 }
 
+void Manager::rebuildDecal(kDecal *decal)
+{
+    if (!decal)
+        return;
+    // The projected geometry is rebuilt in the renderer on the next frame.
+    decal->markGeometryDirty();
+}
+
 // ---------------------------------------------------------------------------
 // Create Decal
 // ---------------------------------------------------------------------------
@@ -3260,9 +3298,12 @@ void Manager::createDecal()
     // Give the decal a flat, unlit, alpha-blended default material so it shows
     // as a plain white sticker immediately. The user can later switch the shader
     // type (flat/pbr/phong) or assign a .mat whose albedo map carries the decal
-    // artwork.
+    // artwork. A separate icon material drives the editor gizmo billboard.
     if (kAssetManager *am = getAssetManager())
+    {
         applyDecalShaderMaterial(decal, am, decal->getShaderType());
+        applyDecalIcon(decal, am);
+    }
 
     finishCreate(this, decal, s, [this, s, decal, uuid]()
                  {
@@ -6105,6 +6146,15 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         decal->setStatic(obj.value("static", false));
         decal->setShaderType(obj.value("decal_shader", std::string("flat")));
         decal->setSurfaceOffset(obj.value("decal_offset", 0.01f));
+        // Projection parameters (older world files omit these and keep defaults).
+        if (obj.contains("decal_dir") && obj["decal_dir"].is_array() && obj["decal_dir"].size() == 3)
+            decal->setProjectionDirection(kVec3(obj["decal_dir"][0].get<float>(),
+                                                obj["decal_dir"][1].get<float>(),
+                                                obj["decal_dir"][2].get<float>()));
+        decal->setProjectionDistance(obj.value("decal_distance", 2.0f));
+        if (obj.contains("decal_size") && obj["decal_size"].is_array() && obj["decal_size"].size() == 2)
+            decal->setProjectionSize(kVec2(obj["decal_size"][0].get<float>(),
+                                           obj["decal_size"][1].get<float>()));
         if (topLevel)
         {
             scene->addObject(decal, uuid);
@@ -6116,8 +6166,13 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         }
         // No .mat assigned (no material_uuid key): rebuild the built-in default
         // material from the saved shader type so the decal is visible right away.
-        if (am && !obj.contains("material_uuid"))
-            applyDecalShaderMaterial(decal, am, decal->getShaderType());
+        // The editor gizmo icon material is always rebuilt (never serialised).
+        if (am)
+        {
+            if (!obj.contains("material_uuid"))
+                applyDecalShaderMaterial(decal, am, decal->getShaderType());
+            applyDecalIcon(decal, am);
+        }
         result = decal;
     }
     else
@@ -6176,9 +6231,21 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         result->setRotationForced(kQuat(glm::radians(rotEu)));
         result->setScaleForced(scale);
 
-        // User-defined tag (like Unity's tags).
-        if (obj.contains("tag") && obj["tag"].is_string())
+        // User-defined tags: prefer the multi-tag array, falling back to the
+        // legacy single "tag" string. Layer bitmask defaults to "Default".
+        if (obj.contains("tags") && obj["tags"].is_array())
+        {
+            std::vector<kString> loadedTags;
+            for (const auto &t : obj["tags"])
+                if (t.is_string())
+                    loadedTags.push_back(t.get<std::string>());
+            result->setTags(loadedTags);
+        }
+        else if (obj.contains("tag") && obj["tag"].is_string())
+        {
             result->setTag(obj["tag"].get<std::string>());
+        }
+        result->setLayerMask(obj.value("layer_mask", 1u));
 
         // Prefab linkage — only set when present in JSON, otherwise stays empty.
         if (obj.contains("prefab_ref"))

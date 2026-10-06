@@ -1168,6 +1168,25 @@ int main()
 				if (manager->projectOpened && !manager->selectedObjects.empty())
 					renderer->renderDebugShapes(world, scene, manager->selectedObjects);
 
+				// Decal projection volume (cyan) for selected decals, so the
+				// direction / distance / size are visible while authoring.
+				if (manager->projectOpened && !manager->selectedObjects.empty())
+				{
+					std::vector<kVec3> decalLines;
+					for (const kString &uuid : manager->selectedObjects)
+					{
+						kObject *o = manager->findObjectByUuid(uuid);
+						if (o != nullptr && o->getType() == kNodeType::NODE_TYPE_DECAL)
+						{
+							kDecal *decal = static_cast<kDecal *>(o);
+							decal->calculateModelMatrix();
+							decal->appendProjectionDebugLines(decalLines);
+						}
+					}
+					if (!decalLines.empty())
+						renderer->renderDebugLines(world, decalLines, kVec3(0.15f, 0.9f, 1.0f));
+				}
+
 				// Octree debug visualization
 				if (manager->projectOpened)
 					renderer->renderOctreeDebug(world, scene);

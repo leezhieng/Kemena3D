@@ -32,6 +32,33 @@ static void drawListEditorModal(Manager *manager, const char *title, bool &open,
                                 bool lockFirst);
 static void drawTagLayerEditorModals(Manager *manager);
 
+// Builds a comma-separated preview of the layers selected in a bitmask.
+static kString layerMaskPreview(const std::vector<std::string> &layers, uint32_t mask)
+{
+    kString out;
+    for (size_t i = 0; i < layers.size() && i < 32; ++i)
+    {
+        if (mask & (1u << i))
+        {
+            if (!out.empty())
+                out += ", ";
+            out += layers[i];
+        }
+    }
+    if (out.empty())
+        out = "(None)";
+    return out;
+}
+
+// Index of the lowest set bit in a layer mask, or -1 when empty.
+static int lowestSetLayer(uint32_t mask)
+{
+    for (int i = 0; i < 32; ++i)
+        if (mask & (1u << i))
+            return i;
+    return -1;
+}
+
 PanelInspector::PanelInspector(kGuiManager *setGuiManager, Manager *setManager)
 {
     gui = setGuiManager;
@@ -1245,8 +1272,113 @@ static void drawDecalSection(kGuiManager *gui, kDecal *decal, Manager *mgr, bool
         }
     }
 
+    // --- Projection direction ------------------------------------------------
+    // Local-space axis along which the decal projects. The default (0,-1,0)
+    // projects straight down onto the floor; the object rotation orients it
+    // against walls/ceilings.
+    {
+        propLabel(gui, "Project Dir");
+        kVec3 dir = decal->getProjectionDirection();
+        float dirArr[3] = {dir.x, dir.y, dir.z};
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat3("##DecalDir", dirArr, 0.01f, -1.0f, 1.0f, "%.3f"))
+        {
+            kVec3 before = decal->getProjectionDirection();
+            kVec3 after(dirArr[0], dirArr[1], dirArr[2]);
+            decal->setProjectionDirection(after);
+            kDecal *cap = decal;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]()
+                { cap->setProjectionDirection(before); },
+                [cap, after]()
+                { cap->setProjectionDirection(after); }));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
+    }
+
+    // --- Projection distance -------------------------------------------------
+    // How far along the direction the projection volume reaches.
+    {
+        propLabel(gui, "Project Distance");
+        float dist = decal->getProjectionDistance();
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat("##DecalDistance", &dist, 0.01f, 0.0f, 1000.0f, "%.3f"))
+        {
+            float before = decal->getProjectionDistance();
+            float after = dist;
+            decal->setProjectionDistance(after);
+            kDecal *cap = decal;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]()
+                { cap->setProjectionDistance(before); },
+                [cap, after]()
+                { cap->setProjectionDistance(after); }));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
+    }
+
+    // --- Projection size (width x height of the cross-section) ---------------
+    {
+        propLabel(gui, "Project Size");
+        kVec2 size = decal->getProjectionSize();
+        float sizeArr[2] = {size.x, size.y};
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::DragFloat2("##DecalSize", sizeArr, 0.01f, 0.001f, 1000.0f, "%.3f"))
+        {
+            kVec2 before = decal->getProjectionSize();
+            kVec2 after(sizeArr[0], sizeArr[1]);
+            decal->setProjectionSize(after);
+            kDecal *cap = decal;
+            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
+                [cap, before]()
+                { cap->setProjectionSize(before); },
+                [cap, after]()
+                { cap->setProjectionSize(after); }));
+            mgr->projectSaved = false;
+            mgr->refreshWindowTitle();
+        }
+    }
+
+    // --- Projection layers ---------------------------------------------------
+    // Only meshes on the selected layers are projected onto.
+    {
+        propLabel(gui, "Project Layers");
+        uint32_t mask = decal->getProjectionLayerMask();
+        kString preview = layerMaskPreview(mgr->layerSettings.layers, mask);
+        gui->setNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##DecalLayers", preview.c_str()))
+        {
+            for (size_t i = 0; i < mgr->layerSettings.layers.size() && i < 32; ++i)
+            {
+                bool on = (mask & (1u << i)) != 0u;
+                if (ImGui::Checkbox(mgr->layerSettings.layers[i].c_str(), &on))
+                {
+                    if (on) mask |= (1u << i);
+                    else    mask &= ~(1u << i);
+                    decal->setProjectionLayerMask(mask);
+                    mgr->projectSaved = false;
+                    mgr->refreshWindowTitle();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Restrict which object layers this decal projects onto.");
+    }
+
+    // --- Rebuild -------------------------------------------------------------
+    // Force a projection rebuild (useful after moving the surface a decal is
+    // projected onto, which the editor cannot detect automatically).
+    {
+        propLabel(gui, "Geometry");
+        if (ImGui::Button("Rebuild##DecalRebuild", ImVec2(-FLT_MIN, 0.0f)))
+            mgr->rebuildDecal(decal);
+    }
+
     // --- Surface offset ------------------------------------------------------
-    // How far the flat quad floats above its pivot (along the face normal) so
+    // How far the generated fragments are pulled back toward the projector so
     // the sticker does not z-fight with the surface it is stamped on.
     {
         propLabel(gui, "Surface Offset");
@@ -6151,29 +6283,35 @@ void PanelInspector::draw(bool &opened)
                     }
                 }
 
-                // --- Tag dropdown (like Unity's tag selector) ----------------
+                // --- Tag + Layer dropdowns (multi-select, Unity-style) --------
                 {
-                    kString currentTag = obj->getTag();
-                    if (currentTag.empty()) currentTag = "(Untagged)";
+                    // Multiple tags, toggled with checkboxes.
+                    std::vector<kString> tags = obj->getTags();
+                    kString tagPreview = "(Untagged)";
+                    if (!tags.empty())
+                    {
+                        tagPreview.clear();
+                        for (size_t i = 0; i < tags.size(); ++i)
+                        {
+                            if (i) tagPreview += ", ";
+                            tagPreview += tags[i];
+                        }
+                    }
                     gui->alignTextToFramePadding();
                     gui->text("Tag");
                     gui->sameLine(0, 8.0f);
-                    gui->setNextItemWidth(180.0f);
-                    if (ImGui::BeginCombo("##ObjTag", currentTag.c_str()))
+                    gui->setNextItemWidth(150.0f);
+                    if (ImGui::BeginCombo("##ObjTags", tagPreview.c_str()))
                     {
-                        // Built-in "no tag" option.
-                        if (ImGui::Selectable("(Untagged)", currentTag == "(Untagged)"))
-                        {
-                            obj->setTag("");
-                            manager->projectSaved = false;
-                        }
                         for (const auto &t : manager->tagSettings.tags)
                         {
-                            bool selected = (currentTag == t);
-                            if (ImGui::Selectable(t.c_str(), selected))
+                            bool on = obj->hasTag(t);
+                            if (ImGui::Checkbox(t.c_str(), &on))
                             {
-                                obj->setTag(t);
+                                if (on) obj->addTag(t);
+                                else    obj->removeTag(t);
                                 manager->projectSaved = false;
+                                manager->refreshWindowTitle();
                             }
                         }
                         ImGui::Separator();
@@ -6182,7 +6320,47 @@ void PanelInspector::draw(bool &opened)
                         ImGui::EndCombo();
                     }
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Assign a project-defined tag to this object.");
+                        ImGui::SetTooltip("Assign one or more project-defined tags.");
+
+                    // Multiple layers (bitmask), toggled with checkboxes.
+                    gui->sameLine(0, 12.0f);
+                    gui->alignTextToFramePadding();
+                    gui->text("Layer");
+                    gui->sameLine(0, 8.0f);
+                    gui->setNextItemWidth(150.0f);
+                    uint32_t layerMask = obj->getLayerMask();
+                    kString layerPreview = layerMaskPreview(manager->layerSettings.layers, layerMask);
+                    if (ImGui::BeginCombo("##ObjLayers", layerPreview.c_str()))
+                    {
+                        for (size_t i = 0; i < manager->layerSettings.layers.size() && i < 32; ++i)
+                        {
+                            bool on = (layerMask & (1u << i)) != 0u;
+                            if (ImGui::Checkbox(manager->layerSettings.layers[i].c_str(), &on))
+                            {
+                                if (on) layerMask |= (1u << i);
+                                else    layerMask &= ~(1u << i);
+                                obj->setLayerMask(layerMask);
+                                // Keep the legacy single physics layer in sync
+                                // with the lowest selected layer.
+                                if (obj->getHasPhysicsDesc())
+                                {
+                                    int li = lowestSetLayer(layerMask);
+                                    obj->getPhysicsDesc().layer =
+                                        (li >= 0 && li < (int)manager->layerSettings.layers.size())
+                                            ? manager->layerSettings.layers[li]
+                                            : "Default";
+                                }
+                                manager->projectSaved = false;
+                                manager->refreshWindowTitle();
+                            }
+                        }
+                        ImGui::Separator();
+                        if (ImGui::Selectable("Edit Layers..."))
+                            manager->showLayerEditor = true;
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Objects can belong to multiple layers; used to filter physics, decals and navigation.");
                     gui->spacing();
                 }
 

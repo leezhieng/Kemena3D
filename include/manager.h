@@ -267,6 +267,16 @@ public:
      */
     kScene *getCreationScene() { return hierarchyShowsPrefab ? prefabScene : scene; }
 
+    /**
+     * @brief World-space point where newly created objects are placed.
+     *
+     * This is the editor camera's look-at / orbit point, so new objects appear
+     * where the user is looking. After the user focuses an object with F it is
+     * the framed object's centre; in prefab editing it is the prefab preview
+     * camera's orbit pivot.
+     */
+    kVec3 getCreationPosition() const;
+
     // --- Edit actions -------------------------------------------------------
     void selectAll();
     void deselectAll();
@@ -296,6 +306,16 @@ public:
      * @return true on success.
      */
     bool applyDecalShaderType(kDecal *decal, const kString &type);
+
+    /**
+     * @brief Marks a decal's projected geometry as dirty so the renderer
+     *        rebuilds it on the next frame.
+     *
+     * Useful after moving the surface a decal is projected onto, since the
+     * editor cannot cheaply detect arbitrary mesh transform changes.
+     * @param decal Target decal object.
+     */
+    void rebuildDecal(kDecal *decal);
 
     // --- Publish ------------------------------------------------------------
 
