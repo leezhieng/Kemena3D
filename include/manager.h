@@ -223,6 +223,15 @@ public:
     kScene *getScene() { return scene; }
     kRenderer *getRenderer() { return renderer; }
     void setGui(kGuiManager *g) { gui = g; }
+
+    /**
+     * @brief Sets the node gizmo icon billboard size and pushes it to all
+     *        renderers (editor, game, prefab).
+     * @param size Icon half-extent in world units.
+     */
+    void setIconGizmoSize(float size);
+    /** @brief Returns the current node gizmo icon billboard size. */
+    float getIconGizmoSize() const { return iconGizmoSize; }
     kObject *findObjectByUuid(const kString &uuid);
     void deleteSelectedObjects();
     void duplicateSelectedObjects();
@@ -1090,6 +1099,12 @@ public:
 
     ImGuizmo::OPERATION manipulatorType = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE manipulatorMode = ImGuizmo::LOCAL;
+
+    /// On-screen size of the node billboard gizmo icons (light, decal, particle,
+    /// camera, audio). Edited from the World viewport "Gizmo Settings" dropdown
+    /// and pushed to every renderer (editor, game, prefab). Persisted per-project
+    /// (Config/project.json -> "icon_gizmo_size").
+    float iconGizmoSize = 0.5f;
 
     // Prefab panel has its own ImGuizmo state so it doesn't interfere with the
     // world panel's gizmo mode.

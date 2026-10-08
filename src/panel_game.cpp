@@ -102,6 +102,9 @@ void PanelGame::renderGame(int viewportW, int viewportH, float dt)
     if (renderer->getShadowResolution() != gameScene->getShadowMapResolution())
         renderer->setShadowResolution(gameScene->getShadowMapResolution());
 
+    // Keep the node gizmo icon size in sync with the editor setting.
+    renderer->setIconGizmoSize(manager->iconGizmoSize);
+
     // Keep the camera aspect ratio in sync with the viewport.
     gameCamera->setAspectRatio((float)viewportW / (float)viewportH);
 
@@ -111,11 +114,18 @@ void PanelGame::renderGame(int viewportW, int viewportH, float dt)
     kCamera *savedCamera = world->getMainCamera();
     world->setMainCamera(gameCamera);
 
+    // Editor billboard gizmo icons (light / camera / decal / audio) are
+    // authoring aids only — suppress them for this game/preview pass so they
+    // never show up in the Game panel, then restore the editor's setting.
+    const bool savedEditorGizmos = renderer->getEditorGizmosEnabled();
+    renderer->setEditorGizmosEnabled(false);
+
     // render() is called with autoClearSwapWindow=false (as the other panels do),
     // so the screen-buffer FBO must be cleared explicitly before drawing.
     renderer->clear();
     renderer->render(world, gameScene, 0, 0, viewportW, viewportH, dt, false);
 
+    renderer->setEditorGizmosEnabled(savedEditorGizmos);
     world->setMainCamera(savedCamera);
 }
 
@@ -138,6 +148,12 @@ void PanelGame::captureNodeRecursive(kObject *node)
         return;
     ObjectTransformSnapshot snap;
     snap.uuid   = node->getUuid();
+    // Keep the live pointer and the parent edge so a node that is destroyed
+    // (detached from the graph) during play can be re-attached on Stop. The
+    // engine retains the memory of runtime-destroyed objects, so the pointer
+    // stays valid even after the node leaves the scene graph.
+    snap.object = node;
+    snap.parent = node->getParent();
     snap.pos    = node->getPosition();
     snap.rot    = node->getRotation();
     snap.scale  = node->getScale();
@@ -158,11 +174,31 @@ void PanelGame::captureSnapshot()
 
 void PanelGame::restoreSnapshot()
 {
+    // Tracks whether any node had to be put back on the graph so the hierarchy
+    // can be rebuilt once at the end.
+    bool revivedAny = false;
+
     for (const auto &snap : sceneSnapshot)
     {
-        kObject *obj = manager->findObjectByUuid(snap.uuid);
+        // Prefer the live pointer captured at Play. A node destroyed during
+        // play is only detached from the scene graph (its memory is retained),
+        // so findObjectByUuid() cannot locate it — it walks the graph only.
+        kObject *obj = snap.object;
+        if (!obj)
+            obj = manager->findObjectByUuid(snap.uuid);
         if (!obj)
             continue;
+
+        // Revive nodes that were destroyed during play: a live node with no
+        // parent was detached by destroyObject(). Re-attach it under the parent
+        // it had at capture time. The snapshot is captured in pre-order (a
+        // parent before its descendants), so a destroyed parent is already back
+        // on the graph by the time its children are processed here.
+        if (obj->getParent() == nullptr && snap.parent != nullptr)
+        {
+            obj->setParent(snap.parent);
+            revivedAny = true;
+        }
 
         // Restore transform and active state.
         obj->setPosition(snap.pos);
@@ -238,6 +274,12 @@ void PanelGame::restoreSnapshot()
             }
         }
     }
+
+    // If anything was revived, the hierarchy tree no longer matches the scene
+    // graph — rebuild it so the restored objects reappear in the editor.
+    if (revivedAny && manager->panelHierarchy)
+        manager->panelHierarchy->refreshList();
+
     sceneSnapshot.clear();
 }
 

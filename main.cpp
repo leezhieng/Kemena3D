@@ -453,6 +453,18 @@ int main()
 			{
 				if (panelWorld->enabled && panelWorld->hovered)
 				{
+					// Screen-space cursor position (same coordinate space as
+					// panelPos). overViewport is true only when the cursor is
+					// actually inside the rendered scene image, so clicking the
+					// toolbar options above the viewport does not clear the
+					// current selection.
+					kVec2 wMouse = gui->getMousePos();
+					bool overViewport =
+						wMouse.x >= panelWorld->panelPos.x &&
+						wMouse.x <= panelWorld->panelPos.x + (float)panelWorld->width &&
+						wMouse.y >= panelWorld->panelPos.y &&
+						wMouse.y <= panelWorld->panelPos.y + (float)panelWorld->height;
+
 					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && altPressed && panelWorld->focused)
 					{
 						dragging = true;
@@ -472,7 +484,7 @@ int main()
 						// User is steering — cancel any in-flight F tween.
 						cameraTweenActive = false;
 					}
-					else if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && !altPressed && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing())
+					else if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && !altPressed && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && overViewport)
 					{
 						// Snapshot selection before picking (for undo)
 						auto selBefore = manager->selectedObjects;

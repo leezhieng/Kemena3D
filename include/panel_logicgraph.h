@@ -183,6 +183,20 @@ private:
     /** @brief Pastes the clipboard node offset from its original position. */
     void pasteClipboard();
 
+    /**
+     * @brief Records a graph edit in the shared undo history.
+     *
+     * Snapshots the whole graph as JSON and, once a user edit has settled (no
+     * active drag/widget), pushes before/after states onto Manager::undoRedo as
+     * a PropertyCommand. Undo/redo restore the graph via kScriptGraph::fromJson
+     * and regenerate the compiled script. This single choke-point covers every
+     * edit kind (add/delete/move/connect/disconnect/payload/variables).
+     */
+    void syncUndoSnapshot();
+
+    /** @brief Resets the undo baseline so the next change starts a fresh step. */
+    void resetUndoBaseline();
+
     kGuiManager *gui     = nullptr;
     Manager     *manager = nullptr;
 
@@ -219,6 +233,10 @@ private:
     kScriptGraphNode clipboardNode;
 
     std::string statusLine; ///< Last status message (fallback when no console exists).
+
+    /// JSON snapshot of the graph at the last committed undo step. Empty until
+    /// the first draw initialises it. Compared per-frame to detect settled edits.
+    std::string undoBaselineJson;
 
     ///< Throttles re-reading project.json so the input-action picker stays in
     ///< sync with Project Settings without opening the file every frame.

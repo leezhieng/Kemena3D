@@ -5,11 +5,13 @@
 #include "panel_console.h"
 #include "imgui_internal.h"
 #include "portable-file-dialogs.h"
+#include "commands.h"
 
 #include <nlohmann/json.hpp>
 
 #include <fstream>
 #include <sstream>
+#include <memory>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -48,7 +50,8 @@ namespace
             case kScriptNodeType::EventTriggerStay:
             case kScriptNodeType::EventTriggerExit:  return NodeCategory::Event;
             case kScriptNodeType::Branch:
-            case kScriptNodeType::Sequence:        return NodeCategory::Flow;
+            case kScriptNodeType::Sequence:
+            case kScriptNodeType::CompareTag:      return NodeCategory::Flow;
             case kScriptNodeType::Print:
             case kScriptNodeType::SetPosition:
             case kScriptNodeType::SetRotation:
@@ -76,7 +79,7 @@ namespace
             case kScriptNodeType::SetAngularVelocity:
             case kScriptNodeType::SetPhysicsGravity:
             case kScriptNodeType::MoveCharacter:
-            case kScriptNodeType::CompareTag:      return NodeCategory::Action;
+            case kScriptNodeType::Destroy:         return NodeCategory::Action;
             case kScriptNodeType::GetSelf:
             case kScriptNodeType::GetPosition:
             case kScriptNodeType::GetRotation:
@@ -224,6 +227,11 @@ void PanelLogicGraph::newGraph()
 
     // Seed with an On Update event so the canvas is not empty.
     graph.nodes.push_back(graph.makeNode(kScriptNodeType::EventUpdate, 120.0f, 120.0f));
+
+    // A brand-new document starts with a clean undo history.
+    if (manager)
+        manager->undoRedo.clear();
+    resetUndoBaseline();
 }
 
 void PanelLogicGraph::openFile(const std::string &path)
@@ -254,7 +262,71 @@ bool PanelLogicGraph::loadGraph(const std::string &path)
     canvasOffset = ImVec2(0.0f, 0.0f);
     selectedNode = 0;
     logStatus(LogLevel::Info, "Loaded " + fs::path(path).filename().string());
+
+    // Opening a document discards prior history so undo can never restore a
+    // different graph's JSON into this one.
+    if (manager)
+        manager->undoRedo.clear();
+    resetUndoBaseline();
     return true;
+}
+
+void PanelLogicGraph::resetUndoBaseline()
+{
+    undoBaselineJson = graph.toJson().dump();
+}
+
+void PanelLogicGraph::syncUndoSnapshot()
+{
+    // Serialising the whole graph is the cheapest reliable way to detect any
+    // settled edit, regardless of which interaction produced it.
+    std::string current = graph.toJson().dump();
+
+    // First frame (or immediately after a load): adopt the current state.
+    if (undoBaselineJson.empty())
+    {
+        undoBaselineJson = current;
+        return;
+    }
+    if (current == undoBaselineJson)
+        return;
+
+    // Coalesce an ongoing interaction (node drag, comment resize, link drag,
+    // pan, or an active ImGui widget such as a typed value) into a single
+    // history entry by waiting until it finishes.
+    const bool interacting =
+        ImGui::IsAnyItemActive() ||
+        ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+        ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
+        ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
+        movingNode != 0 || resizingComment != 0 || linkDragging || isPanning;
+    if (interacting)
+        return;
+
+    const std::string beforeJson = undoBaselineJson;
+    const std::string afterJson  = current;
+
+    if (manager)
+    {
+        manager->undoRedo.push(std::make_unique<PropertyCommand>(
+            [this, beforeJson]()
+            {
+                graph.fromJson(kJson::parse(beforeJson));
+                undoBaselineJson = beforeJson;
+                graph.dirty = true;
+                regenerateScript();
+            },
+            [this, afterJson]()
+            {
+                graph.fromJson(kJson::parse(afterJson));
+                undoBaselineJson = afterJson;
+                graph.dirty = true;
+                regenerateScript();
+            }));
+    }
+
+    undoBaselineJson = current;
+    graph.dirty = true;
 }
 
 bool PanelLogicGraph::saveGraphAs()
@@ -1145,6 +1217,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
     static const Entry flow[] = {
         {"Branch", kScriptNodeType::Branch},
         {"Sequence", kScriptNodeType::Sequence},
+        {"Compare Tag", kScriptNodeType::CompareTag},
     };
     static const Entry actions[] = {
         {"Print", kScriptNodeType::Print},
@@ -1154,8 +1227,8 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Translate", kScriptNodeType::Translate},
         {"Rotate", kScriptNodeType::Rotate},
         {"Set Active", kScriptNodeType::SetActive},
+        {"Destroy", kScriptNodeType::Destroy},
         {"Set Variable", kScriptNodeType::SetVariable},
-        {"Compare Tag", kScriptNodeType::CompareTag},
     };
     static const Entry getters[] = {
         {"Get Self", kScriptNodeType::GetSelf},
@@ -1687,6 +1760,10 @@ void PanelLogicGraph::draw(bool &isOpened)
     syncVariableNodePins();
     drawVariablesSplitter();
     drawCanvas();
+
+    // Record any settled graph edit as an undo step (shared with the editor's
+    // Ctrl+Z / Ctrl+Y history).
+    syncUndoSnapshot();
 
     ImGui::End();
 }

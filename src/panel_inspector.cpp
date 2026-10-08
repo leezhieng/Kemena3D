@@ -3081,6 +3081,22 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 }
                 }
 
+                // Position Offset — shifts the collider relative to the owning
+                // object's origin (local space). Applies to every shape type.
+                {
+                    float off[3] = {desc.shape.offset.x,
+                                    desc.shape.offset.y,
+                                    desc.shape.offset.z};
+                    propLabel(gui, "Position Offset");
+                    if (ImGui::DragFloat3("##PhysOffset", off, 0.01f, -10000.0f, 10000.0f, "%.3f"))
+                    {
+                        desc.shape.offset = kVec3(off[0], off[1], off[2]);
+                        manager->projectSaved = false;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Local-space offset of the collider from the object origin.");
+                }
+
                 // Mass / damping / gravity-factor are Dynamic-only; greyed
                 // out otherwise so the user still sees the value.
                 gui->beginDisabled(!dynamic);

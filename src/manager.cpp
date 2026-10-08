@@ -137,6 +137,21 @@ Manager::~Manager()
     }
 }
 
+void Manager::setIconGizmoSize(float size)
+{
+    if (size < 0.01f)
+        size = 0.01f;
+    iconGizmoSize = size;
+    // Push the new size to every renderer so the editor viewport, the game
+    // panel and the prefab panel all draw their node icons at the same scale.
+    if (renderer)
+        renderer->setIconGizmoSize(size);
+    if (gameRenderer)
+        gameRenderer->setIconGizmoSize(size);
+    if (prefabRenderer)
+        prefabRenderer->setIconGizmoSize(size);
+}
+
 kString Manager::getCurrentDirPath()
 {
     fs::path path = projectPath;
@@ -465,6 +480,9 @@ bool Manager::openProject()
                     if (!savedName.empty())
                         projectName = savedName;
                 }
+                // Restore the saved node-gizmo icon size.
+                if (cfg.contains("icon_gizmo_size"))
+                    setIconGizmoSize(cfg.value("icon_gizmo_size", 0.5f));
             }
             catch (...) {}
         }
@@ -561,6 +579,9 @@ bool Manager::openProjectFromPath(const kString &path)
                     if (!savedName.empty())
                         projectName = savedName;
                 }
+                // Restore the saved node-gizmo icon size.
+                if (cfg.contains("icon_gizmo_size"))
+                    setIconGizmoSize(cfg.value("icon_gizmo_size", 0.5f));
             }
             catch (...) {}
         }
@@ -5332,6 +5353,9 @@ void Manager::saveProjectConfig()
         // Persist the project name so it survives across sessions.
         if (!projectName.empty())
             j["project_name"] = projectName;
+        // Persist the editor's node-gizmo icon size so it is restored when the
+        // project is reopened.
+        j["icon_gizmo_size"] = iconGizmoSize;
         if (!worldPath.empty() && fs::exists(worldPath))
         {
             std::error_code rel_ec;
@@ -6155,6 +6179,14 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (obj.contains("decal_size") && obj["decal_size"].is_array() && obj["decal_size"].size() == 2)
             decal->setProjectionSize(kVec2(obj["decal_size"][0].get<float>(),
                                            obj["decal_size"][1].get<float>()));
+        // Projection layer mask (which object layers this decal projects onto).
+        // Serialised as "decal_layers"; absent in older files, in which case the
+        // default (all layers) is kept. Without this the editor always reloaded
+        // the mask as "all layers" and re-checked the default layer.
+        if (obj.contains("decal_layers") && obj["decal_layers"].is_number_unsigned())
+            decal->setProjectionLayerMask(obj["decal_layers"].get<uint32_t>());
+        else if (obj.contains("decal_layers") && obj["decal_layers"].is_number_integer())
+            decal->setProjectionLayerMask((uint32_t)obj["decal_layers"].get<int64_t>());
         if (topLevel)
         {
             scene->addObject(decal, uuid);
@@ -6316,6 +6348,12 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 const auto &he = phys["half_extents"];
                 desc.shape.halfExtents = kVec3(
                     he.value("x", 0.5f), he.value("y", 0.5f), he.value("z", 0.5f));
+            }
+            if (phys.contains("offset") && phys["offset"].is_object())
+            {
+                const auto &off = phys["offset"];
+                desc.shape.offset = kVec3(
+                    off.value("x", 0.0f), off.value("y", 0.0f), off.value("z", 0.0f));
             }
             desc.shape.radius = phys.value("radius", 0.5f);
             desc.shape.height = phys.value("height", 1.0f);
@@ -7630,7 +7668,8 @@ void Manager::startPhysicsSimulation()
             kPhysicsObjectDesc desc = node->getPhysicsDesc();
             // Seed the body from the object's current world transform so it
             // appears where the editor placed it, not at the descriptor's
-            // (default-zero) position.
+            // (default-zero) position. The collider offset is applied to the
+            // shape (see kPhysicsObject::init) so the object itself never moves.
             desc.position = node->getGlobalPosition();
             desc.rotation = node->getGlobalRotation();
             kPhysicsObject *body = physicsManager->createObject(desc);

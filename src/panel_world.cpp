@@ -37,6 +37,10 @@ PanelWorld::PanelWorld(kGuiManager *setGuiManager, Manager *setManager)
         tex = am->loadTexture2DFromResource("ICON_CAMERA_BUTTON", "icon", kTextureFormat::TEX_FORMAT_RGBA);
         if (tex)
             iconCamera = tex->getTextureID();
+
+        tex = am->loadTexture2DFromResource("ICON_SCENE_LABEL", "icon", kTextureFormat::TEX_FORMAT_RGBA);
+        if (tex)
+            iconPreview = tex->getTextureID();
     }
 }
 
@@ -80,79 +84,102 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     gui->beginDisabled(!enabled);
     gui->windowStart("World", &isOpened);
 
-    // Pivot mode: individual origins / median centre / last selected.
-    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
-    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon buttons
-    pivotButton(gui, "PivotIndividual", iconPivotIndividual, PivotMode::Individual, manager->pivotMode);
+    // ----- Viewport toolbar -------------------------------------------------
+    // Compact icon buttons: node-gizmo settings (align-local glyph), preview
+    // settings (scene glyph) and the editor camera settings. Pivot mode, render
+    // mode and the octree toggle now live inside the Gizmo / Preview Settings
+    // dropdowns to keep the bar uncluttered.
+
+    // Gizmo Settings dropdown: transform orientation (Local vs World), the
+    // multi-object pivot reference, and the node gizmo icon size.
+    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon button
+    if (gui->imageButton("GizmoSettingsBtn", iconAlignLocal, kVec2(24.0f, 24.0f)))
+        ImGui::OpenPopup("GizmoSettings");
+    gui->popStyleVar();
     if (gui->isItemHovered())
-        gui->setItemTooltip("Individual pivot");
-    gui->sameLine();
-    pivotButton(gui, "PivotCenter", iconPivotCenter, PivotMode::Center, manager->pivotMode);
-    if (gui->isItemHovered())
-        gui->setItemTooltip("Center pivot");
-    gui->sameLine();
-    pivotButton(gui, "PivotLastSelected", iconPivotLastSelected, PivotMode::LastSelected, manager->pivotMode);
-    if (gui->isItemHovered())
-        gui->setItemTooltip("Last selected pivot");
-    gui->popStyleVar(); // FramePadding
-    gui->popStyleVar(); // ItemSpacing
+        gui->setItemTooltip("Gizmo orientation, pivot and node icon size");
 
-    gui->sameLine();
-    gui->dummy(kVec2(8, 0));
-    gui->sameLine();
-
-    // Render mode selector
-    static const char *kRenderModeNames[] = {
-        "Full", "Albedo", "Normals", "Wireframe", "Depth", "Object IDs", "Full+Wire"};
-    int currentMode = (int)renderer->getRenderMode();
-    gui->setNextItemWidth(110.0f);
-    if (ImGui::Combo("##RenderMode", &currentMode, kRenderModeNames, 7))
-        renderer->setRenderMode((kRenderMode)currentMode);
-
-    gui->sameLine();
-    gui->dummy(kVec2(8, 0));
-    gui->sameLine();
-
-    // Octree debug toggle
+    if (ImGui::BeginPopup("GizmoSettings"))
     {
+        ImGui::TextUnformatted("Orientation");
+        ImGui::Separator();
+        int orient = (manager->manipulatorMode == ImGuizmo::LOCAL) ? 0 : 1;
+        if (ImGui::RadioButton("Local", &orient, 0))
+            manager->manipulatorMode = ImGuizmo::LOCAL;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Gizmo aligned to the object's local orientation");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("World", &orient, 1))
+            manager->manipulatorMode = ImGuizmo::WORLD;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Gizmo aligned to world axes");
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Pivot");
+        ImGui::Separator();
+        gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
+        gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3));
+        pivotButton(gui, "PivotIndividual", iconPivotIndividual, PivotMode::Individual, manager->pivotMode);
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Individual pivot");
+        gui->sameLine();
+        pivotButton(gui, "PivotCenter", iconPivotCenter, PivotMode::Center, manager->pivotMode);
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Center pivot");
+        gui->sameLine();
+        pivotButton(gui, "PivotLastSelected", iconPivotLastSelected, PivotMode::LastSelected, manager->pivotMode);
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Last selected pivot");
+        gui->popStyleVar(); // FramePadding
+        gui->popStyleVar(); // ItemSpacing
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Icon Size");
+        ImGui::Separator();
+        float iconSize = manager->iconGizmoSize;
+        gui->setNextItemWidth(180.0f);
+        if (gui->sliderFloat("##GizmoIconSize", &iconSize, 0.05f, 2.0f, "%.2f"))
+            manager->setIconGizmoSize(iconSize);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Size of the node icons (light, decal, particle, camera, audio)");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset"))
+            manager->setIconGizmoSize(0.5f);
+        ImGui::EndPopup();
+    }
+
+    gui->sameLine();
+    gui->dummy(kVec2(8, 0));
+    gui->sameLine();
+
+    // Preview Settings dropdown: viewport render mode plus the octree debug
+    // bounds overlay.
+    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon button
+    if (gui->imageButton("PreviewSettingsBtn", iconPreview, kVec2(24.0f, 24.0f)))
+        ImGui::OpenPopup("PreviewSettings");
+    gui->popStyleVar();
+    if (gui->isItemHovered())
+        gui->setItemTooltip("Viewport render mode and debug overlays");
+
+    if (ImGui::BeginPopup("PreviewSettings"))
+    {
+        ImGui::TextUnformatted("Render Mode");
+        ImGui::Separator();
+        static const char *kRenderModeNames[] = {
+            "Full", "Albedo", "Normals", "Wireframe", "Depth", "Object IDs", "Full+Wire"};
+        int currentMode = (int)renderer->getRenderMode();
+        gui->setNextItemWidth(180.0f);
+        if (ImGui::Combo("##RenderMode", &currentMode, kRenderModeNames, 7))
+            renderer->setRenderMode((kRenderMode)currentMode);
+
+        ImGui::Separator();
         bool octreeDebug = renderer->getOctreeDebugEnabled();
         if (gui->checkbox("Octree", &octreeDebug))
             renderer->setOctreeDebugEnabled(octreeDebug);
         if (gui->isItemHovered())
             gui->setItemTooltip("Show octree node bounds");
+        ImGui::EndPopup();
     }
-
-    gui->sameLine();
-    gui->dummy(kVec2(8, 0));
-    gui->sameLine();
-
-    // Gizmo space: Local (object orientation) vs World (axis-aligned).
-    gui->pushStyleVar(ImGuiStyleVar_ItemSpacing, kVec2(2, 0));
-    gui->pushStyleVar(ImGuiStyleVar_FramePadding, kVec2(3, 3)); // square icon buttons
-    {
-        auto modeBtn = [&](const char *id, uint32_t icon, ImGuizmo::MODE m)
-        {
-            bool active = (manager->manipulatorMode == m);
-            if (active)
-            {
-                gui->pushStyleColor(ImGuiCol_Button, kVec4(0.26f, 0.59f, 0.98f, 1.00f));
-                gui->pushStyleColor(ImGuiCol_ButtonHovered, kVec4(0.26f, 0.59f, 0.98f, 0.85f));
-            }
-            if (gui->imageButton(id, icon, kVec2(24.0f, 24.0f)))
-                manager->manipulatorMode = m;
-            if (active)
-                gui->popStyleColor(2);
-        };
-        modeBtn("GizmoLocal", iconAlignLocal, ImGuizmo::LOCAL);
-        if (gui->isItemHovered())
-            gui->setItemTooltip("Gizmo aligned to the object's local orientation");
-        gui->sameLine();
-        modeBtn("GizmoWorld", iconAlignWorld, ImGuizmo::WORLD);
-        if (gui->isItemHovered())
-            gui->setItemTooltip("Gizmo aligned to world axes");
-    }
-    gui->popStyleVar(); // FramePadding
-    gui->popStyleVar(); // ItemSpacing
 
     gui->sameLine();
     gui->dummy(kVec2(8, 0));

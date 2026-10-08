@@ -51,6 +51,8 @@ enum class GameAspectRatio
 struct ObjectTransformSnapshot
 {
     kString        uuid;  ///< UUID of the object this snapshot belongs to.
+    kObject       *object = nullptr; ///< Live object pointer at capture time.
+    kObject       *parent = nullptr; ///< Parent at capture time (used to re-attach a destroyed node).
     kVec3          pos;   ///< Position at capture time.
     kQuat          rot;   ///< Rotation at capture time.
     kVec3          scale; ///< Scale at capture time.

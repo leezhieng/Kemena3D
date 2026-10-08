@@ -67,9 +67,10 @@ private:
     uint32_t iconPivotIndividual = 0;  ///< "Individual origins" pivot-mode icon.
     uint32_t iconPivotCenter     = 0;  ///< "Median point" (centre) pivot-mode icon.
     uint32_t iconPivotLastSelected = 0; ///< "Active element" (last selected) pivot-mode icon.
-    uint32_t iconAlignLocal      = 0;  ///< Gizmo "Local" transform-space icon.
+    uint32_t iconAlignLocal      = 0;  ///< Gizmo "Local" transform-space icon (also the Gizmo Settings button).
     uint32_t iconAlignWorld      = 0;  ///< Gizmo "World" transform-space icon.
     uint32_t iconCamera          = 0;  ///< Editor camera-settings button icon.
+    uint32_t iconPreview         = 0;  ///< Preview Settings button icon (scene.png).
 
     /// Lazy-initialised offscreen renderer used for the camera-preview overlay
     /// shown at the bottom-right when a kCamera is the primary selection.
