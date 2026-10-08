@@ -200,11 +200,13 @@ void PanelGame::restoreSnapshot()
             revivedAny = true;
         }
 
-        // Restore transform and active state.
+        // Restore transform and active state. A GameObject destroyed by a script
+        // during play is hidden + flagged; clearing the flag below brings it back.
         obj->setPosition(snap.pos);
         obj->setRotation(snap.rot);
         obj->setScale(snap.scale);
         obj->setActive(snap.active);
+        obj->setDestroyed(false);
 
         // Restore non-transform properties from the full JSON snapshot.
         const auto &j = snap.state;

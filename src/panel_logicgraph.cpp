@@ -59,6 +59,7 @@ namespace
             case kScriptNodeType::Translate:
             case kScriptNodeType::Rotate:
             case kScriptNodeType::SetActive:
+            case kScriptNodeType::DestroyObject:
             case kScriptNodeType::SetVariable:
             case kScriptNodeType::PlaySound:
             case kScriptNodeType::StopAllSounds:
@@ -78,8 +79,7 @@ namespace
             case kScriptNodeType::SetLinearVelocity:
             case kScriptNodeType::SetAngularVelocity:
             case kScriptNodeType::SetPhysicsGravity:
-            case kScriptNodeType::MoveCharacter:
-            case kScriptNodeType::Destroy:         return NodeCategory::Action;
+            case kScriptNodeType::MoveCharacter:   return NodeCategory::Action;
             case kScriptNodeType::GetSelf:
             case kScriptNodeType::GetPosition:
             case kScriptNodeType::GetRotation:
@@ -1227,7 +1227,7 @@ void PanelLogicGraph::drawAddNodeMenu(ImVec2 spawn)
         {"Translate", kScriptNodeType::Translate},
         {"Rotate", kScriptNodeType::Rotate},
         {"Set Active", kScriptNodeType::SetActive},
-        {"Destroy", kScriptNodeType::Destroy},
+        {"Destroy GameObject", kScriptNodeType::DestroyObject},
         {"Set Variable", kScriptNodeType::SetVariable},
     };
     static const Entry getters[] = {

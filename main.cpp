@@ -59,12 +59,16 @@ int main()
 	rendererWorld->setEnableShadow(true);
 	rendererWorld->setEnableObjectPicking(true);
 	rendererWorld->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+	// Editor viewport: draw the camera/light/audio/decal gizmo billboards.
+	rendererWorld->setEditorGizmosEnabled(true);
 
 	kRenderer *rendererPrefab = createRenderer(window);
 	rendererPrefab->setEnableScreenBuffer(true);
 	rendererPrefab->setEnableShadow(true);
 	rendererPrefab->setEnableObjectPicking(true);
 	rendererPrefab->setClearColor(kVec4(0.2f, 0.2f, 0.2f, 1.0f));
+	// Editor viewport (prefab): gizmo billboards are editor scaffolding too.
+	rendererPrefab->setEditorGizmosEnabled(true);
 
 	// Dedicated renderer for the in-editor Game panel. The game view shares the
 	// world/scene with the World panel but renders from the game camera, so it
@@ -293,19 +297,9 @@ int main()
 	kVec3 prefabPanStartCamPos;
 	kVec3 prefabPanStartPivot;
 
-	// --- Game panel camera controls (mirrors world / prefab panels) ---
-	// While the Game viewport is hovered/focused and the game is running, the
-	// mouse drives the game camera that the panel actually renders through
-	// (look = Alt + Left drag, pan = Middle drag, wheel = dolly). Without this
-	// there was no way to steer the camera shown in the Game panel.
-	bool  gameDragging = false;
-	kVec2 gameDragStart;
-	kQuat gameCamRot;
-
-	bool  gamePanning = false;
-	kVec2 gamePanStart;
-	kVec3 gamePanStartCamPos;
-
+	// Mouse-driven camera navigation is editor-only: the World panel steers the
+	// editor camera and the Prefab panel steers its preview camera. The Game
+	// panel's camera is gameplay-owned and must not be moved by Alt+click.
 	// The prefab preview camera's orbit pivot/distance live on the Manager so
 	// the Prefab panel's Preview Camera settings can read and persist them.
 
@@ -634,28 +628,6 @@ int main()
 					}
 				}
 
-				// --- Game panel mouse-down (steer the game camera) ---
-				if (panelGame->hovered && panelGame->focused &&
-				    manager->defaultGameCamera &&
-				    manager->defaultGameCamera != manager->editorCamera &&
-				    panelGame->getPlayState() != GamePlayState::Stopped)
-				{
-					kCamera *gcam = manager->defaultGameCamera;
-					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && altPressed)
-					{
-						gameDragging = true;
-						gameDragStart.x = event.getMouseX();
-						gameDragStart.y = event.getMouseY();
-						gameCamRot = gcam->getRotation();
-					}
-					else if (event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
-					{
-						gamePanning = true;
-						gamePanStart.x = event.getMouseX();
-						gamePanStart.y = event.getMouseY();
-						gamePanStartCamPos = gcam->getPosition();
-					}
-				}
 			}
 			else if (eventType == K_EVENT_MOUSEBUTTONUP)
 			{
@@ -679,11 +651,6 @@ int main()
 				if (prefabPanning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
 					prefabPanning = false;
 
-				// --- Game panel mouse-up ---
-				if (gameDragging && event.getMouseButton() == K_MOUSEBUTTON_LEFT)
-					gameDragging = false;
-				if (gamePanning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
-					gamePanning = false;
 			}
 			else if (eventType == K_EVENT_MOUSEMOTION)
 			{
@@ -746,29 +713,6 @@ int main()
 					}
 				}
 
-				// --- Game panel camera motion (look / pan) ---
-				if (panelGame->hovered && manager->defaultGameCamera &&
-				    manager->defaultGameCamera != manager->editorCamera &&
-				    panelGame->getPlayState() != GamePlayState::Stopped)
-				{
-					kCamera *gcam = manager->defaultGameCamera;
-					if (gameDragging)
-					{
-						float deltaX = gameDragStart.x - event.getMouseX();
-						float deltaY = gameDragStart.y - event.getMouseY();
-						gcam->rotateByMouse(gameCamRot, -deltaX, -deltaY);
-					}
-					else if (gamePanning)
-					{
-						float deltaX = event.getMouseX() - gamePanStart.x;
-						float deltaY = event.getMouseY() - gamePanStart.y;
-						float panScale = 0.01f;
-						kVec3 right = gcam->calculateRight();
-						kVec3 up    = gcam->calculateUp();
-						kVec3 offset = (right * deltaX + up * deltaY) * panScale;
-						gcam->setPosition(gamePanStartCamPos + offset);
-					}
-				}
 			}
 			else if (eventType == K_EVENT_MOUSEWHEEL)
 			{
@@ -794,16 +738,6 @@ int main()
 					manager->prefabCamera->setPosition(manager->prefabOrbitPivot - fwd * manager->prefabOrbitDistance);
 				}
 
-				// --- Game panel camera dolly ---
-				if (panelGame->hovered && manager->defaultGameCamera &&
-				    manager->defaultGameCamera != manager->editorCamera &&
-				    panelGame->getPlayState() != GamePlayState::Stopped)
-				{
-					kCamera *gcam = manager->defaultGameCamera;
-					float wheel = event.getMouseWheelY();
-					kVec3 fwd = gcam->calculateForward();
-					gcam->setPosition(gcam->getPosition() + fwd * (wheel * 0.5f));
-				}
 			}
 			else if (eventType == K_EVENT_KEYDOWN)
 			{

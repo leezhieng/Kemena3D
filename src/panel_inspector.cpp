@@ -12,6 +12,7 @@
 #include <functional>
 #include <unordered_set>
 #include <GL/glew.h>
+#include <glm/gtc/quaternion.hpp>
 #include <kemena/kanimator.h>
 #include <kemena/kanimationmask.h>
 #include <kemena/kskelanimation.h>
@@ -1242,103 +1243,16 @@ static void drawDecalSection(kGuiManager *gui, kDecal *decal, Manager *mgr, bool
     if (!beginPropTable(gui, "DecalTable"))
         return;
 
-    // --- Shader type (built-in Flat / PBR / Phong) ---------------------------
-    // Sets the decal's material to a fresh built-in material of the selected
-    // type. The choice is persisted on the object so it can be rebuilt on load.
+    // --- Projection ----------------------------------------------------------
+    // The projection volume is derived from the object's transform: the
+    // cross-section is the object's local XZ footprint and the volume projects
+    // one object-height down the local -Y axis. Rotate/scale the object (in the
+    // Transform section above) to reshape the decal projection.
     {
-        propLabel(gui, "Shader");
-
-        const char *shaderItems[] = {"Flat", "PBR", "Phong"};
-        std::string shaderType = decal->getShaderType();
-        int shaderSel = 0;
-        if (shaderType == "pbr")       shaderSel = 1;
-        else if (shaderType == "phong") shaderSel = 2;
-
-        gui->setNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##DecalShader", &shaderSel, shaderItems, 3))
-        {
-            const char *newType = (shaderSel == 1) ? "pbr" : ((shaderSel == 2) ? "phong" : "flat");
-            std::vector<MaterialSnapshot> before = mgr->captureMaterialSubtree(decal);
-            if (mgr->applyDecalShaderType(decal, newType))
-            {
-                auto cmd = std::make_unique<MaterialCommand>();
-                cmd->manager = mgr;
-                cmd->before = before;
-                cmd->after = mgr->captureMaterialSubtree(decal);
-                mgr->undoRedo.push(std::move(cmd));
-                mgr->projectSaved = false;
-                mgr->refreshWindowTitle();
-            }
-        }
-    }
-
-    // --- Projection direction ------------------------------------------------
-    // Local-space axis along which the decal projects. The default (0,-1,0)
-    // projects straight down onto the floor; the object rotation orients it
-    // against walls/ceilings.
-    {
-        propLabel(gui, "Project Dir");
-        kVec3 dir = decal->getProjectionDirection();
-        float dirArr[3] = {dir.x, dir.y, dir.z};
-        gui->setNextItemWidth(-FLT_MIN);
-        if (ImGui::DragFloat3("##DecalDir", dirArr, 0.01f, -1.0f, 1.0f, "%.3f"))
-        {
-            kVec3 before = decal->getProjectionDirection();
-            kVec3 after(dirArr[0], dirArr[1], dirArr[2]);
-            decal->setProjectionDirection(after);
-            kDecal *cap = decal;
-            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
-                [cap, before]()
-                { cap->setProjectionDirection(before); },
-                [cap, after]()
-                { cap->setProjectionDirection(after); }));
-            mgr->projectSaved = false;
-            mgr->refreshWindowTitle();
-        }
-    }
-
-    // --- Projection distance -------------------------------------------------
-    // How far along the direction the projection volume reaches.
-    {
-        propLabel(gui, "Project Distance");
-        float dist = decal->getProjectionDistance();
-        gui->setNextItemWidth(-FLT_MIN);
-        if (ImGui::DragFloat("##DecalDistance", &dist, 0.01f, 0.0f, 1000.0f, "%.3f"))
-        {
-            float before = decal->getProjectionDistance();
-            float after = dist;
-            decal->setProjectionDistance(after);
-            kDecal *cap = decal;
-            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
-                [cap, before]()
-                { cap->setProjectionDistance(before); },
-                [cap, after]()
-                { cap->setProjectionDistance(after); }));
-            mgr->projectSaved = false;
-            mgr->refreshWindowTitle();
-        }
-    }
-
-    // --- Projection size (width x height of the cross-section) ---------------
-    {
-        propLabel(gui, "Project Size");
-        kVec2 size = decal->getProjectionSize();
-        float sizeArr[2] = {size.x, size.y};
-        gui->setNextItemWidth(-FLT_MIN);
-        if (ImGui::DragFloat2("##DecalSize", sizeArr, 0.01f, 0.001f, 1000.0f, "%.3f"))
-        {
-            kVec2 before = decal->getProjectionSize();
-            kVec2 after(sizeArr[0], sizeArr[1]);
-            decal->setProjectionSize(after);
-            kDecal *cap = decal;
-            mgr->undoRedo.push(std::make_unique<PropertyCommand>(
-                [cap, before]()
-                { cap->setProjectionSize(before); },
-                [cap, after]()
-                { cap->setProjectionSize(after); }));
-            mgr->projectSaved = false;
-            mgr->refreshWindowTitle();
-        }
+        propLabel(gui, "Projection");
+        gui->beginDisabled(true);
+        ImGui::TextWrapped("Follows the object's rotation and scale");
+        gui->endDisabled();
     }
 
     // --- Projection layers ---------------------------------------------------
@@ -1440,9 +1354,10 @@ static void drawDecalSection(kGuiManager *gui, kDecal *decal, Manager *mgr, bool
             bool ok = false;
             if (idx == 0)
             {
-                // "(None)" — drop the .mat and rebuild the built-in material of
-                // the currently selected shader type (Flat/PBR/Phong) so the
-                // decal stays visible.
+                // "(None)" — drop the .mat and rebuild the decal's default
+                // built-in material so the decal stays visible. The shader is
+                // chosen by the assigned material, so there is no separate
+                // shader picker here.
                 ok = mgr->applyDecalShaderType(decal, decal->getShaderType());
             }
             else
@@ -3081,20 +2996,30 @@ static void drawScriptsSection(kGuiManager *gui, kObject *obj, Manager *manager,
                 }
                 }
 
-                // Position Offset — shifts the collider relative to the owning
-                // object's origin (local space). Applies to every shape type.
+                // Collider offset from the object's pivot. The collider shape
+                // is translated/rotated by these values relative to the body,
+                // so a collider can be nudged off the object's origin.
                 {
-                    float off[3] = {desc.shape.offset.x,
-                                    desc.shape.offset.y,
-                                    desc.shape.offset.z};
-                    propLabel(gui, "Position Offset");
-                    if (ImGui::DragFloat3("##PhysOffset", off, 0.01f, -10000.0f, 10000.0f, "%.3f"))
+                    float offPos[3] = {desc.offsetPosition.x, desc.offsetPosition.y, desc.offsetPosition.z};
+                    propLabel(gui, "Offset Position");
+                    if (ImGui::DragFloat3("##PhysOffPos", offPos, 0.01f, -10000.0f, 10000.0f, "%.3f"))
                     {
-                        desc.shape.offset = kVec3(off[0], off[1], off[2]);
+                        desc.offsetPosition = kVec3(offPos[0], offPos[1], offPos[2]);
+                        manager->projectSaved = false;
+                    }
+
+                    // Offset rotation is authored in Euler degrees and stored as
+                    // a quaternion.
+                    kVec3 offEuler = glm::degrees(glm::eulerAngles(desc.offsetRotation));
+                    float offRot[3] = {offEuler.x, offEuler.y, offEuler.z};
+                    propLabel(gui, "Offset Rotation");
+                    if (ImGui::DragFloat3("##PhysOffRot", offRot, 0.5f, -360.0f, 360.0f, "%.1f"))
+                    {
+                        desc.offsetRotation = kQuat(glm::radians(kVec3(offRot[0], offRot[1], offRot[2])));
                         manager->projectSaved = false;
                     }
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Local-space offset of the collider from the object origin.");
+                        ImGui::SetTooltip("Collider offset from the object's pivot.");
                 }
 
                 // Mass / damping / gravity-factor are Dynamic-only; greyed
