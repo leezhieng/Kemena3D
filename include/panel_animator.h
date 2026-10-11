@@ -1,6 +1,7 @@
 #pragma once
 #include "kemena/kemena.h"
 #include "manager.h"
+#include "model_preview.h"
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>
 #include <kemena/kcamera.h>
@@ -404,13 +405,9 @@ private:
     // kAnimator, independent of the Game panel's Play mode, so a blend tree
     // can be scrubbed and watched without entering Play.
     // -----------------------------------------------------------------------
-    kOffscreenRenderer* previewRenderer = nullptr; ///< Offscreen target, shown via ImGui::Image.
-    kWorld*             previewWorld    = nullptr; ///< Standalone world (owns previewScene).
-    kScene*             previewScene    = nullptr; ///< Scene holding the preview mesh.
-    kCamera*            previewCamera   = nullptr; ///< Orbit camera for the preview.
-    kMesh*              previewMesh     = nullptr; ///< Displayed mesh (owned by the asset manager).
-    kMaterial*          previewMat      = nullptr; ///< Fallback material applied when the GLB ships none.
-    kAnimator*          previewAnimator = nullptr; ///< Drives the blended pose.
+    ModelPreview*       preview          = nullptr;   ///< Shared preview widget (owns world/scene/camera/light).
+    kMaterial*          previewMat       = nullptr;   ///< Fallback material applied when the GLB ships none.
+    kAnimator*          previewAnimator  = nullptr;   ///< Drives the blended pose.
     std::unordered_map<std::string, kSkeletalAnimation*> previewClips; ///< animationUuid → loaded clip (owned).
     // Masks built from the base mesh's authored bone-mask groups. Used so the
     // preview honours each motion's Mask Weights the same way the runtime does.
@@ -422,14 +419,7 @@ private:
     std::vector<std::string> previewMeshNames;        ///< Display labels aligned with previewMeshUuids.
     std::string         previewSig;                   ///< Signature of the graph's clip set (cache key).
     int                 previewMeshChoice = 0;        ///< Index into previewMeshUuids.
-    float               previewRotX      = 20.0f;     ///< Orbit pitch, degrees.
-    float               previewRotY      = 30.0f;     ///< Orbit yaw, degrees.
-    kVec3               previewCenter    = kVec3(0.0f); ///< Orbit pivot (mesh bounds centre).
-    float               previewCamDist   = 3.0f;      ///< Orbit distance from the pivot.
     float               previewBlendTime = 0.0f;      ///< Seconds advanced through the blended clips.
-    float               previewSize      = 220.0f;    ///< Preview image side length (px).
-    bool                previewDragging  = false;     ///< True while dragging the preview to orbit.
-    bool                previewLightOn   = true;      ///< Toggle lit vs. flat preview.
 
     // Animation picker popup state
     char        animPickerSearch[128] = {0};
@@ -464,11 +454,9 @@ private:
     void drawBlendTreeInspector(AnimState* state);
 
     // Embedded blend-tree preview helpers.
-    void ensurePreviewScene();
     void releasePreviewMesh();
     void refreshPreviewMeshes();
     void ensurePreviewClips();
-    void framePreviewCamera();
     void drawBlendPreview(AnimState* state);
     void drawLinks(ImDrawList* dl, ImVec2 origin);
     void drawDragLink(ImDrawList* dl);

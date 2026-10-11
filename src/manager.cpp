@@ -2651,6 +2651,49 @@ static void applyDecalIcon(kDecal *decal, kAssetManager *am)
     decal->setIconMaterial(mat);
 }
 
+// Apply the generic empty-object image gizmo material (an editor billboard icon
+// drawn by the renderer at the gizmo's offset position).
+static void applyEmptyGizmoIcon(kObject *obj, kAssetManager *am)
+{
+    if (!obj || !am)
+        return;
+    kShader *shader = am->loadGlslFromResource("SHADER_ICON");
+    kMaterial *mat = am->createMaterial(shader);
+    mat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
+    kTexture2D *tex = am->loadTexture2DFromResource("GIZMO_EMPTY", "albedoMap",
+                                                    kTextureFormat::TEX_FORMAT_RGBA);
+    mat->addTexture(tex);
+    obj->setMaterial(mat);
+}
+
+void Manager::setObjectGizmoShape(kObject *obj, kGizmoShape shape)
+{
+    if (!obj)
+        return;
+
+    const kGizmoShape prev = obj->getGizmoShape();
+    obj->setGizmoShape(shape);
+
+    if (shape == kGizmoShape::GIZMO_SHAPE_IMAGE)
+    {
+        // The image gizmo is realized as a billboard icon material.
+        if (prev != kGizmoShape::GIZMO_SHAPE_IMAGE)
+        {
+            if (kAssetManager *am = getAssetManager())
+                applyEmptyGizmoIcon(obj, am);
+        }
+    }
+    else if (prev == kGizmoShape::GIZMO_SHAPE_IMAGE)
+    {
+        // Leaving the image gizmo: drop the icon material. Empty objects carry
+        // no other material, so this never removes real user artwork.
+        obj->setMaterial(nullptr, false);
+    }
+
+    projectSaved = false;
+    refreshWindowTitle();
+}
+
 // ---------------------------------------------------------------------------
 // Edit — selection helpers
 // ---------------------------------------------------------------------------
@@ -6284,6 +6327,40 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         if (obj.contains("animator_ref"))
             result->setAnimatorRef(obj["animator_ref"].get<std::string>());
 
+        // Editor gizmo — shape plus its own offset transform (independent of
+        // the object's pivot). Only present when a shape was configured.
+        if (obj.contains("gizmo") && obj["gizmo"].is_object())
+        {
+            const json &gj = obj["gizmo"];
+            result->setGizmoShape((kGizmoShape)gj.value("shape", 0));
+
+            if (gj.contains("position") && gj["position"].is_object())
+            {
+                const auto &gp = gj["position"];
+                result->setGizmoOffsetPosition(kVec3(gp.value("x", 0.0f),
+                                                     gp.value("y", 0.0f),
+                                                     gp.value("z", 0.0f)));
+            }
+            if (gj.contains("rotation") && gj["rotation"].is_object())
+            {
+                const auto &gr = gj["rotation"];
+                result->setGizmoOffsetRotation(kQuat(glm::radians(
+                    kVec3(gr.value("x", 0.0f), gr.value("y", 0.0f), gr.value("z", 0.0f)))));
+            }
+            if (gj.contains("scale") && gj["scale"].is_object())
+            {
+                const auto &gs = gj["scale"];
+                result->setGizmoOffsetScale(kVec3(gs.value("x", 1.0f),
+                                                  gs.value("y", 1.0f),
+                                                  gs.value("z", 1.0f)));
+            }
+
+            // The image-gizmo billboard material is never serialized — rebuild
+            // it here so the icon shows immediately after load.
+            if (result->getGizmoShape() == kGizmoShape::GIZMO_SHAPE_IMAGE && am)
+                applyEmptyGizmoIcon(result, am);
+        }
+
         // Per-sub-mesh overrides for import-derived sub-meshes. Each entry holds
         // only the fields the user changed (material, active, visible, static,
         // shadows). The material UUID is applied later by reapplyStoredMaterials
@@ -7119,6 +7196,80 @@ kObject *Manager::instantiatePrefabInScene(const fs::path &prefabPath)
     refreshWindowTitle();
 
     pushInstantiateCommand(this, root);
+    return root;
+}
+
+// Recursively drops nodes that have no visible geometry (lights, cameras,
+// particles, decals, terrain) so an embedded prefab preview only contains
+// renderable meshes/objects. This keeps the preview scene free of scene lights
+// that would otherwise disturb the preview's own lighting (and keeps teardown
+// to a simple deleteObjectRecursive without stale light/camera entries).
+static json filterPrefabVisualNodes(const json &node)
+{
+    if (!node.is_object())
+        return node;
+
+    const std::string type = node.value("type", "object");
+    if (type == "camera" || type == "light" || type == "particle" ||
+        type == "terrain" || type == "decal" || type == "audio_listener" ||
+        type == "audio_source")
+        return json(); // dropped
+
+    json out = node;
+    if (node.contains("children") && node["children"].is_array())
+    {
+        json kids = json::array();
+        for (const auto &c : node["children"])
+        {
+            json fc = filterPrefabVisualNodes(c);
+            if (!fc.is_null())
+                kids.push_back(fc);
+        }
+        out["children"] = kids;
+    }
+    return out;
+}
+
+kObject *Manager::loadPrefabPreview(const fs::path &prefabPath, kScene *targetScene, kWorld *targetWorld)
+{
+    if (!targetScene || !targetWorld || !projectOpened ||
+        prefabPath.empty() || !fs::exists(prefabPath))
+        return nullptr;
+
+    kPrefab prefab;
+    if (!prefab.loadFromFile(prefabPath.string()))
+        return nullptr;
+
+    kAssetManager *am = getAssetManager();
+    if (!am)
+        return nullptr;
+
+    // Fresh per-node UUIDs so the preview instance never collides with a live one.
+    json instanceJson = kPrefab::instantiateJson(prefab.getRootJson());
+    json visualJson = filterPrefabVisualNodes(instanceJson);
+    if (visualJson.is_null() || visualJson.empty())
+        return nullptr;
+
+    kObject *root = loadObjectFromJson(visualJson, targetScene, targetWorld, am,
+                                       projectPath, editorCamera, nullptr, nullptr);
+    if (!root)
+        return nullptr;
+
+    // loadObjectFromJson only restores the *references* (each node's material
+    // UUID and the per-sub-mesh "submesh_materials" UUIDs) and leaves every mesh
+    // on the flat default material. Rebuild the assigned runtime .mat materials
+    // (mesh-level and per-sub-mesh) so the preview reflects the prefab's whole
+    // visual setup — its real materials and sub-mesh material assignments —
+    // rather than a single default-shaded mesh.
+    //
+    // applyMaterialToObject marks the project dirty (projectSaved = false +
+    // refreshWindowTitle), which is wrong for a read-only preview, so snapshot
+    // and restore that flag around the rebuild.
+    const bool wasSaved = projectSaved;
+    reapplyStoredMaterialsInWorld(targetWorld);
+    projectSaved = wasSaved;
+    refreshWindowTitle();
+
     return root;
 }
 

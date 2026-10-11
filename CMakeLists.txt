@@ -21,6 +21,7 @@ set(SOURCES
     src/manager.cpp
     src/panel_console.cpp
     src/panel_hierarchy.cpp
+    src/model_preview.cpp
     src/panel_inspector.cpp
     src/panel_project.cpp
     src/panel_world.cpp

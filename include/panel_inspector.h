@@ -11,6 +11,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "manager.h"
+#include "model_preview.h"
 
 using namespace kemena;
 
@@ -18,9 +19,9 @@ using namespace kemena;
  * @brief Editor Inspector panel that displays and edits the properties of the current selection.
  *
  * Renders the ImGui inspector for the active selection, covering scene objects (mesh, light,
- * camera, scene) and project assets. Hosts several embedded offscreen-rendered previews:
- * a live GLSL shader preview, a 3D model viewer, and a material viewer/inspector, each with
- * its own standalone world, scene, camera and light state.
+ * camera, scene) and project assets. Hosts several embedded offscreen-rendered previews: a
+ * live GLSL shader preview, plus shared ModelPreview-based viewers for models, materials and
+ * animations.
  */
 class PanelInspector
 {
@@ -80,16 +81,11 @@ private:
 	ImTextureRef getFileTypeIcon(const kString &fileType) const;
 
 	// -----------------------------------------------------------------------
-	// Shader preview
+	// Shader preview (shared ModelPreview widget)
 	// -----------------------------------------------------------------------
-	kOffscreenRenderer *previewRenderer = nullptr;	  ///< Offscreen renderer for the shader preview.
-	kWorld *previewWorld = nullptr;					  ///< Standalone world for the preview, not the editor world.
-	kScene *previewScene = nullptr;					  ///< Preview scene, owned by previewWorld.
-	kCamera *previewCamera = nullptr;				  ///< Preview camera, manually owned.
-	kLight *previewLight = nullptr;					  ///< Scene-owned sun light for the preview.
-	kMesh *previewMesh = nullptr;					  ///< Scene-owned preview sphere.
-	kShader *previewShader = nullptr;				  ///< Preview shader, rebuilt on GLSL change.
-	kMaterial *previewMat = nullptr;				  ///< Preview material, rebuilt on GLSL change.
+	ModelPreview *shaderPreviewModel = nullptr;		 ///< Shared preview widget (sphere + shader material).
+	kShader *previewShader = nullptr;				 ///< Preview shader, rebuilt on GLSL change.
+	kMaterial *previewMat = nullptr;				 ///< Preview material, rebuilt on GLSL change.
 	std::vector<kTexture2D *> previewDefaultTextures; ///< White 1x1 placeholder textures, one per sampler.
 
 	std::string prevUuid;	///< UUID of the shader currently previewed.
@@ -103,20 +99,8 @@ private:
 	float prevMetallic = 0.0f;					///< Preview metallic factor.
 	float prevRoughness = 0.5f;					///< Preview roughness factor.
 
-	// Light control
-	bool lightEnabled = true;	  ///< Whether the preview light is enabled.
-	float lightYaw = 45.0f;		  ///< Preview light azimuth, in degrees.
-	float lightPitch = 60.0f;	  ///< Preview light elevation, in degrees.
-	bool isDraggingLight = false; ///< Whether the user is dragging to rotate the preview light.
-
 	/** @brief Draws the live shader preview, rebuilding the shader/material as needed. */
 	void drawShaderPreview();
-
-	/** @brief Lazily creates the standalone preview world, scene, camera, light and sphere. */
-	void initPreviewScene();
-
-	/** @brief Updates the preview light direction from the current yaw/pitch and enabled state. */
-	void updatePreviewLight();
 
 	/**
 	 * @brief Loads persisted preview parameters for a shader from disk.
@@ -137,26 +121,11 @@ private:
 	void applyPreviewParams();
 
 	// -----------------------------------------------------------------------
-	// Model viewer
+	// Model viewer (shared ModelPreview widget)
 	// -----------------------------------------------------------------------
-	kOffscreenRenderer *modelViewRenderer = nullptr; ///< Offscreen renderer for the model viewer.
-	kWorld *modelViewWorld = nullptr;				 ///< Standalone world for the model viewer.
-	kScene *modelViewScene = nullptr;				 ///< Model viewer scene, owned by modelViewWorld.
-	kCamera *modelViewCamera = nullptr;				 ///< Model viewer orbit camera.
-	kLight *modelViewLight = nullptr;				 ///< Model viewer sun light.
-	kMesh *modelViewMesh = nullptr;					 ///< Displayed mesh, owned by the asset manager.
-	std::vector<kMaterial *> modelViewDefaultMats;	 ///< Default materials created for the viewed mesh.
-
-	std::string modelViewUuid;			 ///< UUID of the model currently displayed.
-	bool modelViewLightEnabled = false;	 ///< Whether the model viewer light is enabled.
-	float modelViewLightYaw = 45.0f;	 ///< Model viewer light azimuth, in degrees.
-	float modelViewLightPitch = 60.0f;	 ///< Model viewer light elevation, in degrees.
-	float modelViewRotX = 24.09f;		 ///< Orbit pitch; matches thumbnail dir normalize(0.5,0.5,1).
-	float modelViewRotY = 26.57f;		 ///< Orbit yaw, in degrees.
-	kVec3 modelViewCenter = kVec3(0.0f); ///< Orbit pivot at the model's bounding centre.
-	float modelViewCamDist = 3.0f;		 ///< Orbit camera distance from the pivot.
-	bool isDraggingMVLight = false;		 ///< Whether the user is dragging to rotate the viewer light.
-	bool isDraggingMVModel = false;		 ///< Whether the user is dragging to orbit the model.
+	ModelPreview *modelPreview = nullptr;		   ///< Shared preview widget for the model viewer.
+	std::string modelViewUuid;					   ///< UUID of the model currently displayed.
+	std::vector<kMaterial *> modelViewDefaultMats; ///< Default materials created for the viewed mesh.
 
 	/**
 	 * @brief Draws the embedded 3D model viewer for a selected model asset.
@@ -164,21 +133,28 @@ private:
 	 */
 	void drawModelViewer(const PanelProject::SelectedProjectAsset &asset);
 
-	/** @brief Lazily creates the standalone model-viewer world, scene, camera and light. */
-	void initModelViewScene();
-
-	/** @brief Updates the model-viewer light direction from its yaw/pitch and enabled state. */
-	void updateModelViewLight();
-
-	/** @brief Positions the orbit camera to frame the current model's bounds. */
-	void frameModelViewCamera();
-
 	/**
 	 * @brief Assigns a default material to every sub-mesh that lacks one.
 	 * @param mesh Mesh whose sub-meshes are checked for missing materials.
 	 * @param defaultShader Shader used to build the default materials.
 	 */
 	void applyDefaultMaterial(kMesh *mesh, kShader *defaultShader);
+
+	// -----------------------------------------------------------------------
+	// Prefab viewer (shared ModelPreview widget)
+	// -----------------------------------------------------------------------
+	ModelPreview *prefabPreview = nullptr; ///< Shared preview widget for the prefab viewer.
+	std::string prefabViewUuid;            ///< UUID of the prefab currently displayed.
+
+	/**
+	 * @brief Draws the embedded 3D preview for a selected .prefab asset.
+	 *
+	 * The prefab's visuals are instantiated into the shared ModelPreview's
+	 * scene (lights/cameras stripped) so a prefab looks the same as the other
+	 * embedded model previews.
+	 * @param asset The selected project asset to display.
+	 */
+	void drawPrefabPreview(const PanelProject::SelectedProjectAsset &asset);
 
 	// -----------------------------------------------------------------------
 	// Material inspector + viewer (shared live state)
@@ -193,25 +169,10 @@ private:
 	std::string texPickerSelected;	///< UUID highlighted in the picker ("" = None).
 	char texPickerSearch[128] = ""; ///< Name filter for the picker list.
 
-	kOffscreenRenderer *matViewRenderer = nullptr; ///< Offscreen renderer for the material viewer.
-	kWorld *matViewWorld = nullptr;				   ///< Standalone world for the material viewer.
-	kScene *matViewScene = nullptr;				   ///< Material viewer scene, owned by matViewWorld.
-	kCamera *matViewCamera = nullptr;			   ///< Material viewer camera.
-	kLight *matViewLight = nullptr;				   ///< Material viewer sun light.
-	kMesh *matViewMesh = nullptr;				   ///< Material preview sphere, manually owned.
-	kMaterial *matViewMat = nullptr;			   ///< Material applied to the preview sphere, manually owned.
-	int matViewVersion = -1;					   ///< Material version last rendered, to detect changes.
-	std::string matViewUuid;					   ///< UUID of the material currently rendered.
-
-	float matViewLightYaw = 45.0f;	 ///< Material viewer light azimuth, in degrees.
-	float matViewLightPitch = 60.0f; ///< Material viewer light elevation, in degrees.
-	bool matViewLightEnabled = true; ///< Whether the material viewer light is enabled.
-	bool isDraggingMatLight = false; ///< Whether the user is dragging to rotate the viewer light.
-
-	float matViewRotX = 6.0f;		 ///< Material viewer orbit pitch, in degrees.
-	float matViewRotY = 0.0f;		 ///< Material viewer orbit yaw, in degrees.
-	float matViewCamDist = 3.0f;	 ///< Material viewer orbit camera distance.
-	bool isDraggingMatModel = false; ///< Whether the user is dragging (LMB) to orbit the preview.
+	ModelPreview *matPreview = nullptr; ///< Shared preview widget for the material viewer.
+	kMaterial *matViewMat = nullptr;	///< Material applied to the preview sphere, manually owned.
+	int matViewVersion = -1;			///< Material version last rendered, to detect changes.
+	std::string matViewUuid;			///< UUID of the material currently rendered.
 
 	/**
 	 * @brief Draws the embedded material preview viewer for a selected material asset.
@@ -225,12 +186,6 @@ private:
 	 */
 	void drawMaterialInspector(const PanelProject::SelectedProjectAsset &asset);
 
-	/** @brief Lazily creates the standalone material-viewer world, scene, camera, light and sphere. */
-	void initMatViewScene();
-
-	/** @brief Updates the material-viewer light direction from its yaw/pitch and enabled state. */
-	void updateMatViewLight();
-
 	/**
 	 * @brief Rebuilds the preview material from a material JSON definition.
 	 * @param matJson JSON describing the material properties to apply.
@@ -238,23 +193,18 @@ private:
 	void rebuildMatViewMaterial(const nlohmann::json &matJson);
 
 	// -----------------------------------------------------------------------
-	// Animation preview
+	// Animation preview (shared ModelPreview widget)
 	// -----------------------------------------------------------------------
-	kOffscreenRenderer *animPreviewRenderer = nullptr; ///< Offscreen renderer for the animation preview.
-	kWorld *animPreviewWorld = nullptr;                ///< Standalone world for the animation preview.
-	kScene *animPreviewScene = nullptr;                ///< Animation preview scene, owned by animPreviewWorld.
-	kCamera *animPreviewCamera = nullptr;              ///< Animation preview orbit camera.
-	kLight *animPreviewLight = nullptr;                ///< Animation preview sun light.
-	kMesh *animPreviewMesh = nullptr;                  ///< Displayed mesh, owned by the asset manager.
-	kMaterial *animPreviewMat = nullptr;               ///< Material applied to the preview mesh, manually owned.
-	kAnimator *animPreviewAnimator = nullptr;          ///< Skeletal animator driving the preview.
-	kSkeletalAnimation *animPreviewClip = nullptr;     ///< Skeletal animation clip.
+	ModelPreview *animPreview = nullptr;		   ///< Shared preview widget for the animation preview.
+	kMaterial *animPreviewMat = nullptr;		   ///< Material applied to the preview mesh, manually owned.
+	kAnimator *animPreviewAnimator = nullptr;	   ///< Skeletal animator driving the preview.
+	kSkeletalAnimation *animPreviewClip = nullptr; ///< Skeletal animation clip.
 
-	std::string animPreviewUuid;         ///< .animation asset UUID currently previewed.
-	std::string animPreviewMeshUuid;     ///< Mesh UUID linked to this animation.
-	int animPreviewStartFrame = 0;       ///< First frame of the animation clip.
-	int animPreviewEndFrame   = 30;      ///< Last frame of the animation clip.
-	int animPreviewStartFrameDraft = 0;  ///< Unsaved Start Frame value shown in the inspector.
+	std::string animPreviewUuid;		 ///< .animation asset UUID currently previewed.
+	std::string animPreviewMeshUuid;	 ///< Mesh UUID linked to this animation.
+	int animPreviewStartFrame = 0;		 ///< First frame of the animation clip.
+	int animPreviewEndFrame   = 30;		 ///< Last frame of the animation clip.
+	int animPreviewStartFrameDraft = 0;	 ///< Unsaved Start Frame value shown in the inspector.
 	int animPreviewEndFrameDraft   = 30; ///< Unsaved End Frame value shown in the inspector.
 
 	// Root-motion options stored in the .animation file. When enabled, at game
@@ -270,20 +220,10 @@ private:
 	bool animPreviewRootMotionPositionYDraft = false; ///< Root Y translation channel draft.
 	bool animPreviewRootMotionPositionXZDraft = false; ///< Root XZ translation channel draft.
 
-	bool animPreviewLightEnabled = false; ///< Whether the preview light is enabled.
-	float animPreviewLightYaw   = 45.0f; ///< Preview light azimuth, in degrees.
-	float animPreviewLightPitch = 60.0f; ///< Preview light elevation, in degrees.
-	float animPreviewRotX = 24.09f;      ///< Orbit pitch; matches thumbnail dir normalize(0.5,0.5,1).
-	float animPreviewRotY = 26.57f;      ///< Orbit yaw, in degrees.
-	kVec3 animPreviewCenter = kVec3(0.0f); ///< Orbit pivot at the model's bounding centre.
-	float animPreviewCamDist = 3.0f;     ///< Orbit camera distance from the pivot.
-	bool isDraggingAPLight = false;      ///< Whether the user is dragging to rotate the preview light.
-	bool isDraggingAPModel = false;      ///< Whether the user is dragging to orbit the model.
-
-	float animPreviewFrame = 0.0f;       ///< Current playback frame.
-	bool animPreviewPlaying = false;     ///< Whether playback is running.
-	bool animPreviewLoop    = true;      ///< Whether playback loops.
-	float animPreviewSpeed  = 1.0f;      ///< Playback speed multiplier.
+	float animPreviewFrame = 0.0f;   ///< Current playback frame.
+	bool animPreviewPlaying = false; ///< Whether playback is running.
+	bool animPreviewLoop    = true;  ///< Whether playback loops.
+	float animPreviewSpeed  = 1.0f;  ///< Playback speed multiplier.
 
 	/**
 	 * @brief Draws a 3D animation preview for a selected .animation asset.
@@ -294,15 +234,6 @@ private:
 	 * @param asset The selected project asset to preview.
 	 */
 	void drawAnimationPreview(const PanelProject::SelectedProjectAsset &asset);
-
-	/** @brief Lazily creates the standalone animation-preview world, scene, camera and light. */
-	void initAnimPreviewScene();
-
-	/** @brief Updates the animation-preview light direction from its yaw/pitch and enabled state. */
-	void updateAnimPreviewLight();
-
-	/** @brief Positions the orbit camera to frame the animation preview mesh's bounds. */
-	void frameAnimPreviewCamera();
 };
 
 #endif

@@ -1564,48 +1564,13 @@ void PanelAnimator::drawSelectedStateInspector()
 PanelAnimator::~PanelAnimator()
 {
     releasePreviewMesh();
-    delete previewRenderer; previewRenderer = nullptr;
-    delete previewCamera;   previewCamera = nullptr;
-    delete previewWorld;    previewWorld = nullptr; // owns previewScene
-    previewScene = nullptr;
-}
-
-void PanelAnimator::ensurePreviewScene()
-{
-    if (previewRenderer)
-        return;
-
-    previewRenderer = new kOffscreenRenderer(512, 512);
-    if (manager)
-        previewRenderer->setAssetManager(manager->getAssetManager());
-
-    previewWorld = createWorld(createAssetManager());
-    previewScene = previewWorld->createScene("blendPreview");
-    previewScene->setFrustumCullingEnabled(false);
-    previewScene->setShadowsEnabled(false);
-    previewScene->setAmbientLightColor(kVec3(0.18f, 0.18f, 0.18f));
-
-    kLight *sun = previewScene->addSunLight(
-        kVec3(0.0f, 3.0f, 0.0f),
-        kVec3(-0.4f, -1.0f, -0.5f),
-        kVec3(1.0f, 1.0f, 1.0f),
-        kVec3(1.0f, 1.0f, 1.0f));
-    if (sun) sun->setPower(1.4f);
-
-    previewCamera = new kCamera(nullptr, kCameraType::CAMERA_TYPE_LOCKED);
-    previewCamera->setFOV(45.0f);
-    previewCamera->setAspectRatio(1.0f);
-    previewCamera->setNearClip(0.01f);
-    previewCamera->setFarClip(1000.0f);
-    previewCamera->setLookAt(kVec3(0.0f));
-    previewCamera->setPosition(kVec3(0.0f, 0.3f, 3.0f));
+    delete preview; preview = nullptr;
 }
 
 void PanelAnimator::releasePreviewMesh()
 {
-    if (previewScene && previewMesh)
-        previewScene->removeMesh(previewMesh);
-    previewMesh = nullptr;
+    if (preview)
+        preview->clearMesh();
     previewMeshUuid.clear();
 
     // Clips are created by kAssetManager::loadAnimation (it returns a fresh
@@ -1697,7 +1662,7 @@ void PanelAnimator::refreshPreviewMeshes()
 
 void PanelAnimator::ensurePreviewClips()
 {
-    if (!manager || !previewMesh)
+    if (!manager || !preview || !preview->getMesh())
         return;
 
     kAssetManager *am = manager->getAssetManager();
@@ -1748,7 +1713,7 @@ void PanelAnimator::ensurePreviewClips()
 
         try
         {
-            kSkeletalAnimation *clip = am->loadAnimation(glbPath.generic_string(), previewMesh);
+            kSkeletalAnimation *clip = am->loadAnimation(glbPath.generic_string(), preview->getMesh());
             if (clip)
             {
                 // The preview drives clip time itself; keep the engine from
@@ -1785,39 +1750,16 @@ void PanelAnimator::ensurePreviewClips()
     }
 }
 
-void PanelAnimator::framePreviewCamera()
-{
-    if (!previewMesh || !previewCamera)
-        return;
-
-    kAABB combined;
-    std::function<void(kMesh *)> expand = [&](kMesh *m)
-    {
-        m->calculateModelMatrix();
-        kAABB b = m->getWorldAABB();
-        if (b.isValid()) { combined.expandBy(b.min); combined.expandBy(b.max); }
-        for (kObject *c : m->getChildren())
-            if (c->getType() == NODE_TYPE_MESH)
-                expand(static_cast<kMesh *>(c));
-    };
-    expand(previewMesh);
-
-    previewCenter = combined.isValid() ? combined.center() : kVec3(0.0f);
-    kVec3 he = combined.isValid() ? combined.halfExtents() : kVec3(1.0f);
-    float radius = glm::length(he);
-    if (radius < 0.001f) radius = 1.0f;
-
-    previewCamDist = (radius / glm::tan(glm::radians(22.5f))) * 1.15f;
-    previewCamera->setNearClip(std::max(0.0001f, previewCamDist * 0.01f));
-    previewCamera->setFarClip(previewCamDist * 100.0f);
-}
-
 void PanelAnimator::drawBlendPreview(AnimState* state)
 {
     if (!state || !manager)
         return;
 
-    ensurePreviewScene();
+    if (!preview)
+    {
+        preview = new ModelPreview(manager->getAssetManager(), 512);
+        preview->setLit(true);
+    }
 
     // Refresh the candidate mesh list only when the graph's clip set changes,
     // so this does not re-read the .animation files every frame.
@@ -1836,7 +1778,7 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         // swapped its animation). Load any newly referenced .animation into the
         // preview immediately so the model updates without having to reopen the
         // .animator file. Idempotent — already-loaded clips are skipped.
-        if (previewMesh)
+        if (preview && preview->getMesh())
             ensurePreviewClips();
     }
 
@@ -1870,9 +1812,10 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         fs::path glbPath = manager->projectPath / "Library" / "ImportedAssets" / (chosen + ".glb");
         if (am && fs::exists(glbPath))
         {
-            previewMesh = am->loadMesh(glbPath.generic_string());
-            if (previewMesh)
+            kMesh *mesh = am->loadMesh(glbPath.generic_string());
+            if (mesh)
             {
+                preview->setMesh(mesh);
                 previewMeshUuid = chosen;
 
                 // Fallback material for submeshes whose GLB shipped none.
@@ -1896,7 +1839,7 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
                             if (c->getType() == NODE_TYPE_MESH)
                                 applyMat(static_cast<kMesh *>(c));
                     };
-                    applyMat(previewMesh);
+                    applyMat(mesh);
                 }
 
                 // One animator shared by every bone-bearing submesh.
@@ -1909,33 +1852,24 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
                         if (c->getType() == NODE_TYPE_MESH)
                             applyAnim(static_cast<kMesh *>(c));
                 };
-                applyAnim(previewMesh);
+                applyAnim(mesh);
 
-                previewScene->addMesh(previewMesh);
                 ensurePreviewClips();
                 rebuildPreviewMasks();
-                framePreviewCamera();
+                preview->resetView();
+                preview->frameToContent();
                 previewBlendTime = 0.0f;
             }
         }
     }
 
-    if (!previewMesh || !previewAnimator || previewClips.empty())
+    if (!preview || !preview->getMesh() || !previewAnimator || previewClips.empty())
     {
         // Render the bare mesh so the user can still frame the model.
-        if (previewMesh && previewCamera && previewRenderer)
+        if (preview && preview->getMesh())
         {
-            float pr = glm::radians(previewRotX);
-            float yr = glm::radians(previewRotY);
-            kVec3 camDir(std::cos(pr) * std::sin(yr), std::sin(pr), std::cos(pr) * std::cos(yr));
-            previewCamera->setPosition(previewCenter + camDir * previewCamDist);
-            previewCamera->setLookAt(previewCenter);
-            previewRenderer->setBackgroundColor(kVec4(0.16f, 0.16f, 0.16f, 1.0f));
-            previewRenderer->renderMesh(previewMesh, previewCamera);
-
-            const float sz = std::max(120.0f, std::min(previewSize, ImGui::GetContentRegionAvail().x));
-            ImTextureRef tex((ImTextureID)(uintptr_t)previewRenderer->getTexture());
-            ImGui::Image(tex, ImVec2(sz, sz), ImVec2(0, 1), ImVec2(1, 0));
+            preview->render();
+            preview->draw("##blendpreview", true, 220.0f);
         }
         else
         {
@@ -2177,51 +2111,20 @@ void PanelAnimator::drawBlendPreview(AnimState* state)
         }
     }
 
-    // ---- Camera orbit + offscreen render ----------------------------------
-    {
-        float pr = glm::radians(previewRotX);
-        float yr = glm::radians(previewRotY);
-        kVec3 camDir(std::cos(pr) * std::sin(yr), std::sin(pr), std::cos(pr) * std::cos(yr));
-        previewCamera->setPosition(previewCenter + camDir * previewCamDist);
-        previewCamera->setLookAt(previewCenter);
-    }
-
-    previewRenderer->setBackgroundColor(kVec4(0.16f, 0.16f, 0.16f, 1.0f));
-    if (previewLightOn)
-        previewRenderer->render(previewWorld, previewScene, previewCamera);
-    else
-        previewRenderer->renderMesh(previewMesh, previewCamera);
-
-    // ---- Image + navigation -----------------------------------------------
+    // ---- Offscreen render + navigation ------------------------------------
+    preview->render();
     ImGui::Spacing();
-    const float sz = std::max(120.0f, std::min(previewSize, ImGui::GetContentRegionAvail().x));
-    ImTextureRef tex((ImTextureID)(uintptr_t)previewRenderer->getTexture());
-    ImGui::Image(tex, ImVec2(sz, sz), ImVec2(0, 1), ImVec2(1, 0));
-
-    if (ImGui::IsItemHovered())
-    {
-        ImGuiIO &io = ImGui::GetIO();
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-        {
-            previewRotY -= io.MouseDelta.x * 0.4f;
-            previewRotX += io.MouseDelta.y * 0.4f;
-            previewRotX = std::max(-89.0f, std::min(89.0f, previewRotX));
-        }
-        if (io.MouseWheel != 0.0f)
-        {
-            previewCamDist *= (1.0f - io.MouseWheel * 0.1f);
-            previewCamDist = std::max(0.05f, previewCamDist);
-        }
-    }
+    preview->draw("##blendpreview", true, 220.0f);
 
     propLabelLeft("Lit");
-    ImGui::Checkbox("##lit", &previewLightOn);
+    bool litOn = preview->isLit();
+    if (ImGui::Checkbox("##lit", &litOn))
+        preview->setLit(litOn);
     ImGui::SameLine();
     if (ImGui::Button("Reset View"))
     {
-        previewRotX = 20.0f;
-        previewRotY = 30.0f;
-        framePreviewCamera();
+        preview->resetView();
+        preview->frameToContent();
 
         // Reset every previewed blend parameter back to 0 — both the sliders
         // (kept in blendPreviewValues) and any running controller.
@@ -2346,10 +2249,10 @@ void PanelAnimator::rebuildPreviewMasks()
         return;
 
     // Complement mask so bones no group owns are still driven at full strength.
-    if (previewMesh)
+    if (preview && preview->getMesh())
     {
         auto rest = std::make_unique<kAnimationMask>("__ungrouped");
-        rest->buildFromMesh(previewMesh, true);
+        rest->buildFromMesh(preview->getMesh(), true);
         for (const auto& b : groupedBones)
             rest->setBoneEnabled(b, false);
         previewRestOfBodyMask = std::move(rest);

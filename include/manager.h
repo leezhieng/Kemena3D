@@ -295,6 +295,13 @@ public:
     void createSceneObject();
     void createEmpty();
     void createMeshPrimitive(kMesh *mesh, const kString &name);
+
+    /**
+     * @brief Sets the editor gizmo shape on an object and keeps its icon
+     *        material in sync (IMAGE gizmos get a billboard icon material,
+     *        other shapes drop it).
+     */
+    void setObjectGizmoShape(kObject *obj, kGizmoShape shape);
     void createMeshFromFile();
     void createLight(kLightType type);
     void createCamera();
@@ -599,6 +606,19 @@ public:
     // --- Prefabs ------------------------------------------------------------
     bool saveSelectedAsPrefab(const kString &prefabName);
     kObject *instantiatePrefabInScene(const fs::path &prefabPath);
+
+    /**
+     * @brief Loads a .prefab's instantiated hierarchy into an arbitrary preview
+     *        scene/world for embedded previews (e.g. the Inspector's prefab viewer).
+     *
+     * Objects are created with the editor asset manager and added to
+     * @p targetScene. The caller owns the returned subtree and must delete it
+     * (e.g. Manager::deleteObjectRecursive) after detaching it from the scene.
+     *
+     * @return The prefab root, or nullptr on failure.
+     */
+    kObject *loadPrefabPreview(const fs::path &prefabPath, kScene *targetScene, kWorld *targetWorld);
+
     void editPrefab(const fs::path &prefabPath);
     void closePrefabEditor(bool saveChanges);
 
