@@ -31,6 +31,7 @@ struct ShowPanel
 	bool shaderEditor = false;  ///< Show the Shader Editor panel.
 	bool scriptEditor = false;  ///< Show the Script Editor panel.
 	bool game = true;           ///< Show the Game (play-mode) panel.
+	bool terrain = true;        ///< Show the Terrain editor panel.
 	bool prefab = false;        ///< Show the Prefab editor; toggled by Manager::editPrefab / closePrefabEditor.
 	bool animatorEditor = false;///< Show the Animator editor panel.
 	bool animationEditor = false;///< Show the Animation editor panel.

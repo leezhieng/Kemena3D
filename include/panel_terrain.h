@@ -69,6 +69,32 @@ public:
     void applyNoiseToTile(kTerrain *tile, float scale, float amplitude,
                           int octaves, int seed, bool additive);
 
+    /**
+     * @brief Hydraulic ("droplet") erosion of a tile's heightfield — each droplet
+     *        follows the gradient, eroding into its brush footprint and depositing
+     *        sediment in pits. Adapted from weigert/SimpleErosion.
+     */
+    void applyErosionToTile(kTerrain *tile, int droplets, float radius,
+                            float inertia, float capacityFactor, float depositFactor,
+                            float erodeFactor, float evaporate, float gravity,
+                            float minSediment, unsigned int seed);
+
+    /** @brief Thermal/talus erosion: relaxes slopes steeper than @p talus (SoilMachine). */
+    void applyThermalErosionToTile(kTerrain *tile, int iterations, float talus, float strength);
+
+    /** @brief Directional wind advection: material is blown along @p dirRadians
+     *         (weigert/SimpleWindErosion). */
+    void applyWindErosionToTile(kTerrain *tile, float dirRadians, float strength,
+                                int iterations, float talus);
+
+    /**
+     * @brief Flow-driven river carving using the stream-power law
+     *        (erosion ~ k * A^m * S^n) on a D8 flow-accumulation field.
+     *        Adapted from weigert/SimpleHydrology, erodr and Terrain-Builder.
+     */
+    void applyHydrologyToTile(kTerrain *tile, int iterations, float k, float m, float n,
+                              float deposition, float minSlope);
+
 private:
     void addTerrainTile(int gridX, int gridZ);
     void expandTerrain(int gridX, int gridZ, const kString &direction);
@@ -91,6 +117,30 @@ private:
     int m_noiseOctaves = 4;
     int m_noiseSeed = 42;
     bool m_noiseAdditive = false;
+    int m_noiseType = 0; ///< 0 = fBm, 1 = ridged, 2 = billowed.
+
+    // --- Erosion parameters ---------------------------------------------------
+    int   m_erodeDroplets = 50000;
+    float m_erodeRadius = 4.0f;
+    float m_erodeInertia = 0.05f;
+    float m_erodeCapacity = 4.0f;
+    float m_erodeDeposit = 0.3f;
+    float m_erodeErode = 0.3f;
+    float m_erodeEvaporate = 0.01f;
+    float m_erodeGravity = 4.0f;
+
+    int   m_thermalIterations = 8;
+    float m_thermalTalus = 0.4f;
+    float m_thermalStrength = 0.5f;
+
+    float m_windDir = 0.0f; ///< Degrees.
+    float m_windStrength = 0.3f;
+
+    int   m_hydroIterations = 6;
+    float m_hydroK = 0.02f;
+    float m_hydroM = 0.5f;
+    float m_hydroN = 1.0f;
+    float m_hydroDeposit = 0.1f;
 
     kString m_terrainDirectory;
 };

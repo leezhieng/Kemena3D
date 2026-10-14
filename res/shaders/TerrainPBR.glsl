@@ -139,8 +139,47 @@ uniform sampler2D u_NormalMap[4];      // 4 normal maps
 uniform sampler2D u_RoughnessMap[4];   // 4 roughness maps
 uniform sampler2D u_MetalnessMap[4];   // 4 metallic maps
 uniform sampler2D u_AOMap[4];          // 4 AO maps
-uniform float     u_Tiling[4];         // Per-layer UV tiling scale
+// u_Tiling is declared as [16] below (covers both the legacy 4-layer path and
+// the 16-layer texture-array path).
 uniform float     u_BlendSharpness;    // Blend edge sharpness (0.5 - 4.0)
+
+// --- Stochastic / triplanar controls -----------------------------------------
+// Learned from the "Procedural Stochastic Terrain Shader" and the
+// "SuperSimpleTerrainShader": per-repeat random rotation to kill visible tiling,
+// world-space UVs so the pattern stitches across neighbouring tiles, triplanar
+// projection on cliffs, and procedural noise variegation.
+// @var float     u_TileWorldSize       Tile World Size
+// @var float     u_Stochastic          Stochastic Anti-Tiling
+// @var float     u_TriplanarStrength   Triplanar Cliffs
+// @var float     u_TriplanarSharpness  Triplanar Sharpness
+// @var float     u_NoiseVariegation    Noise Variegation
+// @var float     u_NoiseScale          Noise Scale
+uniform float u_TileWorldSize;          // World size of one tile (for world-space UVs)
+uniform float u_Stochastic;             // 0 = off, 1 = full per-repeat rotation
+uniform float u_TriplanarStrength;      // 0 = flat only, 1 = full triplanar on cliffs
+uniform float u_TriplanarSharpness;     // Slope falloff exponent for the triplanar blend
+uniform float u_NoiseVariegation;       // Amount of procedural noise tint variation
+uniform float u_NoiseScale;             // Noise frequency (1 / world units)
+// @var float     u_MaskedBlend         Masked Weight Blending
+uniform float u_MaskedBlend;            // 0 = luminance height blend, 1 = albedo-alpha mask blend
+
+// --- Texture-array (16-layer) terrain path -----------------------------------
+// When u_UseArrays is 1 the terrain renders from four RGBA weight-map textures
+// (16 layers) plus per-layer albedo / normal / ORM / mask sampler2DArrays —
+// the Cartographer-style texture-array terrain material.  When 0 the legacy
+// 4-layer splat-map path runs instead.
+// @var float u_UseArrays
+uniform float u_UseArrays;
+// @var float u_Tiling[16]
+uniform float u_Tiling[16];
+uniform sampler2D u_WeightMap0;
+uniform sampler2D u_WeightMap1;
+uniform sampler2D u_WeightMap2;
+uniform sampler2D u_WeightMap3;
+uniform sampler2DArray u_AlbedoArray;
+uniform sampler2DArray u_NormalArray;
+uniform sampler2DArray u_ORMArray;
+uniform sampler2DArray u_MaskArray;
 
 // ===========================================================================
 // Varying inputs
@@ -309,10 +348,138 @@ vec3 computeDisplacedNormal(vec3 worldPos)
 }
 
 // ===========================================================================
+// Stochastic (anti-tiling) + triplanar helpers
+//
+// Adapted from the reference shaders:
+//  * The UV of every texture repeat is rotated by a per-repeat random angle so
+//    the same patch of texture never lines up twice ("stochastic").
+//  * The rotation is faded back to the plain projection at the repeat border,
+//    which hides the seams the rotation would otherwise leave.
+//  * UVs are derived from the world position, so the pattern is unique per world
+//    cell and stays seamless across neighbouring terrain tiles.
+//  * On steep faces the projection is blended toward the side planes so cliff
+//    textures stop stretching ("triplanar").
+// ===========================================================================
+float hash21(vec2 p)
+{
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+}
+
+// Smooth value noise in [0,1].
+float valueNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// 1 at the centre of a texture repeat, 0 on its border.
+float cellEdgeMask(vec2 uv)
+{
+    vec2 f = abs(fract(uv) - 0.5) * 2.0;
+    return 1.0 - max(f.x, f.y);
+}
+
+// Rotate the UV around the centre of its repeat cell by a per-cell angle.
+vec2 stochasticRotate(vec2 uv, float seed)
+{
+    vec2 cell = floor(uv);
+    float a = hash21(cell + seed) * 6.28318530718;
+    float c = cos(a);
+    float s = sin(a);
+    vec2 d = fract(uv) - 0.5;
+    return cell + 0.5 + vec2(c * d.x - s * d.y, s * d.x + c * d.y);
+}
+
+// World-space UV: dividing the absolute world XZ by the tile size makes UVs
+// continue across tile boundaries instead of restarting at 0..1 per tile.
+vec2 terrainWorldUV()
+{
+    float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+    return v_worldPos.xz / tile;
+}
+
+// Sample one layer's albedo with stochastic anti-tiling on the dominant (top)
+// projection and a triplanar blend toward the side planes on steep slopes.
+vec4 sampleLayerAlbedo(int i, vec3 N, float triW)
+{
+    vec2 uvTop = terrainWorldUV() * u_Tiling[i];
+
+    vec4 top = texture(u_AlbedoMap[i], uvTop);
+    if (u_Stochastic > 0.0)
+    {
+        vec2 ruv = stochasticRotate(uvTop, float(i) * 31.7);
+        top = mix(top, texture(u_AlbedoMap[i], ruv),
+                  cellEdgeMask(uvTop) * clamp(u_Stochastic, 0.0, 1.0));
+    }
+
+    if (triW <= 0.001)
+        return top;
+
+    float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+    vec2 uvX = (v_worldPos.zy / tile) * u_Tiling[i];
+    vec2 uvZ = (v_worldPos.xy / tile) * u_Tiling[i];
+    vec4 side = texture(u_AlbedoMap[i], uvX) * abs(N.x) +
+                texture(u_AlbedoMap[i], uvZ) * abs(N.z);
+    side /= max(abs(N.x) + abs(N.z), 1e-4);
+
+    return mix(top, side, clamp(triW, 0.0, 1.0));
+}
+
+// Weight of layer l (0..15) from the four packed RGBA weight-map textures.
+float getWeightLayer(int l)
+{
+    if (l < 4)  return texture(u_WeightMap0, v_texCoord)[l];
+    if (l < 8)  return texture(u_WeightMap1, v_texCoord)[l - 4];
+    if (l < 12) return texture(u_WeightMap2, v_texCoord)[l - 8];
+    return texture(u_WeightMap3, v_texCoord)[l - 12];
+}
+
+// Albedo of layer i from the albedo sampler2DArray (stochastic + triplanar).
+vec4 sampleLayerAlbedoArray(int i, vec3 N, float triW)
+{
+    vec2 uvTop = terrainWorldUV() * u_Tiling[i];
+    vec4 top = texture(u_AlbedoArray, vec3(uvTop, float(i)));
+    if (u_Stochastic > 0.0)
+    {
+        vec2 ruv = stochasticRotate(uvTop, float(i) * 31.7);
+        top = mix(top, texture(u_AlbedoArray, vec3(ruv, float(i))),
+                  cellEdgeMask(uvTop) * clamp(u_Stochastic, 0.0, 1.0));
+    }
+    if (triW <= 0.001)
+        return top;
+
+    float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+    vec2 uvX = (v_worldPos.zy / tile) * u_Tiling[i];
+    vec2 uvZ = (v_worldPos.xy / tile) * u_Tiling[i];
+    vec4 side = texture(u_AlbedoArray, vec3(uvX, float(i))) * abs(N.x) +
+                texture(u_AlbedoArray, vec3(uvZ, float(i))) * abs(N.z);
+    side /= max(abs(N.x) + abs(N.z), 1e-4);
+    return mix(top, side, clamp(triW, 0.0, 1.0));
+}
+
+// ===========================================================================
 // main()
 // ===========================================================================
 void main()
 {
+    // ----- Geometric normal from the displaced world position ---------------
+    // Computed up front: the surface slope drives the triplanar cliff blend.
+    // Using screen-space derivatives (dFdx/dFdy) — always valid, no TBN needed.
+    vec3 N = computeDisplacedNormal(v_worldPos);
+
+    // Triplanar weight — grows as the surface tilts away from horizontal.
+    float slope = clamp(1.0 - abs(N.y), 0.0, 1.0);
+    float triW  = pow(slope, max(u_TriplanarSharpness, 1.0)) *
+                  clamp(u_TriplanarStrength, 0.0, 1.0);
+
     // ----- Sample splat map -------------------------------------------------
     vec4 splat = texture(u_SplatMap, v_texCoord);
 
@@ -325,40 +492,50 @@ void main()
     float totalWeight = 0.0;
 
     // ----- Per-layer sampling -----------------------------------------------
-    for (int i = 0; i < 4; i++)
+    // Array path (u_UseArrays): 16 layers from four weight maps + texture arrays.
+    // Legacy path: 4 layers from the RGBA splat map + per-layer sampler2D maps.
+    int layerCount = (u_UseArrays > 0.5) ? 16 : 4;
+    for (int i = 0; i < layerCount; i++)
     {
-        float weight = splat[i];
+        float weight = (u_UseArrays > 0.5) ? getWeightLayer(i) : splat[i];
         if (weight <= 0.001)
             continue;
 
-        vec2 uv = v_texCoord * u_Tiling[i];
+        // World-space detail UV.
+        vec2 uv = terrainWorldUV() * u_Tiling[i];
 
-        float aWeight = weight; // base albedo weight
+        vec4  a;
+        vec3  normSample;
+        float rSample, mSample, aoSample, maskVal;
 
-        // Height blending using the albedo luminance as a proxy height
+        if (u_UseArrays > 0.5)
         {
-            vec4 a = texture(u_AlbedoMap[i], uv);
-            float h = dot(a.rgb, vec3(0.299, 0.587, 0.114)); // luminance as height
-            aWeight = heightBlend(weight, h, u_BlendSharpness);
+            a          = sampleLayerAlbedoArray(i, N, triW);
+            normSample = texture(u_NormalArray, vec3(uv, float(i))).xyz;
+            vec3 orm   = texture(u_ORMArray, vec3(uv, float(i))).rgb;
+            rSample    = orm.g; mSample = orm.b; aoSample = orm.r;
+            maskVal    = texture(u_MaskArray, vec3(uv, float(i))).a;
+        }
+        else
+        {
+            a          = sampleLayerAlbedo(i, N, triW);
+            normSample = texture(u_NormalMap[i], uv).rgb;
+            rSample    = texture(u_RoughnessMap[i], uv).r;
+            mSample    = texture(u_MetalnessMap[i], uv).r;
+            aoSample   = texture(u_AOMap[i], uv).r;
+            maskVal    = a.a;
         }
 
-        // Sample albedo
-        vec4 albedoSample = texture(u_AlbedoMap[i], uv);
-        albedo += albedoSample.rgb * aWeight;
+        // Blend height / mask (Cartographer "masked weight blending").
+        float h  = dot(a.rgb, vec3(0.299, 0.587, 0.114)); // luminance as height
+        float hm = mix(h, maskVal, clamp(u_MaskedBlend, 0.0, 1.0));
+        float aWeight = heightBlend(weight, hm, max(u_BlendSharpness, 0.001));
 
-        // Sample normal map
-        vec3 normSample = texture(u_NormalMap[i], uv).rgb;
-        normal += normSample * aWeight;
-
-        // Sample roughness
-        roughness += texture(u_RoughnessMap[i], uv).r * aWeight;
-
-        // Sample metallic
-        metallic += texture(u_MetalnessMap[i], uv).r * aWeight;
-
-        // Sample AO
-        ao += texture(u_AOMap[i], uv).r * aWeight;
-
+        albedo    += a.rgb * aWeight;
+        normal    += normSample * aWeight;
+        roughness += rSample * aWeight;
+        metallic  += mSample * aWeight;
+        ao        += aoSample * aWeight;
         totalWeight += aWeight;
     }
 
@@ -381,9 +558,14 @@ void main()
         ao        = 1.0;
     }
 
-    // ----- Compute geometric normal from displaced world position -----------
-    // Using screen-space derivatives (dFdx/dFdy) — always valid, no TBN needed.
-    vec3 N = computeDisplacedNormal(v_worldPos);
+    // ----- Procedural noise variegation -------------------------------------
+    // Breaks up large uniform expanses (noise-driven variegation, as in the
+    // SuperSimpleTerrainShader).
+    if (u_NoiseVariegation > 0.0)
+    {
+        float n = valueNoise(v_worldPos.xz * max(u_NoiseScale, 0.0001));
+        albedo *= mix(vec3(1.0), vec3(0.82, 0.86, 0.78), n * u_NoiseVariegation);
+    }
 
     // ----- PBR lighting -----------------------------------------------------
     vec3 v     = normalize(vec3(0.0) - v_worldPos); // view direction (toward camera)

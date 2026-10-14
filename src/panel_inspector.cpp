@@ -3,6 +3,7 @@
 #include "panel_project.h"
 #include "panel_animator.h"
 #include "commands.h"
+#include "mainmenu.h"
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -5599,6 +5600,30 @@ void PanelInspector::draw(bool &opened)
                 }
 
                 drawInlineIcon(typeIcon, typeLabel);
+
+                // Terrain tiles are authored in the dedicated Terrain panel, so the
+                // Inspector shows only their identity icon/label — no editable fields.
+                bool isTerrainObj = (type == NODE_TYPE_TERRAIN);
+                if (type == NODE_TYPE_MESH)
+                {
+                    kMesh *tm = dynamic_cast<kMesh *>(obj);
+                    if (tm && tm->getSerializeType() == "terrain")
+                        isTerrainObj = true;
+                }
+
+                if (isTerrainObj)
+                {
+                    gui->spacing();
+                    gui->textDisabled("Terrain is edited in the Terrain panel.");
+                    gui->spacing();
+                    if (ImGui::Button("Open Terrain Editor", ImVec2(-1.0f, 0.0f)))
+                    {
+                        showPanel.terrain = true;
+                        pendingFocusWindow = "Terrain";
+                    }
+                }
+                else
+                {
                 gui->sameLine(0, 4.0f);
 
                 {
@@ -5847,6 +5872,8 @@ void PanelInspector::draw(bool &opened)
 
                     }
                 }
+
+                } // end !isTerrainObj (terrain shows only its icon)
 
             }
         }

@@ -8,6 +8,10 @@
 
 #include <imgui.h>
 #include <set>
+#include <random>
+#include <cmath>
+#include <vector>
+#include <algorithm>
 
 PanelTerrain::PanelTerrain(kGuiManager *setGuiManager, Manager *setManager)
     : gui(setGuiManager), manager(setManager)
@@ -158,7 +162,8 @@ void PanelTerrain::rebuildPaintedTile()
 
 void PanelTerrain::paintSplatAtWorldPos(const kVec3 &worldPos, bool erase)
 {
-    if (!manager || !manager->terrainManager || paint.channel < 0 || paint.channel > 3)
+    if (!manager || !manager->terrainManager ||
+        paint.channel < 0 || paint.channel >= kTerrain::kMaxTerrainLayers)
         return;
 
     // Find the terrain tile under worldPos
@@ -181,7 +186,6 @@ void PanelTerrain::paintSplatAtWorldPos(const kVec3 &worldPos, bool erase)
         return;
 
     const float radius = sculpt.radius;
-    unsigned char *splat = foundTile->getSplatData();
     int res = foundTile->getHeightRes();
 
     int cx, cz;
@@ -197,6 +201,7 @@ void PanelTerrain::paintSplatAtWorldPos(const kVec3 &worldPos, bool erase)
 
     float worldRadiusSq = radius * radius;
     int channel = paint.channel;
+    const int L = kTerrain::kMaxTerrainLayers;
 
     for (int z = zMin; z <= zMax; ++z)
     {
@@ -214,59 +219,51 @@ void PanelTerrain::paintSplatAtWorldPos(const kVec3 &worldPos, bool erase)
             float t = dist / radius;
             float falloff = std::cos(t * 3.14159265358979323846f * 0.5f) * paint.strength;
 
-            int idx = (z * res + x) * 4;
-
             if (erase)
             {
-                // Reduce the selected channel, redistribute to others
-                float oldVal = splat[idx + channel] / 255.0f;
+                // Reduce the selected layer, redistribute evenly to the others.
+                float oldVal = foundTile->getWeight(x, z, channel) / 255.0f;
                 float reduction = oldVal * falloff;
-                int newVal = (std::max)(0, static_cast<int>(roundf((oldVal - reduction) * 255.0f)));
-                splat[idx + channel] = static_cast<unsigned char>(newVal);
+                foundTile->setWeight(x, z, channel,
+                    static_cast<unsigned char>((std::max)(0, static_cast<int>(roundf((oldVal - reduction) * 255.0f)))));
 
-                // Redistribute removed weight evenly to other channels
-                float addEach = reduction / 3.0f;
-                for (int c = 0; c < 4; ++c)
+                float addEach = reduction / static_cast<float>(L - 1);
+                for (int c = 0; c < L; ++c)
                 {
                     if (c == channel)
                         continue;
-                    float ov = splat[idx + c] / 255.0f;
+                    float ov = foundTile->getWeight(x, z, c) / 255.0f;
                     float nv = ov + addEach;
-                    splat[idx + c] = static_cast<unsigned char>((std::min)(255, static_cast<int>(roundf(nv * 255.0f))));
+                    foundTile->setWeight(x, z, c,
+                        static_cast<unsigned char>((std::min)(255, static_cast<int>(roundf(nv * 255.0f)))));
                 }
             }
             else
             {
-                // Paint the selected channel, reduce others proportionally
-                float current = splat[idx + channel] / 255.0f;
+                // Paint the selected layer, reduce the others proportionally.
+                float current = foundTile->getWeight(x, z, channel) / 255.0f;
                 float remaining = 1.0f - current;
                 float add = remaining * falloff;
                 float newVal = current + add;
-                splat[idx + channel] = static_cast<unsigned char>((std::min)(255, static_cast<int>(roundf(newVal * 255.0f))));
+                foundTile->setWeight(x, z, channel,
+                    static_cast<unsigned char>((std::min)(255, static_cast<int>(roundf(newVal * 255.0f)))));
 
-                // Reduce other channels proportionally to keep sum near 1.0
                 float totalOther = 0.0f;
-                float others[3];
-                int oi = 0;
-                for (int c = 0; c < 4; ++c)
-                {
-                    if (c == channel)
-                        continue;
-                    others[oi] = splat[idx + c] / 255.0f;
-                    totalOther += others[oi];
-                    ++oi;
-                }
+                for (int c = 0; c < L; ++c)
+                    if (c != channel)
+                        totalOther += foundTile->getWeight(x, z, c) / 255.0f;
+
                 if (totalOther > 0.001f)
                 {
                     float scale = (1.0f - newVal) / totalOther;
-                    oi = 0;
-                    for (int c = 0; c < 4; ++c)
+                    for (int c = 0; c < L; ++c)
                     {
                         if (c == channel)
                             continue;
-                        int v = static_cast<int>(roundf(others[oi] * scale * 255.0f));
-                        splat[idx + c] = static_cast<unsigned char>((std::max)(0, (std::min)(255, v)));
-                        ++oi;
+                        float ov = foundTile->getWeight(x, z, c) / 255.0f;
+                        int v = static_cast<int>(roundf(ov * scale * 255.0f));
+                        foundTile->setWeight(x, z, c,
+                            static_cast<unsigned char>((std::max)(0, (std::min)(255, v))));
                     }
                 }
             }
@@ -346,10 +343,35 @@ void PanelTerrain::applyNoiseToTile(kTerrain *tile, float scale, float amplitude
             float amp = 1.0f;
             float maxAmp = 0.0f;
 
+            // Rotate the sample coordinates between octaves so the fractal
+            // lattice never lines up on the X/Z axes (a TerrainTools-style trick
+            // that removes the grid-aligned ridges plain fBm produces).
+            const float ca = 0.8f, sa = 0.6f;
+
             for (int oct = 0; oct < octaves; ++oct)
             {
-                height += noiseSmooth(nx * freq, nz * freq, seed + oct * 31337) * amp;
+                float n = noiseSmooth(nx * freq, nz * freq, seed + oct * 31337);
+
+                // Fractal variant: 0 = fBm, 1 = ridged, 2 = billowed.
+                if (m_noiseType == 1)
+                {
+                    n = 1.0f - std::fabs(n); // ridged: sharp mountain crests
+                    n *= n;
+                }
+                else if (m_noiseType == 2)
+                {
+                    n = std::fabs(n);        // billowed: rounded, cloud-like
+                }
+
+                height += n * amp;
                 maxAmp += amp;
+
+                // Inter-octave rotation.
+                float rx = nx * ca - nz * sa;
+                float rz = nx * sa + nz * ca;
+                nx = rx;
+                nz = rz;
+
                 freq *= 2.0f;
                 amp *= 0.5f;
             }
@@ -368,9 +390,337 @@ void PanelTerrain::applyNoiseToTile(kTerrain *tile, float scale, float amplitude
     tile->rebuildMesh(true);
 }
 
+// --- Erosion ----------------------------------------------------------------
+// Hydraulic droplet erosion adapted from weigert/SimpleErosion: each droplet
+// walks the heightfield along its (inertia-smoothed) gradient, scraping material
+// from a circular brush and dropping it when it slows down or climbs, which
+// carves valleys and river channels with natural-looking deposits.
+void PanelTerrain::applyErosionToTile(kTerrain *tile, int droplets, float radius,
+                                      float inertia, float capacityFactor,
+                                      float depositFactor, float erodeFactor,
+                                      float evaporate, float gravity, float minSediment,
+                                      unsigned int seed)
+{
+    if (!tile)
+        return;
+
+    int res = tile->getHeightRes();
+    float *data = tile->getHeightData();
+    if (!data || res < 3)
+        return;
+
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+
+    // Precompute the circular erosion brush footprint once.
+    struct BrushSample { int dx, dz; float w; };
+    std::vector<BrushSample> brush;
+    int r = (std::max)(1, static_cast<int>(std::round(radius)));
+    float wsum = 0.0f;
+    for (int dz = -r; dz <= r; ++dz)
+        for (int dx = -r; dx <= r; ++dx)
+        {
+            float d = std::sqrt(static_cast<float>(dx * dx + dz * dz));
+            if (d > radius)
+                continue;
+            float w = 1.0f - d / radius;
+            brush.push_back({dx, dz, w});
+            wsum += w;
+        }
+    if (brush.empty() || wsum <= 0.0f)
+        return;
+    for (BrushSample &b : brush)
+        b.w /= wsum;
+
+    // Bilinear height read in cell coordinates.
+    auto sample = [&](float fx, float fz) -> float
+    {
+        int x0 = static_cast<int>(std::floor(fx));
+        int z0 = static_cast<int>(std::floor(fz));
+        float tx = fx - static_cast<float>(x0);
+        float tz = fz - static_cast<float>(z0);
+        int x1 = (std::min)(x0 + 1, res - 1);
+        int z1 = (std::min)(z0 + 1, res - 1);
+        x0 = (std::max)(0, (std::min)(x0, res - 1));
+        z0 = (std::max)(0, (std::min)(z0, res - 1));
+        float h00 = data[z0 * res + x0];
+        float h10 = data[z0 * res + x1];
+        float h01 = data[z1 * res + x0];
+        float h11 = data[z1 * res + x1];
+        float a = h00 + (h10 - h00) * tx;
+        float b = h01 + (h11 - h01) * tx;
+        return a + (b - a) * tz;
+    };
+
+    const float maxCoord = static_cast<float>(res - 1);
+
+    for (int n = 0; n < droplets; ++n)
+    {
+        float px = unit(rng) * maxCoord;
+        float pz = unit(rng) * maxCoord;
+        float dirx = 0.0f, dirz = 0.0f;
+        float speed = 1.0f, water = 1.0f, sediment = 0.0f;
+
+        for (int life = 0; life < 30; ++life)
+        {
+            int cx = static_cast<int>(px);
+            int cz = static_cast<int>(pz);
+            if (cx < 0 || cz < 0 || cx >= res - 1 || cz >= res - 1)
+                break;
+
+            float hL = sample(px - 1.0f, pz);
+            float hR = sample(px + 1.0f, pz);
+            float hD = sample(px, pz - 1.0f);
+            float hU = sample(px, pz + 1.0f);
+            float gx = (hR - hL) * 0.5f;
+            float gz = (hU - hD) * 0.5f;
+
+            dirx = dirx * inertia - gx * (1.0f - inertia);
+            dirz = dirz * inertia - gz * (1.0f - inertia);
+            float len = std::sqrt(dirx * dirx + dirz * dirz);
+            if (len < 1e-6f)
+            {
+                float a = unit(rng) * 6.2831853f;
+                dirx = std::cos(a);
+                dirz = std::sin(a);
+            }
+            else
+            {
+                dirx /= len;
+                dirz /= len;
+            }
+
+            float nxp = px + dirx;
+            float nzp = pz + dirz;
+            if (nxp < 0.0f || nzp < 0.0f || nxp >= maxCoord || nzp >= maxCoord)
+                break;
+
+            float hOld = sample(px, pz);
+            float hNew = sample(nxp, nzp);
+            float dh = hNew - hOld;
+
+            float cap = (std::max)(-dh * speed * water * capacityFactor, minSediment);
+
+            if (sediment > cap || dh > 0.0f)
+            {
+                // Deposit at the current cell (drop what no longer fits).
+                float amount = (dh > 0.0f)
+                                   ? (std::min)(dh, sediment)
+                                   : (sediment - cap) * depositFactor;
+                sediment -= amount;
+                int dx = (std::max)(0, (std::min)(static_cast<int>(std::round(px)), res - 1));
+                int dz = (std::max)(0, (std::min)(static_cast<int>(std::round(pz)), res - 1));
+                data[dz * res + dx] += amount;
+            }
+            else
+            {
+                // Erode from the brush footprint.
+                float amount = (std::min)((cap - sediment) * erodeFactor, -dh);
+                int ix = static_cast<int>(px);
+                int iz = static_cast<int>(pz);
+                for (const BrushSample &b : brush)
+                {
+                    int ex = ix + b.dx;
+                    int ez = iz + b.dz;
+                    if (ex < 0 || ez < 0 || ex >= res || ez >= res)
+                        continue;
+                    data[ez * res + ex] -= amount * b.w;
+                }
+                sediment += amount;
+            }
+
+            speed = std::sqrt((std::max)(0.0f, speed * speed + dh * gravity));
+            water *= (1.0f - evaporate);
+            px = nxp;
+            pz = nzp;
+            if (water < 0.01f)
+                break;
+        }
+    }
+
+    tile->rebuildMesh(true);
+}
+
+// Thermal (talus) erosion adapted from weigert/SoilMachine: any slope steeper
+// than the talus angle sheds material to its lower neighbours until it rests.
+void PanelTerrain::applyThermalErosionToTile(kTerrain *tile, int iterations, float talus, float strength)
+{
+    if (!tile)
+        return;
+
+    int res = tile->getHeightRes();
+    float *data = tile->getHeightData();
+    if (!data || res < 3)
+        return;
+
+    std::vector<float> delta(static_cast<size_t>(res) * res, 0.0f);
+    const int nb[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+    for (int it = 0; it < iterations; ++it)
+    {
+        std::fill(delta.begin(), delta.end(), 0.0f);
+        for (int z = 1; z < res - 1; ++z)
+        {
+            for (int x = 1; x < res - 1; ++x)
+            {
+                float h = data[z * res + x];
+                for (int k = 0; k < 4; ++k)
+                {
+                    int nx = x + nb[k][0];
+                    int nz = z + nb[k][1];
+                    float d = h - data[nz * res + nx];
+                    if (d <= talus)
+                        continue;
+                    float move = (d - talus) * strength * 0.25f;
+                    delta[z * res + x] -= move;
+                    delta[nz * res + nx] += move;
+                }
+            }
+        }
+        for (size_t i = 0; i < delta.size(); ++i)
+            data[i] += delta[i];
+    }
+
+    tile->rebuildMesh(true);
+}
+
+// Directional wind erosion adapted from weigert/SimpleWindErosion: steep faces
+// expose material to the wind, which is carried one cell downwind per iteration.
+void PanelTerrain::applyWindErosionToTile(kTerrain *tile, float dirRadians, float strength,
+                                          int iterations, float talus)
+{
+    if (!tile)
+        return;
+
+    int res = tile->getHeightRes();
+    float *data = tile->getHeightData();
+    if (!data || res < 3)
+        return;
+
+    int ox = static_cast<int>(std::round(std::cos(dirRadians)));
+    int oz = static_cast<int>(std::round(std::sin(dirRadians)));
+    if (ox == 0 && oz == 0)
+        ox = 1;
+
+    std::vector<float> delta(static_cast<size_t>(res) * res, 0.0f);
+
+    for (int it = 0; it < iterations; ++it)
+    {
+        std::fill(delta.begin(), delta.end(), 0.0f);
+        for (int z = 0; z < res; ++z)
+        {
+            for (int x = 0; x < res; ++x)
+            {
+                int ux = x - ox;
+                int uz = z - oz;
+                if (ux < 0 || uz < 0 || ux >= res || uz >= res)
+                    continue;
+                float diff = data[uz * res + ux] - data[z * res + x];
+                if (diff <= talus)
+                    continue;
+                float move = (diff - talus) * strength * 0.5f;
+                delta[uz * res + ux] -= move;
+                delta[z * res + x] += move;
+            }
+        }
+        for (size_t i = 0; i < delta.size(); ++i)
+            data[i] += delta[i];
+    }
+
+    tile->rebuildMesh(true);
+}
+
+// Flow-accumulation river carving adapted from weigert/SimpleHydrology, erodr
+// and FarazzShaikh/Terrain-Builder: build a D8 flow network, accumulate the
+// upstream area draining through each cell, then incise it with the stream-power
+// law (erosion ~ k * A^m * S^n). This produces branching river valleys and, with
+// deposition, alluvial fans in the lowlands.
+void PanelTerrain::applyHydrologyToTile(kTerrain *tile, int iterations, float k, float m, float n,
+                                        float deposition, float minSlope)
+{
+    if (!tile)
+        return;
+
+    int res = tile->getHeightRes();
+    float *data = tile->getHeightData();
+    if (!data || res < 3)
+        return;
+
+    const size_t count = static_cast<size_t>(res) * res;
+    std::vector<int>   order(count);
+    std::vector<float> flow(count);
+    std::vector<int>   recv(count);
+
+    const int nb[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1},
+                          {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+
+    for (int it = 0; it < iterations; ++it)
+    {
+        // 1. Steepest-descent (D8) receiver for every cell.
+        for (int z = 0; z < res; ++z)
+        {
+            for (int x = 0; x < res; ++x)
+            {
+                int i = z * res + x;
+                float h = data[i];
+                int best = -1;
+                float bestSlope = 0.0f;
+                for (int kk = 0; kk < 8; ++kk)
+                {
+                    int nx = x + nb[kk][0];
+                    int nz = z + nb[kk][1];
+                    if (nx < 0 || nz < 0 || nx >= res || nz >= res)
+                        continue;
+                    float dh = h - data[nz * res + nx];
+                    if (dh > bestSlope)
+                    {
+                        bestSlope = dh;
+                        best = nz * res + nx;
+                    }
+                }
+                recv[i] = best;
+                flow[i] = 1.0f;
+            }
+        }
+
+        // 2. Visit cells high -> low so upstream flow reaches each cell first.
+        for (size_t i = 0; i < count; ++i)
+            order[i] = static_cast<int>(i);
+        std::sort(order.begin(), order.end(),
+                  [data](int a, int b) { return data[a] > data[b]; });
+        for (int idx : order)
+        {
+            int r = recv[idx];
+            if (r >= 0)
+                flow[r] += flow[idx];
+        }
+
+        // 3. Stream-power incision.
+        for (int z = 0; z < res; ++z)
+        {
+            for (int x = 0; x < res; ++x)
+            {
+                int i = z * res + x;
+                int r = recv[i];
+                if (r < 0)
+                    continue;
+                float slope = (std::max)(data[i] - data[r], minSlope);
+                float e = k * std::pow(flow[i], m) * std::pow(slope, n);
+                e = (std::min)(e, data[i] - data[r]); // never invert the slope
+                if (e <= 0.0f)
+                    continue;
+                data[i] -= e;
+                data[r] += e * deposition;
+            }
+        }
+    }
+
+    tile->rebuildMesh(true);
+}
+
 void PanelTerrain::draw(bool &isOpened)
 {
-    if (!isOpened || !enabled)
+    if (!isOpened)
         return;
 
     ImGui::SetNextWindowSize(ImVec2(420, 650), ImGuiCond_FirstUseEver);
@@ -384,9 +734,73 @@ void PanelTerrain::draw(bool &isOpened)
     kScene *scene = manager->getScene();
     kTerrainManager *terrainMgr = manager->terrainManager;
 
-    if (!world || !scene || !terrainMgr)
+    if (!world || !scene)
     {
         ImGui::TextDisabled("No scene loaded.");
+        ImGui::End();
+        return;
+    }
+
+    // A scene holds at most one terrain. Detect whether the active scene already
+    // contains one (via the terrain manager, or by scanning the scene graph).
+    bool sceneHasTerrain = (terrainMgr && terrainMgr->getTotalCount() > 0);
+    if (!sceneHasTerrain && scene->getRootNode())
+    {
+        std::function<void(kObject *)> scan = [&](kObject *n)
+        {
+            if (sceneHasTerrain || !n)
+                return;
+            kMesh *m = dynamic_cast<kMesh *>(n);
+            if (m && m->getSerializeType() == "terrain")
+            {
+                sceneHasTerrain = true;
+                return;
+            }
+            for (kObject *c : n->getChildren())
+            {
+                if (sceneHasTerrain)
+                    break;
+                scan(c);
+            }
+        };
+        for (kObject *c : scene->getRootNode()->getChildren())
+        {
+            if (sceneHasTerrain)
+                break;
+            scan(c);
+        }
+    }
+
+    // Is the current selection a terrain tile (or the scene that owns one)?
+    bool terrainSelected = false;
+    if (kObject *sel = manager->getActiveSelectedObject())
+    {
+        kMesh *sm = dynamic_cast<kMesh *>(sel);
+        if (sm && sm->getSerializeType() == "terrain")
+            terrainSelected = true;
+        else if (sel->getType() == kNodeType::NODE_TYPE_TERRAIN)
+            terrainSelected = true;
+    }
+    bool sceneSelected = (manager->selectedScene == scene);
+
+    // Show only "Create New Terrain" until the scene has a terrain; afterwards
+    // show the full editor only while the scene or a terrain tile is selected.
+    bool showFullUi = (terrainMgr != nullptr) &&
+                      (terrainSelected || (sceneSelected && sceneHasTerrain));
+
+    if (!showFullUi)
+    {
+        if (!sceneHasTerrain)
+        {
+            ImGui::TextDisabled("This scene has no terrain yet.");
+            ImGui::Spacing();
+            if (ImGui::Button("Create New Terrain", ImVec2(-1, 0)))
+                manager->createTerrain();
+        }
+        else
+        {
+            ImGui::TextDisabled("Select the scene or a terrain tile to edit its terrain.");
+        }
         ImGui::End();
         return;
     }
@@ -463,6 +877,9 @@ void PanelTerrain::draw(bool &isOpened)
         }
     }
 
+    // Paint target layer (0..15). Layers 0..3 also have the quick R/G/B/A swatches.
+    ImGui::SliderInt("Layer##paint", &paint.channel, 0, kTerrain::kMaxTerrainLayers - 1);
+
     ImGui::SameLine();
     ImGui::Checkbox("Paint Height", &paint.heightActive);
     if (paint.heightActive)
@@ -486,6 +903,8 @@ void PanelTerrain::draw(bool &isOpened)
     ImGui::SliderFloat("Scale##noise", &m_noiseScale, 1.0f, 200.0f, "%.0f");
     ImGui::SliderFloat("Amplitude##noise", &m_noiseAmplitude, 0.1f, 100.0f, "%.1f");
     ImGui::SliderInt("Octaves##noise", &m_noiseOctaves, 1, 8);
+    const char *noiseTypes[] = {"fBm (smooth)", "Ridged (mountains)", "Billowed (clouds)"};
+    ImGui::Combo("Type##noise", &m_noiseType, noiseTypes, IM_ARRAYSIZE(noiseTypes));
     ImGui::InputInt("Seed##noise", &m_noiseSeed);
     ImGui::Checkbox("Additive##noise", &m_noiseAdditive);
 
@@ -506,6 +925,62 @@ void PanelTerrain::draw(bool &isOpened)
     {
         applyNoiseToTile(noiseTile, m_noiseScale, m_noiseAmplitude,
                          m_noiseOctaves, m_noiseSeed, m_noiseAdditive);
+        if (manager && manager->getRenderer())
+            manager->getRenderer()->setOctreeDirty();
+    }
+
+    ImGui::Spacing();
+
+    // --- Erosion ---
+    ImGui::SeparatorText("Erosion");
+    ImGui::SliderInt("Droplets##erode", &m_erodeDroplets, 1000, 500000, "%d", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Erode Radius##erode", &m_erodeRadius, 1.0f, 16.0f, "%.1f");
+    ImGui::SliderFloat("Inertia##erode", &m_erodeInertia, 0.0f, 0.99f, "%.2f");
+    ImGui::SliderFloat("Capacity##erode", &m_erodeCapacity, 1.0f, 16.0f, "%.1f");
+    ImGui::SliderFloat("Deposit##erode", &m_erodeDeposit, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Erode Strength##erode", &m_erodeErode, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Evaporate##erode", &m_erodeEvaporate, 0.0f, 0.1f, "%.3f");
+    ImGui::SliderFloat("Gravity##erode", &m_erodeGravity, 0.1f, 20.0f, "%.1f");
+
+    if (ImGui::Button("Erode (Hydraulic)", ImVec2(-1, 0)) && noiseTile)
+    {
+        applyErosionToTile(noiseTile, m_erodeDroplets, m_erodeRadius, m_erodeInertia,
+                           m_erodeCapacity, m_erodeDeposit, m_erodeErode,
+                           m_erodeEvaporate, m_erodeGravity, 0.01f,
+                           static_cast<unsigned int>(m_noiseSeed));
+        if (manager && manager->getRenderer())
+            manager->getRenderer()->setOctreeDirty();
+    }
+
+    ImGui::SliderInt("Thermal Iterations##erode", &m_thermalIterations, 1, 64);
+    ImGui::SliderFloat("Talus##erode", &m_thermalTalus, 0.0f, 5.0f, "%.2f");
+    ImGui::SliderFloat("Thermal Strength##erode", &m_thermalStrength, 0.0f, 1.0f, "%.2f");
+    if (ImGui::Button("Erode (Thermal)", ImVec2(-1, 0)) && noiseTile)
+    {
+        applyThermalErosionToTile(noiseTile, m_thermalIterations, m_thermalTalus, m_thermalStrength);
+        if (manager && manager->getRenderer())
+            manager->getRenderer()->setOctreeDirty();
+    }
+
+    ImGui::SliderFloat("Wind Direction##erode", &m_windDir, 0.0f, 360.0f, "%.0f");
+    ImGui::SliderFloat("Wind Strength##erode", &m_windStrength, 0.0f, 1.0f, "%.2f");
+    if (ImGui::Button("Erode (Wind)", ImVec2(-1, 0)) && noiseTile)
+    {
+        applyWindErosionToTile(noiseTile, m_windDir * 3.14159265f / 180.0f,
+                               m_windStrength, 8, m_thermalTalus);
+        if (manager && manager->getRenderer())
+            manager->getRenderer()->setOctreeDirty();
+    }
+
+    ImGui::SliderInt("Hydro Iterations##erode", &m_hydroIterations, 1, 32);
+    ImGui::SliderFloat("Hydro K##erode", &m_hydroK, 0.001f, 0.2f, "%.3f");
+    ImGui::SliderFloat("Hydro M##erode", &m_hydroM, 0.1f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Hydro N##erode", &m_hydroN, 0.5f, 2.0f, "%.2f");
+    ImGui::SliderFloat("Hydro Deposit##erode", &m_hydroDeposit, 0.0f, 0.9f, "%.2f");
+    if (ImGui::Button("Carve Rivers (Hydrology)", ImVec2(-1, 0)) && noiseTile)
+    {
+        applyHydrologyToTile(noiseTile, m_hydroIterations, m_hydroK, m_hydroM,
+                             m_hydroN, m_hydroDeposit, 0.01f);
         if (manager && manager->getRenderer())
             manager->getRenderer()->setOctreeDirty();
     }
@@ -679,6 +1154,21 @@ void PanelTerrain::draw(bool &isOpened)
                 ImGui::InputFloat("Max Height", &layer.maxHeight);
                 ImGui::InputFloat("Slope Min", &layer.slopeMin);
                 ImGui::InputFloat("Slope Max", &layer.slopeMax);
+
+                // Per-layer textures packed into the terrain's sampler2DArrays.
+                static char pathBuf[512];
+                auto pathField = [&](const char *label, kString &path)
+                {
+                    strncpy_s(pathBuf, sizeof(pathBuf), path.c_str(), _TRUNCATE);
+                    kString id = kString(label) + "##tex" + std::to_string(i);
+                    if (ImGui::InputText(id.c_str(), pathBuf, sizeof(pathBuf)))
+                        path = pathBuf;
+                };
+                pathField("Albedo", layer.albedoPath);
+                pathField("Normal", layer.normalPath);
+                pathField("ORM", layer.ormPath);
+                pathField("Mask", layer.maskPath);
+
                 ImGui::TreePop();
             }
         }
@@ -694,6 +1184,26 @@ void PanelTerrain::draw(bool &isOpened)
         if (ImGui::Button("Rebuild Mesh"))
         {
             selectedTile->rebuildMesh(true);
+        }
+
+        if (ImGui::Button("Rebuild Layer Textures"))
+        {
+            selectedTile->rebuildLayerArrays();
+            selectedTile->rebuildMesh(true);
+        }
+
+        // Generate the terrain collision shape. A Jolt HeightFieldShape is the
+        // recommended collider for regular height grids — far cheaper than a
+        // triangle mesh. The runtime builds the sample grid from this tile's
+        // mesh vertices when the game starts.
+        if (ImGui::Button("Generate HeightField Collider", ImVec2(-1, 0)) && selectedTile->getMesh())
+        {
+            kObject *obj = static_cast<kObject *>(selectedTile->getMesh());
+            kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
+            desc.shape.type = kPhysicsShapeType::HeightField;
+            desc.type = kPhysicsObjectType::Static;
+            desc.layer = "Default";
+            obj->setHasPhysicsDesc(true);
         }
     }
     else

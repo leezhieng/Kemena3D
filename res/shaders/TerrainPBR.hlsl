@@ -24,6 +24,13 @@
 // @var float     u_Tiling[1]      Tiling Layer 1
 // @var float     u_Tiling[2]      Tiling Layer 2
 // @var float     u_Tiling[3]      Tiling Layer 3
+// @var float     u_TileWorldSize  Tile World Size
+// @var float     u_Stochastic     Stochastic Anti-Tiling
+// @var float     u_TriplanarStrength Triplanar Cliffs
+// @var float     u_TriplanarSharpness Triplanar Sharpness
+// @var float     u_NoiseVariegation Noise Variegation
+// @var float     u_NoiseScale      Noise Scale
+// @var float     u_MaskedBlend     Masked Weight Blending
 //
 // -----------------------------------------------------------------------------
 // Original GLSL inputs, kept as a reference for the editor / authoring tools
@@ -186,6 +193,14 @@ cbuffer PerMaterial : register(b1)
 {
     float    u_Tiling[4];
     float    u_BlendSharpness;
+    // Stochastic / triplanar controls (mirror of TerrainPBR.glsl).
+    float    u_TileWorldSize;
+    float    u_Stochastic;
+    float    u_TriplanarStrength;
+    float    u_TriplanarSharpness;
+    float    u_NoiseVariegation;
+    float    u_NoiseScale;
+    float    u_MaskedBlend;
     float3   _matPad0;
     Material material;
 };
@@ -381,8 +396,88 @@ float3 computeDisplacedNormal(float3 worldPos)
     return normalize(cross(dx, dy));
 }
 
+// --- Stochastic (anti-tiling) + triplanar helpers ---------------------------
+// Mirror of the GLSL helpers: per-repeat random rotation (faded back to the
+// plain projection at the repeat border so no seams appear), world-space UVs so
+// the pattern stitches across neighbouring tiles, triplanar cliffs, and noise
+// variegation. See TerrainPBR.glsl for the full commentary.
+float hash21(float2 p)
+{
+    p = frac(p * float2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return frac(p.x * p.y);
+}
+
+float valueNoise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + float2(1.0, 0.0));
+    float c = hash21(i + float2(0.0, 1.0));
+    float d = hash21(i + float2(1.0, 1.0));
+    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
+float cellEdgeMask(float2 uv)
+{
+    float2 f = abs(frac(uv) - 0.5) * 2.0;
+    return 1.0 - max(f.x, f.y);
+}
+
+float2 stochasticRotate(float2 uv, float seed)
+{
+    float2 cell = floor(uv);
+    float  a = hash21(cell + seed) * 6.28318530718;
+    float  c = cos(a);
+    float  s = sin(a);
+    float2 d = frac(uv) - 0.5;
+    return cell + 0.5 + float2(c * d.x - s * d.y, s * d.x + c * d.y);
+}
+
+float2 terrainWorldUV(float3 wp)
+{
+    float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+    return wp.xz / tile;
+}
+
+float4 sampleLayerAlbedo(int i, float3 wp, float3 N, float triW)
+{
+    float2 uvTop = terrainWorldUV(wp) * u_Tiling[i];
+
+    float4 top = u_AlbedoMap[i].Sample(u_Sampler, uvTop);
+    if (u_Stochastic > 0.0)
+    {
+        float2 ruv = stochasticRotate(uvTop, (float)i * 31.7);
+        top = lerp(top, u_AlbedoMap[i].Sample(u_Sampler, ruv),
+                   cellEdgeMask(uvTop) * clamp(u_Stochastic, 0.0, 1.0));
+    }
+
+    if (triW <= 0.001)
+        return top;
+
+    float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+    float2 uvX = (wp.zy / tile) * u_Tiling[i];
+    float2 uvZ = (wp.xy / tile) * u_Tiling[i];
+    float4 side = u_AlbedoMap[i].Sample(u_Sampler, uvX) * abs(N.x) +
+                  u_AlbedoMap[i].Sample(u_Sampler, uvZ) * abs(N.z);
+    side /= max(abs(N.x) + abs(N.z), 1e-4);
+
+    return lerp(top, side, clamp(triW, 0.0, 1.0));
+}
+
 float4 PSMain(VSOutput input) : SV_Target
 {
+    // ----- Geometric normal from the displaced world position ---------------
+    // Computed up front: the surface slope drives the triplanar cliff blend.
+    float3 N = computeDisplacedNormal(input.v_worldPos);
+
+    // Triplanar weight — grows as the surface tilts away from horizontal.
+    float slope = clamp(1.0 - abs(N.y), 0.0, 1.0);
+    float triW  = pow(slope, max(u_TriplanarSharpness, 1.0)) *
+                  clamp(u_TriplanarStrength, 0.0, 1.0);
+
     // ----- Sample splat map -------------------------------------------------
     float4 splat = u_SplatMap.Sample(u_Sampler, input.v_texCoord);
 
@@ -401,23 +496,26 @@ float4 PSMain(VSOutput input) : SV_Target
         if (weight <= 0.001)
             continue;
 
-        float2 uv = input.v_texCoord * u_Tiling[i];
+        // World-space detail UV (shared by the non-albedo maps below).
+        float2 uv = terrainWorldUV(input.v_worldPos) * u_Tiling[i];
 
-        // Height blending using the albedo luminance as a proxy height.
-        float aWeight = weight;
-        {
-            float4 a = u_AlbedoMap[i].Sample(u_Sampler, uv);
-            float  h = dot(a.rgb, float3(0.299, 0.587, 0.114));
-            aWeight = heightBlend(weight, h, u_BlendSharpness);
-        }
+        // Albedo — world-space tiling, stochastic anti-tiling and triplanar
+        // projection on steep slopes (see sampleLayerAlbedo()).
+        float4 a = sampleLayerAlbedo(i, input.v_worldPos, N, triW);
+
+        // Blend height / mask. The albedo luminance acts as a proxy height while
+        // the albedo alpha acts as an optional per-layer blend mask (Cartographer
+        // "masked weight blending"); u_MaskedBlend cross-fades between the two.
+        float h  = dot(a.rgb, float3(0.299, 0.587, 0.114));
+        float hm = lerp(h, a.a, clamp(u_MaskedBlend, 0.0, 1.0));
+        float aWeight = heightBlend(weight, hm, max(u_BlendSharpness, 0.001));
 
         // Sample albedo
-        float4 albedoSample = u_AlbedoMap[i].Sample(u_Sampler, uv);
-        albedo += albedoSample.rgb * aWeight;
+        albedo += a.rgb * aWeight;
 
         // Normal / roughness / metallic / AO maps have no bound unit (see the
-        // header note); the GLSL reads unit 0 for them, so sample the splat map
-        // to keep the look identical until they get @var entries and registers.
+        // header note); sample the splat map to keep the look identical until
+        // they get @var entries and registers.
         float3 normSample = u_SplatMap.Sample(u_Sampler, uv).rgb;
         normal    += normSample * aWeight;
         roughness += u_SplatMap.Sample(u_Sampler, uv).r * aWeight;
@@ -445,8 +543,12 @@ float4 PSMain(VSOutput input) : SV_Target
         ao        = 1.0;
     }
 
-    // ----- Geometric normal from displaced world position -------------------
-    float3 N = computeDisplacedNormal(input.v_worldPos);
+    // ----- Procedural noise variegation -------------------------------------
+    if (u_NoiseVariegation > 0.0)
+    {
+        float n = valueNoise(input.v_worldPos.xz * max(u_NoiseScale, 0.0001));
+        albedo *= lerp(float3(1.0, 1.0, 1.0), float3(0.82, 0.86, 0.78), n * u_NoiseVariegation);
+    }
 
     // ----- PBR lighting -----------------------------------------------------
     float3 v  = normalize(float3(0.0, 0.0, 0.0) - input.v_worldPos);

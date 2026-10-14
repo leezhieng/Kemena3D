@@ -3119,6 +3119,44 @@ void Manager::createTerrain()
     if (!scene)
         return;
 
+    // A scene may only hold a single terrain — if one already exists, select it
+    // instead of creating another.
+    {
+        kObject *existing = nullptr;
+        if (scene->getRootNode())
+        {
+            std::function<void(kObject *)> scan = [&](kObject *n)
+            {
+                if (existing || !n)
+                    return;
+                kMesh *m = dynamic_cast<kMesh *>(n);
+                if (m && m->getSerializeType() == "terrain")
+                {
+                    existing = m;
+                    return;
+                }
+                for (kObject *c : n->getChildren())
+                {
+                    if (existing)
+                        break;
+                    scan(c);
+                }
+            };
+            for (kObject *c : scene->getRootNode()->getChildren())
+            {
+                if (existing)
+                    break;
+                scan(c);
+            }
+        }
+        if (existing)
+        {
+            selectedObject = existing;
+            selectObject(existing->getUuid(), true);
+            return;
+        }
+    }
+
     // Lazily initialise the terrain manager
     if (!terrainManager)
     {

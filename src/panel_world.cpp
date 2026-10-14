@@ -439,16 +439,6 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         // When in sculpt or paint mode, block object picking so the user
         // cannot select 3D objects by clicking in the viewport.
         // (The hierarchy panel bypasses this — it selects by tree click.)
-        // DIAGNOSTIC: print whether conditions are met
-        if (isSculpting) {
-            std::cerr << "DIAG: inToolMode=" << inToolMode << " hovered=" << hovered
-                      << " gizmoUsing=" << ImGuizmo::IsUsing()
-                      << " modsDown=" << modifiersDown
-                      << " scene=" << (manager->getScene() ? "ok" : "null")
-                      << " tmgr=" << (manager->terrainManager ? "ok" : "null")
-                      << "\n";
-        }
-
         if (inToolMode && (hovered || focused) && !ImGuizmo::IsUsing() && !modifiersDown)
         {
             kVec2 imMouse = gui->getMousePos();
@@ -474,7 +464,10 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 if (tmgr)
                 {
                     float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
-                    if (dirXZ > 0.0001f)
+                    // March regardless of orientation: a top-down camera gives
+                    // dirXZ ≈ 0, which previously skipped the raycast and made
+                    // terrain painting look broken.
+                    if (dirXZ > 0.0001f || std::abs(dir.y) > 0.0001f)
                     {
                         const float tileSize = 256.0f;
                         const int heightRes = 513;
@@ -482,7 +475,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         const float stepSize = sampleSpacing * 0.5f;
                         const float maxDist = 10000.0f;
 
-                        float s = stepSize / dirXZ;
+                        float s = stepSize;
                         float rayT = 0.0f;
                         bool hitTerrain = false;
                         kVec3 hitPos(0.0f);
@@ -600,7 +593,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     if (tmgr)
                     {
                         float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
-                        if (dirXZ > 0.0001f)
+                        if (dirXZ > 0.0001f || std::abs(dir.y) > 0.0001f)
                         {
                             const float tileSize = 256.0f;
                             const int heightRes = 513;
@@ -608,7 +601,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                             const float stepSize = sampleSpacing * 0.5f;
                             const float maxDist = 10000.0f;
 
-                            float s = stepSize / dirXZ;
+                            float s = stepSize;
                             float rayT = 0.0f;
                             kVec3 hitPos(0.0f);
                             kVec3 hitNormal(0.0f, 1.0f, 0.0f);
@@ -691,9 +684,24 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
         // --- Render paint cursor in the viewport (also shown for sculpt) ---
         // Only show the cursor when the mouse is actually over the terrain
-        if ((isSculpting || isPainting || isHeightPaint) && manager->panelTerrain->paintCursorValid)
+        if (isSculpting || isPainting || isHeightPaint)
         {
             ImDrawList *dl = ImGui::GetWindowDrawList();
+
+            if (!manager->panelTerrain->paintCursorValid)
+            {
+                // No terrain under the cursor yet — still draw a brush-size ring at
+                // the mouse so the operator can see how big the brush is.
+                kVec2 m = gui->getMousePos();
+                float r = (std::max)(8.0f, (std::min)(220.0f,
+                                                         manager->panelTerrain->sculpt.radius * 3.0f));
+                ImU32 col = isHeightPaint ? IM_COL32(112, 171, 100, 170)
+                                          : IM_COL32(255, 255, 255, 170);
+                dl->AddCircle(ImVec2(m.x, m.y), r, col, 48, 2.0f);
+                dl->AddCircleFilled(ImVec2(m.x, m.y), 2.0f, col);
+            }
+            else
+            {
 
             // Project the world-space hit position to screen
             glm::mat4 view = editorCamera->getViewMatrix();
@@ -801,6 +809,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     dl->AddLine(ImVec2(sx, sy), ImVec2(ux, uy), circleColor, 2.5f);
                 }
             }
+            } // end else (paintCursorValid)
         }
     }
 

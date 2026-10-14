@@ -1291,6 +1291,9 @@ int main()
 		applyPendingFocus("Logic Graph", showPanel.scriptEditor);
 		panelLogicGraph->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
+		applyPendingFocus("Terrain", showPanel.terrain);
+		panelTerrain->enabled = true;
+		panelTerrain->draw(showPanel.terrain);
 		applyPendingFocus("Prefab", showPanel.prefab);
 		panelPrefab->draw(showPanel.prefab);
 		// Consume pending Cinematic Editor open request from inspector
