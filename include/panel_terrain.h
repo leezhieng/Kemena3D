@@ -8,6 +8,7 @@
 
 #include <string>
 #include <filesystem>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -58,6 +59,22 @@ public:
     PanelTerrain(kGuiManager *setGuiManager, Manager *setManager);
 
     void draw(bool &isOpened);
+
+    /**
+     * @brief Draws the Terrain Size / resolution section and its confirm modal.
+     *
+     * Safe to call when the scene has no terrain yet (or there is no terrain
+     * manager): the staged values are then applied once the first tile exists.
+     */
+    void drawTerrainSizeSettings(kTerrainManager *terrainMgr);
+
+    /**
+     * @brief Resolves the terrain tile the editor currently has selected.
+     *
+     * Consults both the singular active object and the plural selection list that
+     * the Hierarchy maintains; returns nullptr when no tile is selected.
+     */
+    kTerrain *getSelectedTerrainTile(kTerrainManager *terrainMgr);
     void onTerrainFileRenamed(const kString &oldPath, const kString &newPath);
 
     /**
@@ -94,13 +111,70 @@ public:
      */
     void removeTerrainTile(int gridX, int gridZ);
     void loadProjectTerrains();
-    void saveProjectTerrains() const;
+    void saveProjectTerrains();
     void sculptAtWorldPos(const kVec3 &worldPos);
     void rebuildSculptedTile();
     void paintAtWorldPos(const kVec3 &worldPos, bool lower);
     void rebuildPaintedTile();
     void paintSplatAtWorldPos(const kVec3 &worldPos, bool erase);
     void rebuildPaintedSplatTile();
+
+    // --- Owned terrain assets ---
+
+    /**
+     * @brief Points the terrain manager at the folder that owns tile payloads.
+     *
+     * Tiles then create/read/delete their own `.height`, `.splat`, `.hlayers`
+     * and `.mat` files there — the user never assigns any of them.
+     */
+    void setTerrainAssetDirectory(const kString &directory);
+
+    /** @brief Writes every tile's owned height / splat / layer / material files. */
+    void saveAllOwnedAssets();
+
+    // --- Non-destructive height modifier layers ---
+
+    /**
+     * @brief Adds, updates or re-generates one height modifier layer as a single
+     *        undoable step.
+     *
+     * @param tile        Target tile.
+     * @param layerIndex  Existing layer to update, or -1 to append a new one.
+     * @param desc        New layer parameters.
+     * @param generator   When non-null, re-runs the operator to rebuild the
+     *                    layer's offsets from the composite below it.
+     * @return The layer index, or -1 on failure.
+     */
+    int applyHeightLayer(kTerrain *tile, int layerIndex,
+                         const kTerrainHeightLayer &desc,
+                         const std::function<void(const std::vector<float> &input,
+                                                  std::vector<float> &output)> &generator);
+
+    /** @brief Removes a height modifier layer as one undoable step. */
+    void removeHeightLayerUndoable(kTerrain *tile, int layerIndex);
+
+    /**
+     * @brief Resets a tile's height map.
+     *
+     * The sculpted base returns to the panel's default height and every effect
+     * layer's contribution (its stored delta) is zeroed, so the tile reads flat
+     * again. Recorded as one undoable step for the base field.
+     */
+    void clearSelectedTileHeight(kTerrain *tile);
+
+    /**
+     * @brief Builds the generator functor for a height layer descriptor.
+     *
+     * The functor seeds the tile's height field with the layer's input, runs the
+     * matching operator (noise / hydraulic / thermal / wind / hydrology) and hands
+     * the absolute result back so the layer's delta can be derived from it.
+     */
+    std::function<void(const std::vector<float> &input, std::vector<float> &output)>
+    makeHeightLayerGenerator(kTerrain *tile, const kTerrainHeightLayer &layer);
+
+    /** @brief Re-runs a layer's generator in place, as one undoable step. */
+    void regenerateHeightLayer(kTerrain *tile, int layerIndex);
+
     void applyNoiseToTile(kTerrain *tile, float scale, float amplitude,
                           int octaves, int seed, bool additive);
 
@@ -165,6 +239,21 @@ private:
     EditSnapshot *findOrCreateEditSnapshot(kTerrain *tile);
 
     float m_defaultHeight = 0.0f;
+
+    // --- Terrain size / resolution settings (applied only after confirmation) ---
+    float m_settingsWorldSize = 256.0f; ///< Edited value in the Terrain panel.
+    int m_settingsHeightRes = 513;      ///< Edited value in the Terrain panel.
+    float m_pendingWorldSize = 256.0f;  ///< Value awaiting the confirmation modal.
+    int m_pendingHeightRes = 513;       ///< Value awaiting the confirmation modal.
+    bool m_resizeConfirmPending = false; ///< Set to open the resize warning modal.
+    /// Set when a size / resolution change was confirmed before any tile existed,
+    /// so the staged values are applied to the manager on first tile creation.
+    bool m_applySizeOnCreate = false;
+    /// Set to open the "Clear Height Map" confirmation modal.
+    bool m_clearHeightPending = false;
+
+    /// @brief Applies a confirmed world size / resolution change to every tile.
+    void applyTerrainResize(float worldSize, int heightRes);
 
     float m_noiseScale = 50.0f;
     float m_noiseAmplitude = 10.0f;

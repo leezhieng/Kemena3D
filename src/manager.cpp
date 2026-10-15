@@ -3164,11 +3164,22 @@ void Manager::createTerrain()
         terrainManager->init(scene, getAssetManager(), 256.0f, 513);
     }
 
+    // Terrain assets are owned by the tiles and live under Library/Terrains.
+    {
+        fs::path libDir = projectPath / "Library" / "Terrains";
+        fs::create_directories(libDir);
+        terrainManager->setAssetDirectory(libDir.string());
+    }
+
     kTerrain *tile = terrainManager->createTile(0, 0);
     if (tile)
     {
         tile->fillHeight(0.0f);
         tile->reload(true); // force mesh creation so it appears immediately
+
+        // The tile only has its mesh (and therefore its UUID-derived file names)
+        // now, so write its owned height / splat / layers / material out.
+        tile->createOwnedAssets(terrainManager->getAssetDirectory());
 
         kMesh *mesh = tile->getMesh();
         if (mesh)
@@ -6046,18 +6057,30 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 return result;
             }
 
+            // Terrain payloads are owned by the tile. Point the manager at the
+            // Library folder first so createTile() can adopt the paths, then read
+            // the tile's own height / splat / height-layer / material files.
+            fs::path libDir = projectPath / "Library" / "Terrains";
+
             kTerrain *tile = terrainMgr->createTile(gx, gz);
             if (tile)
             {
-                // Load height/splat binary data from Library/Terrains/
-                fs::path libDir = projectPath / "Library" / "Terrains";
-                kString hFile = libDir.string() + "/" + obj.value("heightFile", "");
-                kString sFile = libDir.string() + "/" + obj.value("splatFile", "");
-                if (fs::exists(hFile))
-                    tile->loadHeightData(hFile);
-                if (fs::exists(sFile))
-                    tile->loadSplatMap(sFile);
+                terrainMgr->setAssetDirectory(libDir.string());
 
+                // The .world records the exact filenames the tile was saved with;
+                // adopt them so older projects keep working.
+                const kString hName = obj.value("heightFile", "");
+                const kString sName = obj.value("splatFile", "");
+                const kString hlName = obj.value("heightLayersFile", "");
+                const kString mName = obj.value("materialFile", "");
+
+                tile->adoptOwnedAssetPaths(
+                    hName.empty() ? kString() : (libDir / hName).string(),
+                    sName.empty() ? kString() : (libDir / sName).string(),
+                    hlName.empty() ? kString() : (libDir / hlName).string(),
+                    mName.empty() ? kString() : (libDir / mName).string());
+
+                tile->loadOwnedAssets();
                 tile->reload(true);
 
                 mesh = tile->getMesh();
@@ -10536,6 +10559,17 @@ bool Manager::applyMaterialToObject(kObject *obj, const fs::path &materialPath,
 {
     if (!obj)
         return false;
+
+    // Terrain tiles own their material: it is created with the tile, persisted in
+    // Library/Terrains and deleted with the tile. Only the Terrain panel may edit
+    // its parameters, so a .mat assignment is refused here (the Inspector picker
+    // and viewport drag-drop both route through this function).
+    if (obj->getType() == kNodeType::NODE_TYPE_TERRAIN)
+        return false;
+    if (kMesh *meshObj = dynamic_cast<kMesh *>(obj))
+        if (meshObj->getSerializeType() == "terrain")
+            return false;
+
     kAssetManager *am = getAssetManager();
     if (!am)
         return false;

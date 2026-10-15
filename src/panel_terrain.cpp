@@ -41,7 +41,10 @@ void PanelTerrain::beginTerrainEdit(kTerrain *tile, bool height, bool weight)
 
     if (height && !s->height)
     {
-        const float *data = tile->getHeightData();
+        // Snapshot the *base* field: sculpting and height painting only ever
+        // modify the base, and the generated modifier layers are recomposited
+        // on top afterwards.
+        const float *data = tile->getBaseHeightData();
         const size_t n = tile->getHeightDataSize();
         if (data && n > 0)
         {
@@ -82,10 +85,10 @@ void PanelTerrain::commitTerrainEdit()
         diff.tile = tile;
         diff.res = res;
 
-        // --- Height field diff ---
+        // --- Height field diff (base field only) ---
         if (s.height && s.heightBefore.size() == static_cast<size_t>(res) * res)
         {
-            const float *after = tile->getHeightData();
+            const float *after = tile->getBaseHeightData();
             if (after)
             {
                 int minX = res, minZ = res, maxX = -1, maxZ = -1;
@@ -293,7 +296,12 @@ void PanelTerrain::paintAtWorldPos(const kVec3 &worldPos, bool lower)
     int zMax = (std::min)(res - 1, cz + radSamples);
 
     float worldRadiusSq = radius * radius;
-    float *data = foundTile->getHeightData();
+
+    // Height painting is a sculpt of the base field, not of the composite, so it
+    // survives recomposeHeight() and is captured by the base-field undo diff.
+    float *data = foundTile->getBaseHeightData();
+    if (!data)
+        return;
 
     for (int z = zMin; z <= zMax; ++z)
     {
@@ -313,13 +321,18 @@ void PanelTerrain::paintAtWorldPos(const kVec3 &worldPos, bool lower)
             float core = std::cos(t * 3.14159265358979323846f * 0.5f);
             float falloff = core * (1.0f - paint.fade) + paint.fade * (1.0f - t);
             falloff = (std::max)(0.0f, falloff);
-            falloff *= effectiveStrength;
+            // Same reasoning as the sculpt brush: scale by the brush's world radius
+            // so a single click changes the height perceptibly.
+            falloff *= effectiveStrength * (std::max)(radius * 0.5f, sampleSpacing);
 
             int idx = z * res + x;
             float oldVal = data[idx];
             data[idx] = oldVal + falloff;
         }
     }
+
+    // Fold the modifier layers over the edited base, then refresh the mesh.
+    foundTile->recomposeHeight();
 
     // Fast polygon update for live visual feedback
     foundTile->updateMesh();
@@ -906,6 +919,405 @@ void PanelTerrain::applyHydrologyToTile(kTerrain *tile, int iterations, float k,
     tile->rebuildMesh(true);
 }
 
+// ---------------------------------------------------------------------------
+// Owned assets + non-destructive height layers
+// ---------------------------------------------------------------------------
+
+void PanelTerrain::setTerrainAssetDirectory(const kString &directory)
+{
+    if (manager && manager->terrainManager)
+        manager->terrainManager->setAssetDirectory(directory);
+}
+
+void PanelTerrain::saveAllOwnedAssets()
+{
+    if (!manager || !manager->terrainManager)
+        return;
+
+    for (const auto &pair : manager->terrainManager->getTiles())
+        if (kTerrain *tile = pair.second.get())
+            tile->saveOwnedAssets();
+}
+
+int PanelTerrain::applyHeightLayer(kTerrain *tile, int layerIndex,
+                                   const kTerrainHeightLayer &desc,
+                                   const std::function<void(const std::vector<float> &,
+                                                            std::vector<float> &)> &generator)
+{
+    if (!tile || !manager)
+        return -1;
+
+    std::vector<kTerrainHeightLayer> &layers = tile->getHeightLayers();
+
+    auto cmd = std::make_unique<TerrainEditCommand>();
+    cmd->manager = manager;
+
+    TerrainEditCommand::TileDiff diff;
+    diff.tile = tile;
+    diff.res = tile->getHeightRes();
+    diff.hasLayer = true;
+
+    if (layerIndex < 0)
+    {
+        // Appending: undo simply removes it again.
+        layerIndex = tile->addHeightLayer(desc);
+        diff.layerBeforeValid = false;
+    }
+    else
+    {
+        if (layerIndex >= static_cast<int>(layers.size()))
+            return -1;
+        diff.layerBeforeValid = true;
+        diff.layerBefore = layers[static_cast<size_t>(layerIndex)];
+    }
+
+    diff.layerIndex = layerIndex;
+
+    // A parameter/weight-only change keeps the existing offsets; a regenerate
+    // replaces them wholesale.
+    {
+        const std::vector<float> keptOffsets = layers[static_cast<size_t>(layerIndex)].offsets;
+        kTerrainHeightLayer updated = desc;
+        if (generator == nullptr)
+            updated.offsets = keptOffsets;
+        layers[static_cast<size_t>(layerIndex)] = std::move(updated);
+    }
+
+    if (generator)
+        tile->generateHeightLayer(layerIndex, generator);
+    else
+        tile->recomposeHeight();
+
+    diff.layerAfterValid = true;
+    diff.layerAfter = layers[static_cast<size_t>(layerIndex)];
+
+    if (tile->isLoaded())
+        tile->rebuildMesh(true);
+
+    cmd->diffs.push_back(std::move(diff));
+    manager->undoRedo.push(std::move(cmd));
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+
+    // Persist the layer straight away: offsets are not cheap to regenerate.
+    tile->saveOwnedAssets();
+    return layerIndex;
+}
+
+void PanelTerrain::removeHeightLayerUndoable(kTerrain *tile, int layerIndex)
+{
+    if (!tile || !manager)
+        return;
+
+    std::vector<kTerrainHeightLayer> &layers = tile->getHeightLayers();
+    if (layerIndex < 0 || layerIndex >= static_cast<int>(layers.size()))
+        return;
+
+    auto cmd = std::make_unique<TerrainEditCommand>();
+    cmd->manager = manager;
+
+    TerrainEditCommand::TileDiff diff;
+    diff.tile = tile;
+    diff.res = tile->getHeightRes();
+    diff.hasLayer = true;
+    diff.layerIndex = layerIndex;
+    diff.layerBeforeValid = true;
+    diff.layerBefore = layers[static_cast<size_t>(layerIndex)];
+    diff.layerAfterValid = false;
+
+    tile->removeHeightLayer(layerIndex);
+    if (tile->isLoaded())
+        tile->rebuildMesh(true);
+
+    cmd->diffs.push_back(std::move(diff));
+    manager->undoRedo.push(std::move(cmd));
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+    tile->saveOwnedAssets();
+}
+
+// A few passes of a 3x3 average over a square field. Per-sample operators leave
+// single-sample steps behind, and once that field is drawn as a mesh those steps
+// read as blocky facets — this relaxes them without flattening the large shapes.
+static void smoothHeightField(std::vector<float> &data, int res, int passes)
+{
+    if (res < 3 || data.size() != static_cast<size_t>(res) * res)
+        return;
+
+    std::vector<float> tmp(data.size());
+    for (int p = 0; p < passes; ++p)
+    {
+        for (int z = 0; z < res; ++z)
+        {
+            const int z0 = (std::max)(0, z - 1);
+            const int z1 = (std::min)(res - 1, z + 1);
+            for (int x = 0; x < res; ++x)
+            {
+                const int x0 = (std::max)(0, x - 1);
+                const int x1 = (std::min)(res - 1, x + 1);
+
+                float sum = 0.0f;
+                for (int nz = z0; nz <= z1; ++nz)
+                    for (int nx = x0; nx <= x1; ++nx)
+                        sum += data[static_cast<size_t>(nz) * res + nx];
+
+                const float count = static_cast<float>((z1 - z0 + 1) * (x1 - x0 + 1));
+                tmp[static_cast<size_t>(z) * res + x] = sum / count;
+            }
+        }
+        data.swap(tmp);
+    }
+}
+
+std::function<void(const std::vector<float> &, std::vector<float> &)>
+PanelTerrain::makeHeightLayerGenerator(kTerrain *tile, const kTerrainHeightLayer &layer)
+{
+    if (!tile)
+        return nullptr;
+
+    return [this, tile, layer](const std::vector<float> &input, std::vector<float> &output)
+    {
+        float *height = tile->getHeightData();
+        if (!height || tile->getHeightDataSize() != input.size())
+            return;
+
+        // Every operator reads and writes the tile's height field in place, so seed
+        // it with this layer's input, run the operator, then hand the result back.
+        // kTerrain::generateHeightLayer turns that into the layer's delta.
+        std::copy(input.begin(), input.end(), height);
+
+        // The noise operator reads the fractal variant from the panel member, so
+        // the layer's stored variant temporarily wins.
+        const int savedNoiseType = m_noiseType;
+        m_noiseType = layer.noiseType;
+
+        switch (layer.type)
+        {
+        case kTerrainHeightLayerType::Noise:
+            applyNoiseToTile(tile, layer.noiseScale, layer.noiseAmplitude,
+                             layer.noiseOctaves, layer.noiseSeed, layer.noiseAdditive);
+            break;
+        case kTerrainHeightLayerType::HydraulicErosion:
+            applyErosionToTile(tile, layer.droplets, layer.erodeRadius, layer.erodeInertia,
+                               layer.erodeCapacity, layer.erodeDeposit, layer.erodeErode,
+                               layer.erodeEvaporate, layer.erodeGravity, 0.01f,
+                               static_cast<unsigned int>(layer.noiseSeed));
+            break;
+        case kTerrainHeightLayerType::ThermalErosion:
+            applyThermalErosionToTile(tile, layer.iterations, layer.talus, layer.strength);
+            break;
+        case kTerrainHeightLayerType::WindErosion:
+            applyWindErosionToTile(tile, layer.windDirection, layer.strength,
+                                   layer.iterations, layer.talus);
+            break;
+        case kTerrainHeightLayerType::Hydrology:
+            applyHydrologyToTile(tile, layer.iterations, layer.hydroK, layer.hydroM,
+                                 layer.hydroN, layer.hydroDeposit, 0.01f);
+            break;
+        }
+
+        m_noiseType = savedNoiseType;
+
+        std::copy(height, height + input.size(), output.begin());
+
+        // Relax the raw operator result before it becomes a layer delta, so the
+        // composited terrain renders smooth instead of faceted.
+        smoothHeightField(output, tile->getHeightRes(), 2);
+    };
+}
+
+void PanelTerrain::regenerateHeightLayer(kTerrain *tile, int layerIndex)
+{
+    if (!tile)
+        return;
+
+    std::vector<kTerrainHeightLayer> &layers = tile->getHeightLayers();
+    if (layerIndex < 0 || layerIndex >= static_cast<int>(layers.size()))
+        return;
+
+    // Copy first: applyHeightLayer replaces the element, which would dangle a
+    // reference into the vector.
+    const kTerrainHeightLayer desc = layers[static_cast<size_t>(layerIndex)];
+    applyHeightLayer(tile, layerIndex, desc, makeHeightLayerGenerator(tile, desc));
+}
+
+void PanelTerrain::applyTerrainResize(float worldSize, int heightRes)
+{
+    if (!manager)
+        return;
+
+    m_settingsWorldSize = worldSize;
+    m_settingsHeightRes = heightRes;
+
+    // With no terrain manager yet there is nothing to resample, so the staged
+    // values are simply applied once the scene gets its first tile.
+    if (!manager->terrainManager)
+    {
+        m_applySizeOnCreate = true;
+        return;
+    }
+
+    // Every tile resamples its height, weight map and modifier layers; quality is
+    // intentionally not preserved (see kTerrainManager::resizeAllTiles).
+    manager->terrainManager->resizeAllTiles(worldSize, heightRes);
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+}
+
+void PanelTerrain::clearSelectedTileHeight(kTerrain *tile)
+{
+    if (!tile || !manager)
+        return;
+
+    beginTerrainEdit(tile, true, false);
+
+    // Back to the flat default height ...
+    float *base = tile->getBaseHeightData();
+    if (base)
+        std::fill(base, base + tile->getHeightDataSize(), m_defaultHeight);
+
+    // ... and the effect layers hold height deltas, so their contribution goes too.
+    for (auto &layer : tile->getHeightLayers())
+        std::fill(layer.offsets.begin(), layer.offsets.end(), 0.0f);
+
+    tile->recomposeHeight();
+    if (tile->isLoaded())
+        tile->rebuildMesh(true);
+
+    commitTerrainEdit();
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+    tile->saveOwnedAssets();
+}
+
+kTerrain *PanelTerrain::getSelectedTerrainTile(kTerrainManager *terrainMgr)
+{
+    if (!terrainMgr || !manager)
+        return nullptr;
+
+    // Singular active object first (set by picking / creation) ...
+    if (kObject *sel = manager->getActiveSelectedObject())
+    {
+        for (const auto &pair : terrainMgr->getTiles())
+        {
+            kTerrain *tile = pair.second.get();
+            kMesh *tileMesh = tile ? tile->getMesh() : nullptr;
+            if (!tileMesh)
+                continue;
+
+            if (dynamic_cast<kMesh *>(sel) == tileMesh)
+                return tile;
+            if (!sel->getUuid().empty() && tileMesh->getUuid() == sel->getUuid())
+                return tile;
+        }
+    }
+
+    // ... then the plural UUID list, which is what the Hierarchy actually updates
+    // when a row is clicked. Without this a Hierarchy selection resolved to
+    // nothing and the panel looked empty.
+    const std::vector<kString> &selectedUuids = manager->getActiveSelectedObjects();
+    for (const auto &pair : terrainMgr->getTiles())
+    {
+        kTerrain *tile = pair.second.get();
+        kMesh *tileMesh = tile ? tile->getMesh() : nullptr;
+        if (!tileMesh || tileMesh->getUuid().empty())
+            continue;
+
+        if (std::find(selectedUuids.begin(), selectedUuids.end(),
+                      tileMesh->getUuid()) != selectedUuids.end())
+            return tile;
+    }
+
+    return nullptr;
+}
+
+void PanelTerrain::drawTerrainSizeSettings(kTerrainManager *terrainMgr)
+{
+    // Part of the "Terrain Tile Settings" section: changing either value resamples
+    // every tile's height map, splat map and height modifier layers, so it is
+    // staged here and only applied after an explicit confirmation.
+    ImGui::TextDisabled("Tile size / resolution (applies to every tile):");
+
+    if (m_settingsWorldSize <= 0.0f && terrainMgr)
+        m_settingsWorldSize = terrainMgr->getWorldSize();
+    if (m_settingsHeightRes < 2 && terrainMgr)
+        m_settingsHeightRes = terrainMgr->getHeightRes();
+
+    ImGui::DragFloat("Tile World Size", &m_settingsWorldSize, 1.0f, 8.0f, 8192.0f, "%.1f");
+    ImGui::DragInt("Height Resolution", &m_settingsHeightRes, 1, 33, 4097);
+
+    if (ImGui::Button("Save", ImVec2(-1, 0)))
+    {
+        const float currentWorld = terrainMgr ? terrainMgr->getWorldSize() : 256.0f;
+        const int currentRes = terrainMgr ? terrainMgr->getHeightRes() : 513;
+
+        if (terrainMgr &&
+            m_settingsWorldSize == currentWorld && m_settingsHeightRes == currentRes)
+        {
+            m_messageBoxText = "Terrain size and resolution are unchanged.";
+            m_messageBoxPending = true;
+        }
+        else
+        {
+            m_pendingWorldSize = m_settingsWorldSize;
+            m_pendingHeightRes = m_settingsHeightRes;
+            m_resizeConfirmPending = true;
+        }
+    }
+
+    if (m_resizeConfirmPending)
+    {
+        ImGui::OpenPopup("Resize Terrain##confirm");
+        m_resizeConfirmPending = false;
+    }
+
+    if (ImGui::BeginPopupModal("Resize Terrain##confirm", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextUnformatted("Change terrain size / resolution?");
+        ImGui::Separator();
+        ImGui::Text("World size : %.1f  ->  %.1f",
+                    terrainMgr ? terrainMgr->getWorldSize() : 0.0f, m_pendingWorldSize);
+        ImGui::Text("Resolution : %d  ->  %d",
+                    terrainMgr ? terrainMgr->getHeightRes() : 0, m_pendingHeightRes);
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
+        ImGui::TextWrapped("Every tile's height map, splat map and height modifier layers "
+                           "will be resampled to the new resolution. Detail will not be "
+                           "preserved.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Confirm", ImVec2(120, 0)))
+        {
+            applyTerrainResize(m_pendingWorldSize, m_pendingHeightRes);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0)))
+        {
+            // Snap the staged values back to what is actually in use.
+            if (terrainMgr)
+            {
+                m_settingsWorldSize = terrainMgr->getWorldSize();
+                m_settingsHeightRes = terrainMgr->getHeightRes();
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::Spacing();
+}
+
 void PanelTerrain::draw(bool &isOpened)
 {
     if (!isOpened)
@@ -993,15 +1405,45 @@ void PanelTerrain::draw(bool &isOpened)
     }
 
     // Is the current selection a terrain tile (or the scene that owns one)?
+    //
+    // The editor keeps two selections: the singular `getActiveSelectedObject()`
+    // (set when an object is picked/created) and the plural
+    // `getActiveSelectedObjects()` UUID list that the Hierarchy actually updates
+    // when a row is clicked. Both must be consulted, which is why selecting a
+    // terrain tile from the Hierarchy previously showed nothing here.
     bool terrainSelected = false;
+
     if (kObject *sel = manager->getActiveSelectedObject())
     {
-        kMesh *sm = dynamic_cast<kMesh *>(sel);
-        if (sm && sm->getSerializeType() == "terrain")
+        if (sel->getType() == kNodeType::NODE_TYPE_TERRAIN)
             terrainSelected = true;
-        else if (sel->getType() == kNodeType::NODE_TYPE_TERRAIN)
-            terrainSelected = true;
+        else if (kMesh *sm = dynamic_cast<kMesh *>(sel))
+            terrainSelected = (sm->getSerializeType() == "terrain");
     }
+
+    if (!terrainSelected && terrainMgr)
+    {
+        const std::vector<kString> &selectedUuids = manager->getActiveSelectedObjects();
+        for (const auto &pair : terrainMgr->getTiles())
+        {
+            kTerrain *tile = pair.second.get();
+            kMesh *tileMesh = tile ? tile->getMesh() : nullptr;
+            if (!tileMesh)
+                continue;
+
+            const kString &uuid = tileMesh->getUuid();
+            if (uuid.empty())
+                continue;
+
+            if (std::find(selectedUuids.begin(), selectedUuids.end(), uuid) !=
+                selectedUuids.end())
+            {
+                terrainSelected = true;
+                break;
+            }
+        }
+    }
+
     bool sceneSelected = (manager->selectedScene == scene);
 
     // Show only "Create New Terrain" until the scene has a terrain; afterwards
@@ -1013,10 +1455,29 @@ void PanelTerrain::draw(bool &isOpened)
     {
         if (!sceneHasTerrain)
         {
+            // No terrain in this scene yet: only Tile Management and the size /
+            // resolution settings are meaningful. Everything else — sculpting,
+            // painting, height layers, material, file operations — stays hidden.
             ImGui::TextDisabled("This scene has no terrain yet.");
             ImGui::Spacing();
-            if (ImGui::Button("Create New Terrain", ImVec2(-1, 0)))
+
+            ImGui::SeparatorText("Terrain Tile Settings");
+            if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
+            {
                 manager->createTerrain();
+                // A size / resolution confirmed before any tile existed is applied
+                // to the manager now that it exists.
+                if (m_applySizeOnCreate && manager->terrainManager)
+                {
+                    manager->terrainManager->resizeAllTiles(m_settingsWorldSize,
+                                                            m_settingsHeightRes);
+                    m_applySizeOnCreate = false;
+                }
+            }
+
+            ImGui::Spacing();
+
+            drawTerrainSizeSettings(terrainMgr);
         }
         else
         {
@@ -1026,15 +1487,15 @@ void PanelTerrain::draw(bool &isOpened)
         return;
     }
 
-    // --- Tile Management ---
-    ImGui::SeparatorText("Tile Management");
+    // --- Terrain Tile Settings ---
+    ImGui::SeparatorText("Terrain Tile Settings");
 
     const bool hasTerrainTile = (terrainMgr->getTotalCount() > 0);
 
     // Add default tile at origin. Disabled once the scene already owns a tile —
     // a scene holds at most one terrain, so creating another is not allowed.
     ImGui::BeginDisabled(hasTerrainTile);
-    if (ImGui::Button("Add Default Terrain", ImVec2(-1, 0)))
+    if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
     {
         addTerrainTile(0, 0);
         // Select the new tile so the neighbour controls have a reference.
@@ -1048,23 +1509,8 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-    // The currently selected terrain tile is the reference for the rows below.
-    kTerrain *selectedTerrain = nullptr;
-    if (kObject *sel = manager->getActiveSelectedObject())
-    {
-        if (kMesh *selMesh = dynamic_cast<kMesh *>(sel))
-        {
-            for (const auto &pair : terrainMgr->getTiles())
-            {
-                kTerrain *t = pair.second.get();
-                if (t && t->getMesh() == selMesh)
-                {
-                    selectedTerrain = t;
-                    break;
-                }
-            }
-        }
-    }
+    // The selected terrain tile is the reference for the sections below.
+    kTerrain *selectedTerrain = getSelectedTerrainTile(terrainMgr);
 
     if (selectedTerrain)
         ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
@@ -1078,6 +1524,9 @@ void PanelTerrain::draw(bool &isOpened)
     ImGui::InputFloat("Default Height", &m_defaultHeight);
 
     ImGui::Spacing();
+
+    // --- Terrain size / resolution ---
+    drawTerrainSizeSettings(terrainMgr);
 
     // The four neighbours of the selected tile, addressed by axis offset.
     const int dirDx[4] = {1, -1, 0, 0};
@@ -1139,13 +1588,33 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-    // --- Sculpting Tools ---
-    ImGui::SeparatorText("Sculpting");
-    ImGui::Checkbox("Sculpt Mode Active", &sculpt.active);
-    if (sculpt.active)
+    // --- Edit Tile -----------------------------------------------------------
+    // Sculpting, painting and the height modifier stack are three views of the
+    // same tile, so they share one section, one tab each.
+    ImGui::SeparatorText("Edit Tile");
+
+    if (ImGui::BeginTabBar("##terrainEditTabs"))
     {
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Hold left mouse in viewport to sculpt");
-    }
+        if (ImGui::BeginTabItem("Sculpting"))
+        {
+            // Toggling sculpt must clear the paint modes exactly once. Doing this
+            // unconditionally each frame is what used to un-check this box as soon
+            // as the user switched to another Edit Tile tab.
+            {
+                bool sculptModeActive = sculpt.active;
+                if (ImGui::Checkbox("Sculpt Mode Active", &sculptModeActive))
+                {
+                    sculpt.active = sculptModeActive;
+                    if (sculptModeActive)
+                    {
+                        paint.active = false;
+                        paint.heightActive = false;
+                    }
+                }
+            }
+    if (sculpt.active)
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                           "Hold left mouse in viewport to sculpt");
 
     // Brush mode radio buttons
     const char *modes[] = {"Raise", "Lower", "Flatten", "Smooth"};
@@ -1166,9 +1635,42 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-    // --- Splat / Height Painting ---
-    ImGui::SeparatorText("Painting");
-    ImGui::Text("Splat Mask (R/G/B/A):");
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            bool canClear = (selectedTerrain != nullptr);
+            ImGui::BeginDisabled(!canClear);
+            if (ImGui::Button("Clear Height Map", ImVec2(-1, 0)))
+                m_clearHeightPending = true;
+            ImGui::EndDisabled();
+
+            if (!canClear)
+                ImGui::TextDisabled("Select a terrain tile to clear its height map.");
+
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Painting"))
+        {
+            // Height paint is the painting "mode", so it leads the tab.
+            {
+                bool paintModeActive = paint.heightActive;
+                if (ImGui::Checkbox("Paint Mode Active", &paintModeActive))
+                {
+                    paint.heightActive = paintModeActive;
+                    if (paintModeActive)
+                    {
+                        sculpt.active = false;
+                        paint.active = false;
+                    }
+                }
+            }
+
+            if (paint.heightActive)
+                ImGui::TextDisabled("Left click lowers, right click raises the height.");
+
+            ImGui::Spacing();
+            ImGui::Text("Splat Mask (R/G/B/A):");
     static bool splatSelected[4] = {false, false, false, false};
     ImU32 splatColors[4] = {
         IM_COL32(255, 60, 60, 255),
@@ -1197,119 +1699,271 @@ void PanelTerrain::draw(bool &isOpened)
     // Paint target layer (0..15). Layers 0..3 also have the quick R/G/B/A swatches.
     ImGui::SliderInt("Layer##paint", &paint.channel, 0, kTerrain::kMaxTerrainLayers - 1);
 
-    ImGui::SameLine();
-    ImGui::Checkbox("Paint Height", &paint.heightActive);
-    if (paint.heightActive)
-    {
-        sculpt.active = false;
-        paint.active = false;
-        paint.channel = -1;
-    }
-
     if (paint.active)
+    {
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                           "L-click paint, R-click erase mask channel. Ctrl+click=sculpt");
+                           "L-click paint, R-click erase mask channel.");
+        // Mask painting only changes the rendered result once the layers use
+        // different textures; with none assigned every layer renders neutral white.
+        ImGui::TextDisabled("Assign per-layer textures above to see mask changes.");
+    }
     if (paint.heightActive)
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
                            "L-click lower, R-click raise height");
 
+    // Shared live status for every brush tool. A stroke only lands when the World
+    // panel is in the Game World view AND the cursor ray is over a terrain tile.
+    if (sculpt.active || paint.active || paint.heightActive)
+    {
+        if (paintCursorValid)
+            ImGui::Text("Cursor over terrain at (%.1f, %.1f, %.1f)",
+                        paintCursorPos.x, paintCursorPos.y, paintCursorPos.z);
+        else
+            ImGui::TextDisabled("Cursor not over terrain - hover the tile in the viewport.");
+    }
+
     ImGui::Spacing();
 
-    // --- Noise Generation ---
-    ImGui::SeparatorText("Noise Generation");
-    ImGui::SliderFloat("Scale##noise", &m_noiseScale, 1.0f, 200.0f, "%.0f");
-    ImGui::SliderFloat("Amplitude##noise", &m_noiseAmplitude, 0.1f, 100.0f, "%.1f");
-    ImGui::SliderInt("Octaves##noise", &m_noiseOctaves, 1, 8);
-    const char *noiseTypes[] = {"fBm (smooth)", "Ridged (mountains)", "Billowed (clouds)"};
-    ImGui::Combo("Type##noise", &m_noiseType, noiseTypes, IM_ARRAYSIZE(noiseTypes));
-    ImGui::InputInt("Seed##noise", &m_noiseSeed);
-    ImGui::Checkbox("Additive##noise", &m_noiseAdditive);
+            ImGui::EndTabItem();
+        }
 
-    // Noise target tile
-    static int noiseGridX = 0;
-    static int noiseGridZ = 0;
+        if (ImGui::BeginTabItem("Effect Layers"))
+        {
+            ImGui::TextDisabled("Height modifier layers, combined on top of the sculpted height.");
+
+    static const char *noiseTypes[] = {"fBm (smooth)", "Ridged (mountains)", "Billowed (clouds)"};
+    ImGui::TextDisabled("Add a layer, then expand it to set its parameters.");
+
+    // Layer target tile — defaults to the selected tile so the common case needs
+    // no manual coordinates.
+    static int layerGridX = 0;
+    static int layerGridZ = 0;
+    if (selectedTerrain)
+    {
+        layerGridX = selectedTerrain->getGridX();
+        layerGridZ = selectedTerrain->getGridZ();
+    }
     ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Tile X##noise", &noiseGridX);
+    ImGui::InputInt("Tile X##layer", &layerGridX);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Tile Z##noise", &noiseGridZ);
+    ImGui::InputInt("Tile Z##layer", &layerGridZ);
 
-    kTerrain *noiseTile = terrainMgr->getTile(noiseGridX, noiseGridZ);
+    kTerrain *noiseTile = terrainMgr->getTile(layerGridX, layerGridZ);
     if (!noiseTile)
-        ImGui::TextDisabled("No tile at (%d, %d). Create one below.", noiseGridX, noiseGridZ);
+        ImGui::TextDisabled("No tile at (%d, %d).", layerGridX, layerGridZ);
 
-    if (ImGui::Button("Apply Noise", ImVec2(-1, 0)) && noiseTile)
+    ImGui::BeginDisabled(noiseTile == nullptr);
+
+    // The Add buttons create an EMPTY layer: it contributes nothing until the user
+    // expands it, sets the parameters and presses Apply.
+    auto addLayer = [&](const kTerrainHeightLayer &desc)
     {
-        beginTerrainEdit(noiseTile, true, false);
-        applyNoiseToTile(noiseTile, m_noiseScale, m_noiseAmplitude,
-                         m_noiseOctaves, m_noiseSeed, m_noiseAdditive);
-        commitTerrainEdit();
-        if (manager && manager->getRenderer())
-            manager->getRenderer()->setOctreeDirty();
+        applyHeightLayer(noiseTile, -1, desc, nullptr);
+    };
+
+    if (ImGui::Button("Add Noise Layer", ImVec2(-1, 0)))
+    {
+        kTerrainHeightLayer desc;
+        desc.name = "Noise";
+        desc.type = kTerrainHeightLayerType::Noise;
+        desc.noiseScale = m_noiseScale;
+        desc.noiseAmplitude = m_noiseAmplitude;
+        desc.noiseOctaves = m_noiseOctaves;
+        desc.noiseSeed = m_noiseSeed;
+        desc.noiseType = m_noiseType;
+        desc.noiseAdditive = m_noiseAdditive;
+        addLayer(desc);
     }
 
-    ImGui::Spacing();
-
-    // --- Erosion ---
-    ImGui::SeparatorText("Erosion");
-    ImGui::SliderInt("Droplets##erode", &m_erodeDroplets, 1000, 500000, "%d", ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Erode Radius##erode", &m_erodeRadius, 1.0f, 16.0f, "%.1f");
-    ImGui::SliderFloat("Inertia##erode", &m_erodeInertia, 0.0f, 0.99f, "%.2f");
-    ImGui::SliderFloat("Capacity##erode", &m_erodeCapacity, 1.0f, 16.0f, "%.1f");
-    ImGui::SliderFloat("Deposit##erode", &m_erodeDeposit, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Erode Strength##erode", &m_erodeErode, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Evaporate##erode", &m_erodeEvaporate, 0.0f, 0.1f, "%.3f");
-    ImGui::SliderFloat("Gravity##erode", &m_erodeGravity, 0.1f, 20.0f, "%.1f");
-
-    if (ImGui::Button("Erode (Hydraulic)", ImVec2(-1, 0)) && noiseTile)
+    if (ImGui::Button("Add Hydraulic Erosion Layer", ImVec2(-1, 0)))
     {
-        beginTerrainEdit(noiseTile, true, false);
-        applyErosionToTile(noiseTile, m_erodeDroplets, m_erodeRadius, m_erodeInertia,
-                           m_erodeCapacity, m_erodeDeposit, m_erodeErode,
-                           m_erodeEvaporate, m_erodeGravity, 0.01f,
-                           static_cast<unsigned int>(m_noiseSeed));
-        commitTerrainEdit();
-        if (manager && manager->getRenderer())
-            manager->getRenderer()->setOctreeDirty();
+        kTerrainHeightLayer desc;
+        desc.name = "Hydraulic Erosion";
+        desc.type = kTerrainHeightLayerType::HydraulicErosion;
+        desc.droplets = m_erodeDroplets;
+        desc.erodeRadius = m_erodeRadius;
+        desc.erodeInertia = m_erodeInertia;
+        desc.erodeCapacity = m_erodeCapacity;
+        desc.erodeDeposit = m_erodeDeposit;
+        desc.erodeErode = m_erodeErode;
+        desc.erodeEvaporate = m_erodeEvaporate;
+        desc.erodeGravity = m_erodeGravity;
+        desc.noiseSeed = m_noiseSeed;
+        addLayer(desc);
     }
 
-    ImGui::SliderInt("Thermal Iterations##erode", &m_thermalIterations, 1, 64);
-    ImGui::SliderFloat("Talus##erode", &m_thermalTalus, 0.0f, 5.0f, "%.2f");
-    ImGui::SliderFloat("Thermal Strength##erode", &m_thermalStrength, 0.0f, 1.0f, "%.2f");
-    if (ImGui::Button("Erode (Thermal)", ImVec2(-1, 0)) && noiseTile)
+    if (ImGui::Button("Add Thermal Erosion Layer", ImVec2(-1, 0)))
     {
-        beginTerrainEdit(noiseTile, true, false);
-        applyThermalErosionToTile(noiseTile, m_thermalIterations, m_thermalTalus, m_thermalStrength);
-        commitTerrainEdit();
-        if (manager && manager->getRenderer())
-            manager->getRenderer()->setOctreeDirty();
+        kTerrainHeightLayer desc;
+        desc.name = "Thermal Erosion";
+        desc.type = kTerrainHeightLayerType::ThermalErosion;
+        desc.iterations = m_thermalIterations;
+        desc.talus = m_thermalTalus;
+        desc.strength = m_thermalStrength;
+        addLayer(desc);
     }
 
-    ImGui::SliderFloat("Wind Direction##erode", &m_windDir, 0.0f, 360.0f, "%.0f");
-    ImGui::SliderFloat("Wind Strength##erode", &m_windStrength, 0.0f, 1.0f, "%.2f");
-    if (ImGui::Button("Erode (Wind)", ImVec2(-1, 0)) && noiseTile)
+    if (ImGui::Button("Add Wind Erosion Layer", ImVec2(-1, 0)))
     {
-        beginTerrainEdit(noiseTile, true, false);
-        applyWindErosionToTile(noiseTile, m_windDir * 3.14159265f / 180.0f,
-                               m_windStrength, 8, m_thermalTalus);
-        commitTerrainEdit();
-        if (manager && manager->getRenderer())
-            manager->getRenderer()->setOctreeDirty();
+        kTerrainHeightLayer desc;
+        desc.name = "Wind Erosion";
+        desc.type = kTerrainHeightLayerType::WindErosion;
+        desc.windDirection = m_windDir * 3.14159265f / 180.0f;
+        desc.strength = m_windStrength;
+        desc.iterations = 8;
+        desc.talus = m_thermalTalus;
+        addLayer(desc);
     }
 
-    ImGui::SliderInt("Hydro Iterations##erode", &m_hydroIterations, 1, 32);
-    ImGui::SliderFloat("Hydro K##erode", &m_hydroK, 0.001f, 0.2f, "%.3f");
-    ImGui::SliderFloat("Hydro M##erode", &m_hydroM, 0.1f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Hydro N##erode", &m_hydroN, 0.5f, 2.0f, "%.2f");
-    ImGui::SliderFloat("Hydro Deposit##erode", &m_hydroDeposit, 0.0f, 0.9f, "%.2f");
-    if (ImGui::Button("Carve Rivers (Hydrology)", ImVec2(-1, 0)) && noiseTile)
+    if (ImGui::Button("Add River Carving Layer", ImVec2(-1, 0)))
     {
-        beginTerrainEdit(noiseTile, true, false);
-        applyHydrologyToTile(noiseTile, m_hydroIterations, m_hydroK, m_hydroM,
-                             m_hydroN, m_hydroDeposit, 0.01f);
-        commitTerrainEdit();
-        if (manager && manager->getRenderer())
-            manager->getRenderer()->setOctreeDirty();
+        kTerrainHeightLayer desc;
+        desc.name = "Rivers";
+        desc.type = kTerrainHeightLayerType::Hydrology;
+        desc.iterations = m_hydroIterations;
+        desc.hydroK = m_hydroK;
+        desc.hydroM = m_hydroM;
+        desc.hydroN = m_hydroN;
+        desc.hydroDeposit = m_hydroDeposit;
+        addLayer(desc);
+    }
+
+    ImGui::EndDisabled();
+
+    // --- Layer stack: enable / weight / regenerate / delete ---
+    if (noiseTile)
+    {
+        std::vector<kTerrainHeightLayer> &layers = noiseTile->getHeightLayers();
+        static const char *kLayerTypeNames[] = {
+            "Noise", "Hydraulic Erosion", "Thermal Erosion", "Wind Erosion", "River Carving"};
+
+        ImGui::Spacing();
+        ImGui::Text("Layers: %zu", layers.size());
+
+        int removeIndex = -1;
+        for (int li = 0; li < static_cast<int>(layers.size()); ++li)
+        {
+            ImGui::PushID(li);
+
+            kTerrainHeightLayer &layer = layers[static_cast<size_t>(li)];
+
+            // Every setting lives inside the expansion, and nothing is committed
+            // until Apply is pressed — so a slider drag never re-runs a generator.
+            kTerrainHeightLayer desc = layer;
+            if (ImGui::TreeNode(desc.name.c_str()))
+            {
+                ImGui::TextDisabled("Type: %s",
+                                    kLayerTypeNames[static_cast<int>(desc.type)]);
+
+                ImGui::Checkbox("Enabled", &desc.enabled);
+                ImGui::SliderFloat("Weight", &desc.weight, 0.0f, 4.0f, "%.2f");
+
+                switch (desc.type)
+                {
+                case kTerrainHeightLayerType::Noise:
+                    ImGui::SliderFloat("Scale", &desc.noiseScale, 1.0f, 200.0f, "%.0f");
+                    ImGui::SliderFloat("Amplitude", &desc.noiseAmplitude, 0.1f, 100.0f, "%.1f");
+                    ImGui::SliderInt("Octaves", &desc.noiseOctaves, 1, 8);
+                    ImGui::Combo("Fractal", &desc.noiseType, noiseTypes, IM_ARRAYSIZE(noiseTypes));
+                    ImGui::InputInt("Seed", &desc.noiseSeed);
+                    ImGui::Checkbox("Additive", &desc.noiseAdditive);
+                    break;
+
+                case kTerrainHeightLayerType::HydraulicErosion:
+                    ImGui::SliderInt("Droplets", &desc.droplets, 1000, 500000, "%d",
+                                     ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("Radius", &desc.erodeRadius, 1.0f, 16.0f, "%.1f");
+                    ImGui::SliderFloat("Inertia", &desc.erodeInertia, 0.0f, 0.99f, "%.2f");
+                    ImGui::SliderFloat("Capacity", &desc.erodeCapacity, 1.0f, 16.0f, "%.1f");
+                    ImGui::SliderFloat("Deposit", &desc.erodeDeposit, 0.0f, 1.0f, "%.2f");
+                    ImGui::SliderFloat("Erode", &desc.erodeErode, 0.0f, 1.0f, "%.2f");
+                    ImGui::SliderFloat("Evaporate", &desc.erodeEvaporate, 0.0f, 0.1f, "%.3f");
+                    ImGui::SliderFloat("Gravity", &desc.erodeGravity, 0.1f, 20.0f, "%.1f");
+                    ImGui::InputInt("Seed", &desc.noiseSeed);
+                    break;
+
+                case kTerrainHeightLayerType::ThermalErosion:
+                    ImGui::SliderInt("Iterations", &desc.iterations, 1, 64);
+                    ImGui::SliderFloat("Talus", &desc.talus, 0.0f, 5.0f, "%.2f");
+                    ImGui::SliderFloat("Strength", &desc.strength, 0.0f, 1.0f, "%.2f");
+                    break;
+
+                case kTerrainHeightLayerType::WindErosion:
+                {
+                    float degrees = desc.windDirection * 180.0f / 3.14159265f;
+                    ImGui::SliderFloat("Direction (deg)", &degrees, 0.0f, 360.0f, "%.0f");
+                    desc.windDirection = degrees * 3.14159265f / 180.0f;
+                    ImGui::SliderFloat("Strength", &desc.strength, 0.0f, 1.0f, "%.2f");
+                    ImGui::SliderInt("Iterations", &desc.iterations, 1, 32);
+                    ImGui::SliderFloat("Talus", &desc.talus, 0.0f, 5.0f, "%.2f");
+                    break;
+                }
+
+                case kTerrainHeightLayerType::Hydrology:
+                    ImGui::SliderInt("Iterations", &desc.iterations, 1, 32);
+                    ImGui::SliderFloat("K", &desc.hydroK, 0.001f, 0.2f, "%.3f");
+                    ImGui::SliderFloat("M", &desc.hydroM, 0.1f, 1.0f, "%.2f");
+                    ImGui::SliderFloat("N", &desc.hydroN, 0.5f, 2.0f, "%.2f");
+                    ImGui::SliderFloat("Deposit", &desc.hydroDeposit, 0.0f, 0.9f, "%.2f");
+                    break;
+                }
+
+                if (ImGui::Button("Apply"))
+                    applyHeightLayer(noiseTile, li, desc,
+                                     makeHeightLayerGenerator(noiseTile, desc));
+                ImGui::SameLine();
+                if (ImGui::Button("Delete"))
+                    removeIndex = li;
+
+                ImGui::TreePop();
+            }
+
+            ImGui::PopID();
+        }
+
+        if (removeIndex >= 0)
+            removeHeightLayerUndoable(noiseTile, removeIndex);
+    }
+
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
+    }
+
+    // Confirmation for "Clear Height Map". Drawn after the tab bar so it is always
+    // available whichever tab is showing.
+    if (m_clearHeightPending)
+    {
+        ImGui::OpenPopup("Clear Height Map##confirm");
+        m_clearHeightPending = false;
+    }
+
+    if (ImGui::BeginPopupModal("Clear Height Map##confirm", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextUnformatted("Clear this tile's height map?");
+        ImGui::Separator();
+        ImGui::Text("Target height: %.2f", m_defaultHeight);
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
+        ImGui::TextWrapped("The sculpted height returns to the default height and every "
+                           "effect layer's contribution is cleared, so the tile reads flat "
+                           "again.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Clear", ImVec2(120, 0)))
+        {
+            clearSelectedTileHeight(getSelectedTerrainTile(terrainMgr));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0)))
+            ImGui::CloseCurrentPopup();
+
+        ImGui::EndPopup();
     }
 
     ImGui::Spacing();
@@ -1320,30 +1974,28 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-    // --- File Operations ---
-    ImGui::SeparatorText("File Operations");
-
-    if (ImGui::Button("Save All Terrains", ImVec2(-1, 0)))
-    {
-        saveProjectTerrains();
-    }
-
-    if (ImGui::Button("Load Terrains from Project", ImVec2(-1, 0)))
-    {
-        loadProjectTerrains();
-    }
+    // Terrain assets (.height / .splat / .hlayers / .mat) are created, updated and
+    // deleted with each tile under Library/Terrains, so there is no manual
+    // save / load step to expose here.
 
     ImGui::Spacing();
 
     // --- Layer Configuration ---
     ImGui::SeparatorText("Material Layers");
 
+    // Follow the editor selection; the manual grid coordinates stay as a fallback
+    // for when nothing is selected. Both are function-scope because the tile
+    // coordinates are also printed further down.
     static int selectedTileGridX = 0;
     static int selectedTileGridZ = 0;
-    ImGui::InputInt("Tile Grid X##layer", &selectedTileGridX);
-    ImGui::InputInt("Tile Grid Z##layer", &selectedTileGridZ);
 
-    kTerrain *selectedTile = terrainMgr->getTile(selectedTileGridX, selectedTileGridZ);
+    kTerrain *selectedTile = getSelectedTerrainTile(terrainMgr);
+    if (!selectedTile)
+    {
+        ImGui::InputInt("Tile Grid X##layer", &selectedTileGridX);
+        ImGui::InputInt("Tile Grid Z##layer", &selectedTileGridZ);
+        selectedTile = terrainMgr->getTile(selectedTileGridX, selectedTileGridZ);
+    }
     if (selectedTile)
     {
         auto &layers = selectedTile->getLayers();
@@ -1366,18 +2018,49 @@ void PanelTerrain::draw(bool &isOpened)
                 ImGui::InputFloat("Slope Max", &layer.slopeMax);
 
                 // Per-layer textures packed into the terrain's sampler2DArrays.
-                static char pathBuf[512];
-                auto pathField = [&](const char *label, kString &path)
+                // Per-layer textures. These are the *only* terrain textures the
+                // user picks: they are packed into the terrain's sampler2DArrays
+                // and never replace the tile's own material.
+                auto texField = [&](const char *label, kString &path)
                 {
-                    strncpy_s(pathBuf, sizeof(pathBuf), path.c_str(), _TRUNCATE);
-                    kString id = kString(label) + "##tex" + std::to_string(i);
-                    if (ImGui::InputText(id.c_str(), pathBuf, sizeof(pathBuf)))
-                        path = pathBuf;
+                    ImGui::TextUnformatted(label);
+                    ImGui::SameLine(90.0f);
+
+                    kString shown = path.empty() ? kString("(drop a texture)")
+                                                : fs::path(path).filename().string();
+                    kString id = shown + "##tex" + std::to_string(i) + label;
+                    ImGui::Button(id.c_str(), ImVec2(230, 0));
+
+                    if (ImGui::IsItemHovered() && !path.empty())
+                        ImGui::SetTooltip("%s", path.c_str());
+
+                    if (ImGui::BeginDragDropTarget())
+                    {
+                        if (const ImGuiPayload *payload =
+                                ImGui::AcceptDragDropPayload("PROJECT_ASSET"))
+                        {
+                            kString assetUuid((const char *)payload->Data);
+                            auto nl = assetUuid.find('\n');
+                            if (nl != kString::npos)
+                                assetUuid = assetUuid.substr(0, nl);
+
+                            auto it = manager->fileMap.find(assetUuid);
+                            if (it != manager->fileMap.end() &&
+                                it->second.type == "texture")
+                            {
+                                path = (manager->projectPath / "Assets" /
+                                        it->second.path).string();
+                                selectedTile->rebuildLayerArrays();
+                                selectedTile->rebuildMesh(true);
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
                 };
-                pathField("Albedo", layer.albedoPath);
-                pathField("Normal", layer.normalPath);
-                pathField("ORM", layer.ormPath);
-                pathField("Mask", layer.maskPath);
+                texField("Albedo", layer.albedoPath);
+                texField("Normal", layer.normalPath);
+                texField("ORM", layer.ormPath);
+                texField("Mask", layer.maskPath);
 
                 ImGui::TreePop();
             }
@@ -1400,6 +2083,56 @@ void PanelTerrain::draw(bool &isOpened)
         {
             selectedTile->rebuildLayerArrays();
             selectedTile->rebuildMesh(true);
+        }
+
+        // --- Terrain material (auto-managed) ---
+        // Each tile creates its own TerrainPBR material and deletes it with the
+        // tile. It is deliberately not re-assignable from the Inspector or by
+        // dragging a .mat onto the tile — only its parameters are edited here.
+        ImGui::Spacing();
+        ImGui::SeparatorText("Terrain Material (auto-managed)");
+
+        if (kMaterial *terrainMat = selectedTile->getTerrainMaterial())
+        {
+            auto floatParam = [&](const char *label, const char *name,
+                                  float fallback, float lo, float hi, const char *fmt)
+            {
+                const auto &params = terrainMat->getParams();
+                auto it = params.find(kString(name));
+                float value = (it != params.end()) ? it->second.value.x : fallback;
+                if (ImGui::SliderFloat(label, &value, lo, hi, fmt))
+                {
+                    terrainMat->setParamFloat(name, value);
+                    selectedTile->saveOwnedAssets();
+                }
+            };
+
+            float tiling = 16.0f;
+            {
+                const auto &params = terrainMat->getParams();
+                auto it = params.find(kString("u_Tiling[0]"));
+                if (it != params.end())
+                    tiling = it->second.value.x;
+            }
+            if (ImGui::SliderFloat("Tiling", &tiling, 1.0f, 128.0f, "%.1f"))
+            {
+                for (int li = 0; li < 4; ++li)
+                    terrainMat->setParamFloat("u_Tiling[" + std::to_string(li) + "]", tiling);
+                selectedTile->saveOwnedAssets();
+            }
+
+            floatParam("Blend Sharpness", "u_BlendSharpness", 1.0f, 0.1f, 8.0f, "%.2f");
+            floatParam("Stochastic", "u_Stochastic", 1.0f, 0.0f, 1.0f, "%.0f");
+            floatParam("Triplanar Strength", "u_TriplanarStrength", 0.75f, 0.0f, 1.0f, "%.2f");
+            floatParam("Triplanar Sharpness", "u_TriplanarSharpness", 3.0f, 0.5f, 16.0f, "%.1f");
+            floatParam("Noise Variegation", "u_NoiseVariegation", 0.25f, 0.0f, 1.0f, "%.2f");
+            floatParam("Noise Scale", "u_NoiseScale", 0.02f, 0.001f, 0.5f, "%.3f");
+
+            ImGui::TextDisabled("Material .mat is written to Library/Terrains with the tile.");
+        }
+        else
+        {
+            ImGui::TextDisabled("No material yet (tile not loaded).");
         }
 
         // Generate the terrain collision shape. A Jolt HeightFieldShape is the
@@ -1444,6 +2177,18 @@ void PanelTerrain::addTerrainTile(int gridX, int gridZ)
     // createTile() only constructs the object — the GPU mesh is built by
     // rebuildMesh()/reload(). Build it now so the tile is visible immediately.
     tile->reload(true);
+
+    // The tile now has its mesh (and therefore the UUID its file names derive
+    // from), so create and persist the assets it owns: .height, .splat,
+    // .hlayers and its own TerrainPBR .mat.
+    if (manager->terrainManager->getAssetDirectory().empty())
+    {
+        fs::path libDir = manager->projectPath / "Library" / "Terrains";
+        fs::create_directories(libDir);
+        manager->terrainManager->setAssetDirectory(libDir.string());
+    }
+    tile->createOwnedAssets(manager->terrainManager->getAssetDirectory());
+    tile->saveOwnedAssets();
 
     // Existing neighbours may have been stitched against a missing edge; refresh
     // them so the seams line up with the newly added tile.
@@ -1559,11 +2304,26 @@ void PanelTerrain::loadProjectTerrains()
     if (!manager || !manager->terrainManager)
         return;
 
-    // Terrain data (height, splat) is stored in Library/Terrains/
-    // using the mesh UUID as filename, linking terrain data to scene objects.
+    // Terrain payloads live in Library/Terrains/, named after the tile's mesh
+    // UUID. The manager owns that folder, so each tile creates / reads / deletes
+    // its own .height, .splat, .hlayers and .mat files without user involvement.
     fs::path libDir = manager->projectPath / "Library" / "Terrains";
 
+    // Legacy .terrain files (if a project still has any) are picked up first.
     manager->terrainManager->loadFromDirectory(libDir.string());
+
+    setTerrainAssetDirectory(libDir.string());
+
+    for (const auto &pair : manager->terrainManager->getTiles())
+    {
+        kTerrain *tile = pair.second.get();
+        if (!tile)
+            continue;
+
+        tile->loadOwnedAssets();
+        if (tile->isLoaded())
+            tile->rebuildMesh(true);
+    }
 
     if (manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
@@ -1571,7 +2331,7 @@ void PanelTerrain::loadProjectTerrains()
     m_terrainDirectory = libDir.string();
 }
 
-void PanelTerrain::saveProjectTerrains() const
+void PanelTerrain::saveProjectTerrains()
 {
     if (!manager)
     {
@@ -1586,29 +2346,11 @@ void PanelTerrain::saveProjectTerrains() const
 
     fs::path libDir = manager->projectPath / "Library" / "Terrains";
     fs::create_directories(libDir);
-    std::cerr << "saveProjectTerrains: saving " << manager->terrainManager->getTotalCount() << " tiles to " << libDir << "\n";
 
-    for (const auto &pair : manager->terrainManager->getTiles())
-    {
-        const kTerrain *tile = pair.second.get();
-        kMesh *mesh = tile->getMesh();
-        if (!mesh)
-        {
-            std::cerr << "saveProjectTerrains: tile has no mesh, skipping\n";
-            continue;
-        }
+    // Owned payloads: each tile writes its own height / splat / layers / material.
+    setTerrainAssetDirectory(libDir.string());
+    saveAllOwnedAssets();
 
-        kString uuid = mesh->getUuid();
-        if (uuid.empty())
-        {
-            std::cerr << "saveProjectTerrains: mesh has empty uuid, skipping\n";
-            continue;
-        }
-
-        kString hFile = (libDir / (uuid + ".height")).string();
-        kString sFile = (libDir / (uuid + ".splat")).string();
-        std::cerr << "saveProjectTerrains: saving " << hFile << " and " << sFile << "\n";
-        tile->saveHeightData(hFile);
-        tile->saveSplatMap(sFile);
-    }
+    std::cerr << "saveProjectTerrains: saved " << manager->terrainManager->getTotalCount()
+              << " tiles to " << libDir << "\n";
 }

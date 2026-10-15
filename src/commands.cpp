@@ -399,12 +399,14 @@ void UnpackPrefabCommand::redo()
 // TerrainEditCommand
 // ---------------------------------------------------------------------------
 
-// Copies a height sub-block (rows x cols) back into the tile's height field.
+// Copies a height sub-block (rows x cols) back into the tile's *base* height
+// field.  Sculpting and height painting only ever modify the base; the generated
+// modifier layers are composited back on afterwards by recomposeHeight().
 static void applyHeightBlock(kTerrain *tile, int res,
                              int x0, int z0, int cols, int rows,
                              const std::vector<float> &src)
 {
-    float *dst = tile->getHeightData();
+    float *dst = tile->getBaseHeightData();
     if (!dst) return;
     for (int z = 0; z < rows; ++z)
     {
@@ -436,15 +438,44 @@ static void applyWeightBlock(kTerrain *tile, int res,
 static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after)
 {
     if (!d.tile) return;
+
+    const bool touchesHeight = d.hasHeight || d.hasLayer;
     if (d.hasHeight)
         applyHeightBlock(d.tile, d.res, d.hx0, d.hz0, d.hxc, d.hzc,
                          after ? d.heightAfter : d.heightBefore);
+
+    if (d.hasLayer)
+    {
+        // A generated modifier layer was created, re-generated, re-tuned or
+        // removed. Restore the whole layer descriptor (params + offsets).
+        std::vector<kTerrainHeightLayer> &layers = d.tile->getHeightLayers();
+        const bool valid = after ? d.layerAfterValid : d.layerBeforeValid;
+
+        if (valid)
+        {
+            const kTerrainHeightLayer &layer = after ? d.layerAfter : d.layerBefore;
+            while (static_cast<int>(layers.size()) <= d.layerIndex)
+                layers.push_back(kTerrainHeightLayer());
+            if (d.layerIndex >= 0 && d.layerIndex < static_cast<int>(layers.size()))
+                layers[d.layerIndex] = layer;
+        }
+        else if (d.layerIndex >= 0 && d.layerIndex < static_cast<int>(layers.size()))
+        {
+            layers.erase(layers.begin() + d.layerIndex);
+        }
+    }
+
     if (d.hasWeight)
         applyWeightBlock(d.tile, d.res, d.wx0, d.wz0, d.wxc, d.wzc,
                          after ? d.weightAfter : d.weightBefore);
+
+    // Fold the base + modifier layers into the rendered height field.
+    if (touchesHeight)
+        d.tile->recomposeHeight();
+
     if (d.tile->isLoaded())
     {
-        if (d.hasHeight) d.tile->rebuildMesh(true);
+        if (touchesHeight) d.tile->rebuildMesh(true);
         if (d.hasWeight) d.tile->updateSplatTexture();
     }
 }

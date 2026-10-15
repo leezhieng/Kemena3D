@@ -369,8 +369,17 @@ struct TerrainEditCommand : ICommand
         bool hasHeight = false;     ///< Whether a height-field diff is present.
         int  hx0 = 0, hz0 = 0;      ///< Height diff rectangle origin.
         int  hxc = 0, hzc = 0;      ///< Height diff rectangle size (columns, rows).
-        std::vector<float> heightBefore; ///< Height sub-block prior to the edit (hxc*hzc).
-        std::vector<float> heightAfter;  ///< Height sub-block after the edit (hxc*hzc).
+        std::vector<float> heightBefore; ///< BASE height sub-block prior to the edit (hxc*hzc).
+        std::vector<float> heightAfter;  ///< BASE height sub-block after the edit (hxc*hzc).
+
+        /// Whether a generated height modifier layer changed. Sculpting never
+        /// sets this; it only affects the sculpted base field.
+        bool hasLayer = false;
+        int  layerIndex = 0;             ///< Index in the tile's modifier stack.
+        bool layerBeforeValid = false;   ///< false when the operation added the layer.
+        bool layerAfterValid = false;    ///< false when the operation removed the layer.
+        kTerrainHeightLayer layerBefore; ///< Full layer (params + offsets) before.
+        kTerrainHeightLayer layerAfter;  ///< Full layer (params + offsets) after.
 
         bool hasWeight = false;     ///< Whether a weight-map diff is present.
         int  wx0 = 0, wz0 = 0;      ///< Weight diff rectangle origin.

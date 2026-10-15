@@ -294,6 +294,19 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 kObject *hovObj = renderer->pickObject(
                     manager->getWorld(), manager->getScene(),
                     vpMouseX, vpMouseY, width * 2, height * 2);
+
+                // Terrain tiles own their material (created, persisted and deleted
+                // with the tile; edited only from the Terrain panel), so a dropped
+                // .mat must not preview or apply to them.
+                if (hovObj)
+                {
+                    if (hovObj->getType() == kNodeType::NODE_TYPE_TERRAIN)
+                        hovObj = nullptr;
+                    else if (kMesh *hovMesh = dynamic_cast<kMesh *>(hovObj))
+                        if (hovMesh->getSerializeType() == "terrain")
+                            hovObj = nullptr;
+                }
+
                 manager->dragHoverObjectUuid = hovObj ? hovObj->getUuid() : kString("");
 
                 if (info.type == "material")
@@ -418,8 +431,14 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     bool cursorOverTerrain = false;
 
     // --- Terrain sculpt / paint (GameWorld only) ---
-    bool isPreviewMode = (manager->activeMode != Manager::EditorMode::GameWorld);
-    if (manager->panelTerrain && !isPreviewMode)
+    // Terrain brushes are deliberately NOT tied to the editor's preview mode. They
+    // operate on the game-world terrain through the terrain manager, so they stay
+    // live whenever a tool is armed; the raycast is what decides whether a tile is
+    // under the cursor. Gating on activeMode meant that a stray preview mode (left
+    // over from opening a prefab or particle asset) silently disabled sculpting and
+    // hid the brush ring, with no way back — viewport picking is suppressed while a
+    // tool is active, so the scene could not even be re-selected to restore the mode.
+    if (manager->panelTerrain)
     {
         bool isSculpting = manager->panelTerrain->sculpt.active;
         bool isPainting = manager->panelTerrain->paint.active;
@@ -435,6 +454,40 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         // Block painting when modifier keys are held (Alt/Ctrl/Shift)
         // so the user can orbit/pan/zoom without painting the terrain.
         bool modifiersDown = ImGui::GetIO().KeyAlt || ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+
+        // Robustness: `hovered` and `focused` can both be false while the mouse is
+        // physically over the viewport (another window stealing focus is enough),
+        // which silently disabled every brush. Fall back to a rectangle test so a
+        // stroke lands whenever the cursor is over the panel.
+        if (!hovered && !focused)
+        {
+            kVec2 m = gui->getMousePos();
+            if (m.x >= panelPos.x && m.x <= panelPos.x + panelSize.x &&
+                m.y >= panelPos.y && m.y <= panelPos.y + panelSize.y)
+                hovered = true;
+        }
+
+        // On-screen state readout, drawn by THIS panel so it reports exactly what
+        // the brush code sees (the Terrain panel only shows what it is told). It is
+        // intentionally always visible while a terrain tool is active: if this line
+        // never appears, the World panel is not reaching its tool block at all.
+        {
+            ImDrawList *fg = ImGui::GetForegroundDrawList();
+            const char *toolName = isSculpting ? "Sculpt"
+                                 : isPainting ? "Mask paint"
+                                 : isHeightPaint ? "Height paint"
+                                                 : "none";
+            kString line = kString("Terrain brush: ") + toolName +
+                           " | hovered: " + (hovered ? "y" : "n") +
+                           " | focused: " + (focused ? "y" : "n") +
+                           " | LMB: " + (ImGui::IsMouseDown(ImGuiMouseButton_Left) ? "down" : "up") +
+                           " | modifiers: " + (modifiersDown ? "held" : "none") +
+                           " | gizmo: " + (ImGuizmo::IsUsing() ? "using" : "idle") +
+                           " | cursor: " + (manager->panelTerrain->paintCursorValid ? "on terrain"
+                                                                                   : "off terrain");
+            fg->AddText(ImVec2(panelPos.x + 14.0f, panelPos.y + 14.0f),
+                        IM_COL32(255, 235, 120, 255), line.c_str());
+        }
 
         // When in sculpt or paint mode, block object picking so the user
         // cannot select 3D objects by clicking in the viewport.
@@ -469,8 +522,12 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     // terrain painting look broken.
                     if (dirXZ > 0.0001f || std::abs(dir.y) > 0.0001f)
                     {
-                        const float tileSize = 256.0f;
-                        const int heightRes = 513;
+                        // Tile geometry must follow the terrain manager rather than a
+                        // literal: a project can have been saved with a different
+                        // world size / resolution, and the brush would then sample
+                        // the wrong tile entirely.
+                        const float tileSize = tmgr->getWorldSize();
+                        const int heightRes = tmgr->getHeightRes();
                         const float sampleSpacing = tileSize / static_cast<float>(heightRes - 1);
                         const float stepSize = sampleSpacing * 0.5f;
                         const float maxDist = 10000.0f;
@@ -500,9 +557,17 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                             kTerrainManager::worldToGrid(p, tileSize, gx, gz);
                             kTerrain *tile = tmgr->getTile(gx, gz);
 
-                            float terrainY = 0.0f;
-                            if (tile)
-                                terrainY = tile->sampleHeight(p);
+                            // No tile here means there is no ground to test against.
+                            // Skipping the step (instead of treating it as y = 0) is
+                            // what stops a phantom hit in empty space from breaking
+                            // the march before it ever reaches real terrain.
+                            if (!tile)
+                            {
+                                prevTerrainY = -1e30f;
+                                continue;
+                            }
+
+                            float terrainY = tile->sampleHeight(p);
 
                             if (prevTerrainY > -1e29f && rayY <= terrainY)
                             {
@@ -549,7 +614,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                             // Real-time GPU update: fast VBO sub-update during painting
                             {
                                 int gx, gz;
-                                kTerrainManager::worldToGrid(hitPos, 256.0f, gx, gz);
+                                kTerrainManager::worldToGrid(hitPos, tmgr->getWorldSize(), gx, gz);
                                 kTerrain *foundTile = tmgr->getTile(gx, gz);
                                 if (foundTile)
                                 {
@@ -595,8 +660,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
                         if (dirXZ > 0.0001f || std::abs(dir.y) > 0.0001f)
                         {
-                            const float tileSize = 256.0f;
-                            const int heightRes = 513;
+                            const float tileSize = tmgr->getWorldSize();
+                            const int heightRes = tmgr->getHeightRes();
                             const float sampleSpacing = tileSize / static_cast<float>(heightRes - 1);
                             const float stepSize = sampleSpacing * 0.5f;
                             const float maxDist = 10000.0f;
@@ -626,9 +691,15 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                                 kTerrainManager::worldToGrid(p, tileSize, gx, gz);
                                 kTerrain *tile = tmgr->getTile(gx, gz);
 
-                                float terrainY = 0.0f;
-                                if (tile)
-                                    terrainY = tile->sampleHeight(p);
+                                // See the note in the brush raycast above: a missing
+                                // tile must not be mistaken for ground at y = 0.
+                                if (!tile)
+                                {
+                                    prevTerrainY = -1e30f;
+                                    continue;
+                                }
+
+                                float terrainY = tile->sampleHeight(p);
 
                                 if (prevTerrainY > -1e29f && rayY <= terrainY)
                                 {

@@ -1031,6 +1031,19 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
     // runtime effect as dragging a material onto the object in the viewport).
     // Also accepts a material dragged onto the field. The assignment is stored
     // as the material asset's UUID on the object, so it persists across save/load.
+    if (isTerrain)
+    {
+        // Terrain tiles own their material: it is created with the tile, persisted
+        // next to its height/splat data and deleted with the tile. Only the Terrain
+        // panel edits its parameters, so it is not selectable here.
+        propLabel(gui, "Material");
+        gui->beginDisabled(true);
+        ImGui::Button("Owned by the Terrain panel##terrainMat", ImVec2(240, 0));
+        gui->endDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Terrain materials are managed by the Terrain panel.");
+    }
+    else
     {
         propLabel(gui, "Material");
 
