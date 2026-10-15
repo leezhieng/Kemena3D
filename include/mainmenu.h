@@ -31,7 +31,7 @@ struct ShowPanel
 	bool shaderEditor = false;  ///< Show the Shader Editor panel.
 	bool scriptEditor = false;  ///< Show the Script Editor panel.
 	bool game = true;           ///< Show the Game (play-mode) panel.
-	bool terrain = true;        ///< Show the Terrain editor panel.
+	bool terrain = false;       ///< Show the Terrain editor panel. Hidden by default; revealed by selecting a terrain or via Window > General > Terrain.
 	bool prefab = false;        ///< Show the Prefab editor; toggled by Manager::editPrefab / closePrefabEditor.
 	bool animatorEditor = false;///< Show the Animator editor panel.
 	bool animationEditor = false;///< Show the Animation editor panel.
@@ -46,6 +46,8 @@ inline bool isReloadLayout = false;               ///< When true, the editor rel
 inline bool isReloadDefaultLayout = false;        ///< When true, the editor reloads the embedded default layout next frame.
 inline kString layoutFileName = "layout.ini";     ///< Path of the layout .ini file to (re)load.
 inline kString savedWorkspaceFileName = "Config/workspace.ini"; ///< Workspace layout file stored relative to the open project directory.
+inline ImGuiID terrainDockId = 0;                 ///< Dock node the Terrain panel was last attached to; persisted with the project workspace.
+inline bool terrainDockRestore = false;           ///< When true, the Terrain panel re-attaches to @ref terrainDockId on its next draw.
 inline bool showSplashScreen = false;             ///< When true, the splash screen popup is displayed.
 inline bool showAbout        = false;             ///< When true, the About dialog is displayed.
 

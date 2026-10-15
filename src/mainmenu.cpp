@@ -945,7 +945,13 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			if (gui->menuItem("Camera", "", false, manager->projectOpened))
 				manager->createCamera();
 			if (gui->menuItem("Terrain", "", false, manager->projectOpened))
+			{
 				manager->createTerrain();
+				// Creating (or selecting) a terrain opens its editor panel and
+				// brings it to the front, mirroring how the inspector reveals it.
+				showPanel.terrain = true;
+				pendingFocusWindow = "Terrain";
+			}
 			if (gui->menuItem("Nav Mesh", "", false, manager->projectOpened))
 				manager->createNavMesh();
 
@@ -971,6 +977,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					showPanel.scriptEditor = !showPanel.scriptEditor;
 				if (gui->menuItem("Game", "", showPanel.game))
 					showPanel.game = !showPanel.game;
+				if (gui->menuItem("Terrain", "", showPanel.terrain))
+					showPanel.terrain = !showPanel.terrain;
 				if (gui->menuItem("Animator Editor", "", showPanel.animatorEditor))
 					showPanel.animatorEditor = !showPanel.animatorEditor;
 				if (gui->menuItem("Cinematic Editor", "", showPanel.animationEditor))
@@ -1211,6 +1219,7 @@ void *MainMenu::readOpen(ImGuiContext *, ImGuiSettingsHandler *, const char *nam
 static void applyPanelStateLine(const char *line)
 {
 	int tmp;
+	unsigned int dockId = 0;
 	if (sscanf_s(line, "WorldOpened=%d", &tmp) == 1)
 		showPanel.world = (tmp != 0);
 	else if (sscanf_s(line, "InspectorOpened=%d", &tmp) == 1)
@@ -1227,6 +1236,15 @@ static void applyPanelStateLine(const char *line)
 		showPanel.scriptEditor = (tmp != 0);
 	else if (sscanf_s(line, "GameOpened=%d", &tmp) == 1)
 		showPanel.game = (tmp != 0);
+	else if (sscanf_s(line, "TerrainOpened=%d", &tmp) == 1)
+		showPanel.terrain = (tmp != 0);
+	else if (sscanf_s(line, "TerrainDockId=%u", &dockId) == 1)
+	{
+		// Remember which dock node the Terrain panel occupied so it can be
+		// re-attached when the project is reopened (see PanelTerrain::draw).
+		terrainDockId = (ImGuiID)dockId;
+		terrainDockRestore = true;
+	}
 	else if (sscanf_s(line, "AnimatorEditorOpened=%d", &tmp) == 1)
 		showPanel.animatorEditor = (tmp != 0);
 	else if (sscanf_s(line, "AnimationEditorOpened=%d", &tmp) == 1)
@@ -1251,6 +1269,8 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("ShaderEditorOpened=%d\n", showPanel.shaderEditor ? 1 : 0);
 	out_buf->appendf("ScriptEditorOpened=%d\n", showPanel.scriptEditor ? 1 : 0);
 	out_buf->appendf("GameOpened=%d\n", showPanel.game ? 1 : 0);
+	out_buf->appendf("TerrainOpened=%d\n", showPanel.terrain ? 1 : 0);
+	out_buf->appendf("TerrainDockId=%u\n", (unsigned int)terrainDockId);
 	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
 	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
 	out_buf->appendf("PanelGuiEditorOpened=%d\n", showPanel.guiEditor ? 1 : 0);
@@ -1272,6 +1292,8 @@ void MainMenu::savePanelStateToFile(const kString &path)
 	f << "ShaderEditorOpened=" << (showPanel.shaderEditor ? 1 : 0) << "\n";
 	f << "ScriptEditorOpened=" << (showPanel.scriptEditor ? 1 : 0) << "\n";
 	f << "GameOpened=" << (showPanel.game ? 1 : 0) << "\n";
+	f << "TerrainOpened=" << (showPanel.terrain ? 1 : 0) << "\n";
+	f << "TerrainDockId=" << (unsigned int)terrainDockId << "\n";
 	f << "AnimatorEditorOpened=" << (showPanel.animatorEditor ? 1 : 0) << "\n";
 	f << "AnimationEditorOpened=" << (showPanel.animationEditor ? 1 : 0) << "\n";
 	f << "PanelGuiEditorOpened=" << (showPanel.guiEditor ? 1 : 0) << "\n";

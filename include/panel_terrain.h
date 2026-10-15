@@ -9,6 +9,7 @@
 #include <string>
 #include <filesystem>
 #include <unordered_map>
+#include <vector>
 
 #include <kemena/kemena.h>
 #include <kemena/kterrain.h>
@@ -58,6 +59,40 @@ public:
 
     void draw(bool &isOpened);
     void onTerrainFileRenamed(const kString &oldPath, const kString &newPath);
+
+    /**
+     * @brief Captures a tile's height and/or weight buffers before an edit so
+     *        the change can be undone.
+     *
+     * Safe to call repeatedly during a stroke: only the first call for a given
+     * tile records its "before" state, so the whole stroke collapses into a
+     * single undo step once commitTerrainEdit() runs.
+     * @param tile   Tile about to be modified.
+     * @param height Capture the height field.
+     * @param weight Capture the weight (splat) map.
+     */
+    void beginTerrainEdit(kTerrain *tile, bool height, bool weight);
+
+    /**
+     * @brief Ends the current edit and pushes one undoable command describing
+     *        every tile changed since the matching beginTerrainEdit() call.
+     *
+     * No command is pushed when nothing actually changed.
+     */
+    void commitTerrainEdit();
+
+    /// @brief Discards the in-progress edit without recording it in the history.
+    void cancelTerrainEdit();
+
+    /**
+     * @brief Removes the terrain tile at a grid coordinate.
+     *
+     * The tile's scene mesh is deleted, so if it is currently selected the
+     * selection is cleared first to avoid leaving a dangling pointer.
+     * @param gridX Integer X coordinate.
+     * @param gridZ Integer Z coordinate.
+     */
+    void removeTerrainTile(int gridX, int gridZ);
     void loadProjectTerrains();
     void saveProjectTerrains() const;
     void sculptAtWorldPos(const kVec3 &worldPos);
@@ -97,7 +132,17 @@ public:
 
 private:
     void addTerrainTile(int gridX, int gridZ);
-    void expandTerrain(int gridX, int gridZ, const kString &direction);
+
+    /// @brief Rebuilds the meshes of the (up to four) loaded tiles adjacent to a coord.
+    void rebuildNeighborMeshes(int gridX, int gridZ);
+
+    /// @brief Ensures every terrain tile has a live GPU mesh.
+    ///
+    /// Runs every frame with no user interface. The editor never unloads tiles
+    /// (unloading deletes the tile's scene mesh, which could leave the current
+    /// selection dangling), so this only ever loads.
+    void ensureTilesLoaded();
+
     static kString getDataDirForTerrain(const kString &terrainFilePath);
     static float noiseValue(int x, int y, int seed);
     static float noiseSmooth(float x, float y, int seed);
@@ -105,12 +150,21 @@ private:
     kGuiManager *gui = nullptr;
     Manager *manager = nullptr;
 
-    float m_newTileSize = 256.0f;
-    int m_newHeightRes = 513;
+    /// "Before" buffers captured at the start of an in-progress stroke, one per
+    /// affected tile. Diffs against the live buffers are turned into a
+    /// TerrainEditCommand by commitTerrainEdit().
+    struct EditSnapshot
+    {
+        kTerrain *tile = nullptr;             ///< Tile being edited.
+        bool height = false;                  ///< Height field captured.
+        bool weight = false;                  ///< Weight map captured.
+        std::vector<float> heightBefore;      ///< Height copy at stroke start.
+        std::vector<unsigned char> weightBefore; ///< Weight copy at stroke start.
+    };
+    std::vector<EditSnapshot> m_editSnapshots;
+    EditSnapshot *findOrCreateEditSnapshot(kTerrain *tile);
+
     float m_defaultHeight = 0.0f;
-    int m_loadRadius = 512;
-    int m_unloadRadius = 768;
-    bool m_autoUpdate = true;
 
     float m_noiseScale = 50.0f;
     float m_noiseAmplitude = 10.0f;
@@ -143,6 +197,11 @@ private:
     float m_hydroDeposit = 0.1f;
 
     kString m_terrainDirectory;
+
+    /// Text for the deferred Tile Management message popup.
+    kString m_messageBoxText;
+    /// Set to open the message popup on the next frame.
+    bool m_messageBoxPending = false;
 };
 
 #endif // PANEL_TERRAIN_H

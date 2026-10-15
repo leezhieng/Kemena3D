@@ -478,7 +478,13 @@ int main()
 						// User is steering — cancel any in-flight F tween.
 						cameraTweenActive = false;
 					}
-					else if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && !altPressed && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && overViewport)
+					else if (event.getMouseButton() == K_MOUSEBUTTON_LEFT && !altPressed && !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && overViewport &&
+					         // While a terrain sculpt/paint tool is active the click is a
+					         // brush stroke, not an object pick — picking would both cancel
+					         // sculpt mode and fight the stroke.
+					         !(manager->panelTerrain && (manager->panelTerrain->sculpt.active ||
+					                                     manager->panelTerrain->paint.active ||
+					                                     manager->panelTerrain->paint.heightActive)))
 					{
 						// Snapshot selection before picking (for undo)
 						auto selBefore = manager->selectedObjects;
@@ -504,21 +510,6 @@ int main()
 							kObject *sceneRoot = pickScene->getRootNode();
 							while (picked->getParent() != nullptr && picked->getParent() != sceneRoot)
 								picked = picked->getParent();
-						}
-
-						// Disable terrain sculpt mode when clicking a non-terrain
-						// object (or empty space) in the scene viewport.
-						if (manager->panelTerrain && manager->panelTerrain->sculpt.active)
-						{
-							bool isTerrainClick = false;
-							if (picked != nullptr)
-							{
-								kMesh *mesh = dynamic_cast<kMesh *>(picked);
-								if (mesh && mesh->getSerializeType() == "terrain")
-									isTerrainClick = true;
-							}
-							if (!isTerrainClick)
-								manager->panelTerrain->sculpt.active = false;
 						}
 
 						if (picked != nullptr)

@@ -6,6 +6,8 @@
 #include <kemena/kcamera.h>
 
 #include <functional>
+#include <algorithm>
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -391,4 +393,80 @@ void UnpackPrefabCommand::redo()
         obj->setTemplateUuid("");
     }
     if (manager->panelHierarchy) manager->panelHierarchy->refreshList();
+}
+
+// ---------------------------------------------------------------------------
+// TerrainEditCommand
+// ---------------------------------------------------------------------------
+
+// Copies a height sub-block (rows x cols) back into the tile's height field.
+static void applyHeightBlock(kTerrain *tile, int res,
+                             int x0, int z0, int cols, int rows,
+                             const std::vector<float> &src)
+{
+    float *dst = tile->getHeightData();
+    if (!dst) return;
+    for (int z = 0; z < rows; ++z)
+    {
+        const float *s = src.data() + static_cast<size_t>(z) * cols;
+        float *d = dst + static_cast<size_t>(z0 + z) * res + x0;
+        std::copy(s, s + cols, d);
+    }
+}
+
+// Copies a weight (splat) sub-block (rows x cols x kMaxTerrainLayers bytes)
+// back into the tile's weight field.
+static void applyWeightBlock(kTerrain *tile, int res,
+                             int x0, int z0, int cols, int rows,
+                             const std::vector<unsigned char> &src)
+{
+    unsigned char *dst = tile->getWeightData();
+    if (!dst) return;
+    const int L = kTerrain::kMaxTerrainLayers;
+    for (int z = 0; z < rows; ++z)
+    {
+        const unsigned char *s = src.data() + static_cast<size_t>(z) * cols * L;
+        unsigned char *d = dst + (static_cast<size_t>(z0 + z) * res + x0) * L;
+        std::memcpy(d, s, static_cast<size_t>(cols) * L);
+    }
+}
+
+// Writes one tile's stored sub-blocks back and refreshes its GPU data.
+// `after` selects the "after" state (redo) instead of the "before" state (undo).
+static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after)
+{
+    if (!d.tile) return;
+    if (d.hasHeight)
+        applyHeightBlock(d.tile, d.res, d.hx0, d.hz0, d.hxc, d.hzc,
+                         after ? d.heightAfter : d.heightBefore);
+    if (d.hasWeight)
+        applyWeightBlock(d.tile, d.res, d.wx0, d.wz0, d.wxc, d.wzc,
+                         after ? d.weightAfter : d.weightBefore);
+    if (d.tile->isLoaded())
+    {
+        if (d.hasHeight) d.tile->rebuildMesh(true);
+        if (d.hasWeight) d.tile->updateSplatTexture();
+    }
+}
+
+void TerrainEditCommand::undo()
+{
+    for (const auto &d : diffs)
+        applyTileDiff(d, false);
+    if (manager)
+    {
+        if (manager->getRenderer()) manager->getRenderer()->setOctreeDirty();
+        manager->projectSaved = false;
+    }
+}
+
+void TerrainEditCommand::redo()
+{
+    for (const auto &d : diffs)
+        applyTileDiff(d, true);
+    if (manager)
+    {
+        if (manager->getRenderer()) manager->getRenderer()->setOctreeDirty();
+        manager->projectSaved = false;
+    }
 }

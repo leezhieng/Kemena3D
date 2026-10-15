@@ -5,6 +5,8 @@
 
 #include "panel_terrain.h"
 #include "util.h"
+#include "mainmenu.h"   // for terrainDockId / terrainDockRestore (panel docking persistence)
+#include "commands.h"   // for TerrainEditCommand
 
 #include <imgui.h>
 #include <set>
@@ -16,6 +18,177 @@
 PanelTerrain::PanelTerrain(kGuiManager *setGuiManager, Manager *setManager)
     : gui(setGuiManager), manager(setManager)
 {
+}
+
+PanelTerrain::EditSnapshot *PanelTerrain::findOrCreateEditSnapshot(kTerrain *tile)
+{
+    for (auto &s : m_editSnapshots)
+        if (s.tile == tile)
+            return &s;
+
+    EditSnapshot s;
+    s.tile = tile;
+    m_editSnapshots.push_back(std::move(s));
+    return &m_editSnapshots.back();
+}
+
+void PanelTerrain::beginTerrainEdit(kTerrain *tile, bool height, bool weight)
+{
+    if (!tile)
+        return;
+
+    EditSnapshot *s = findOrCreateEditSnapshot(tile);
+
+    if (height && !s->height)
+    {
+        const float *data = tile->getHeightData();
+        const size_t n = tile->getHeightDataSize();
+        if (data && n > 0)
+        {
+            s->height = true;
+            s->heightBefore.assign(data, data + n);
+        }
+    }
+    if (weight && !s->weight)
+    {
+        const unsigned char *data = tile->getWeightData();
+        const size_t n = tile->getWeightDataSize();
+        if (data && n > 0)
+        {
+            s->weight = true;
+            s->weightBefore.assign(data, data + n);
+        }
+    }
+}
+
+void PanelTerrain::commitTerrainEdit()
+{
+    if (m_editSnapshots.empty())
+        return;
+
+    // One command holds every tile touched during the stroke, so a stroke that
+    // crosses a tile border still undoes in a single step.
+    auto cmd = std::make_unique<TerrainEditCommand>();
+    cmd->manager = manager;
+
+    for (const auto &s : m_editSnapshots)
+    {
+        kTerrain *tile = s.tile;
+        if (!tile)
+            continue;
+
+        const int res = tile->getHeightRes();
+        TerrainEditCommand::TileDiff diff;
+        diff.tile = tile;
+        diff.res = res;
+
+        // --- Height field diff ---
+        if (s.height && s.heightBefore.size() == static_cast<size_t>(res) * res)
+        {
+            const float *after = tile->getHeightData();
+            if (after)
+            {
+                int minX = res, minZ = res, maxX = -1, maxZ = -1;
+                for (int z = 0; z < res; ++z)
+                    for (int x = 0; x < res; ++x)
+                    {
+                        size_t i = static_cast<size_t>(z) * res + x;
+                        if (after[i] != s.heightBefore[i])
+                        {
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (z < minZ) minZ = z;
+                            if (z > maxZ) maxZ = z;
+                        }
+                    }
+
+                if (maxX >= minX && maxZ >= minZ)
+                {
+                    int w = maxX - minX + 1;
+                    int h = maxZ - minZ + 1;
+                    diff.hasHeight = true;
+                    diff.hx0 = minX; diff.hz0 = minZ; diff.hxc = w; diff.hzc = h;
+                    diff.heightBefore.resize(static_cast<size_t>(w) * h);
+                    diff.heightAfter.resize(static_cast<size_t>(w) * h);
+                    for (int z = 0; z < h; ++z)
+                    {
+                        size_t dst = static_cast<size_t>(z) * w;
+                        size_t src = static_cast<size_t>(minZ + z) * res + minX;
+                        std::copy(s.heightBefore.begin() + src,
+                                  s.heightBefore.begin() + src + w,
+                                  diff.heightBefore.begin() + dst);
+                        std::copy(after + src, after + src + w,
+                                  diff.heightAfter.begin() + dst);
+                    }
+                }
+            }
+        }
+
+        // --- Weight (splat) map diff ---
+        if (s.weight &&
+            s.weightBefore.size() == static_cast<size_t>(res) * res * kTerrain::kMaxTerrainLayers)
+        {
+            const unsigned char *after = tile->getWeightData();
+            if (after)
+            {
+                const int L = kTerrain::kMaxTerrainLayers;
+                int minX = res, minZ = res, maxX = -1, maxZ = -1;
+                for (int z = 0; z < res; ++z)
+                    for (int x = 0; x < res; ++x)
+                    {
+                        size_t base = (static_cast<size_t>(z) * res + x) * L;
+                        bool differs = false;
+                        for (int c = 0; c < L; ++c)
+                            if (after[base + c] != s.weightBefore[base + c])
+                            {
+                                differs = true;
+                                break;
+                            }
+                        if (differs)
+                        {
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (z < minZ) minZ = z;
+                            if (z > maxZ) maxZ = z;
+                        }
+                    }
+
+                if (maxX >= minX && maxZ >= minZ)
+                {
+                    int w = maxX - minX + 1;
+                    int h = maxZ - minZ + 1;
+                    size_t stride = static_cast<size_t>(w) * L;
+                    diff.hasWeight = true;
+                    diff.wx0 = minX; diff.wz0 = minZ; diff.wxc = w; diff.wzc = h;
+                    diff.weightBefore.resize(static_cast<size_t>(h) * stride);
+                    diff.weightAfter.resize(static_cast<size_t>(h) * stride);
+                    for (int z = 0; z < h; ++z)
+                    {
+                        size_t dst = static_cast<size_t>(z) * stride;
+                        size_t src = (static_cast<size_t>(minZ + z) * res + minX) * L;
+                        std::copy(s.weightBefore.begin() + src,
+                                  s.weightBefore.begin() + src + stride,
+                                  diff.weightBefore.begin() + dst);
+                        std::copy(after + src, after + src + stride,
+                                  diff.weightAfter.begin() + dst);
+                    }
+                }
+            }
+        }
+
+        if (diff.hasHeight || diff.hasWeight)
+            cmd->diffs.push_back(std::move(diff));
+    }
+
+    if (!cmd->diffs.empty() && manager)
+        manager->undoRedo.push(std::move(cmd));
+
+    m_editSnapshots.clear();
+}
+
+void PanelTerrain::cancelTerrainEdit()
+{
+    m_editSnapshots.clear();
 }
 
 void PanelTerrain::sculptAtWorldPos(const kVec3 &worldPos)
@@ -41,6 +214,8 @@ void PanelTerrain::sculptAtWorldPos(const kVec3 &worldPos)
 
     if (!foundTile)
         return;
+
+    beginTerrainEdit(foundTile, true, false);
 
     // On first stroke in Flatten mode, sample the target height
     if (sculpt.mode == kTerrain::BrushMode::Flatten && sculpt.affectedTile != foundTile)
@@ -70,6 +245,9 @@ void PanelTerrain::rebuildSculptedTile()
     if (manager && manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     sculpt.needsRebuild = false;
+
+    // Mouse-up: record the whole stroke as a single undoable command.
+    commitTerrainEdit();
 }
 
 void PanelTerrain::paintAtWorldPos(const kVec3 &worldPos, bool lower)
@@ -95,6 +273,8 @@ void PanelTerrain::paintAtWorldPos(const kVec3 &worldPos, bool lower)
 
     if (!foundTile)
         return;
+
+    beginTerrainEdit(foundTile, true, false);
 
     // Apply height adjustment: lower = decrease (dark/down), raise = increase (light/up)
     const float radius = sculpt.radius; // reuse sculpt radius for paint size
@@ -158,6 +338,9 @@ void PanelTerrain::rebuildPaintedTile()
     if (manager && manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     paint.needsRebuild = false;
+
+    // Mouse-up: record the height-paint stroke as one undoable command.
+    commitTerrainEdit();
 }
 
 void PanelTerrain::paintSplatAtWorldPos(const kVec3 &worldPos, bool erase)
@@ -184,6 +367,8 @@ void PanelTerrain::paintSplatAtWorldPos(const kVec3 &worldPos, bool erase)
 
     if (!foundTile)
         return;
+
+    beginTerrainEdit(foundTile, false, true);
 
     const float radius = sculpt.radius;
     int res = foundTile->getHeightRes();
@@ -287,6 +472,9 @@ void PanelTerrain::rebuildPaintedSplatTile()
     if (manager && manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     paint.needsRebuild = false;
+
+    // Mouse-up: record the splat-paint stroke as one undoable command.
+    commitTerrainEdit();
 }
 
 // --- Noise helpers ----------------------------------------------------------
@@ -723,11 +911,44 @@ void PanelTerrain::draw(bool &isOpened)
     if (!isOpened)
         return;
 
+    // Re-attach the panel to the dock node it occupied when the layout was last
+    // saved. Applied only once (and cleared immediately after) so the user can
+    // still freely undock or move the panel afterwards.
+    if (terrainDockRestore && terrainDockId != 0)
+    {
+        ImGui::SetNextWindowDockID(terrainDockId, ImGuiCond_Always);
+        terrainDockRestore = false;
+    }
+
     ImGui::SetNextWindowSize(ImVec2(420, 650), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Terrain", &isOpened))
+    bool windowOpen = ImGui::Begin("Terrain", &isOpened);
+
+    // Remember where the panel is currently attached so File > Save Project can
+    // persist the dock node and restore it when the project is reopened.
+    if (ImGui::GetWindowDockID() != 0)
+        terrainDockId = ImGui::GetWindowDockID();
+
+    if (!windowOpen)
     {
         ImGui::End();
         return;
+    }
+
+    // Deferred info popup used by the Tile Management controls.
+    if (m_messageBoxPending)
+    {
+        ImGui::OpenPopup("Terrain Message");
+        m_messageBoxPending = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Terrain Message", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextUnformatted(m_messageBoxText.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(120.0f, 0.0f)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 
     kWorld *world = manager->getWorld();
@@ -805,20 +1026,116 @@ void PanelTerrain::draw(bool &isOpened)
         return;
     }
 
-    // --- Settings ---
-    ImGui::SeparatorText("Terrain Settings");
-    ImGui::InputFloat("Tile Size", &m_newTileSize, 1.0f, 10.0f, "%.0f");
-    ImGui::InputInt("Height Resolution", &m_newHeightRes);
-    ImGui::InputFloat("Default Height", &m_defaultHeight);
-    ImGui::InputInt("Load Radius", &m_loadRadius, 1, 100);
-    ImGui::InputInt("Unload Radius", &m_unloadRadius, 1, 100);
-    ImGui::Checkbox("Auto-Update Tiles", &m_autoUpdate);
+    // --- Tile Management ---
+    ImGui::SeparatorText("Tile Management");
 
-    // Ensure reasonable values
-    m_newTileSize = (std::max)(m_newTileSize, 1.0f);
-    m_newHeightRes = (std::max)(m_newHeightRes, 2);
-    m_loadRadius = (std::max)(m_loadRadius, 1);
-    m_unloadRadius = (std::max)(m_unloadRadius, m_loadRadius + 1);
+    const bool hasTerrainTile = (terrainMgr->getTotalCount() > 0);
+
+    // Add default tile at origin. Disabled once the scene already owns a tile —
+    // a scene holds at most one terrain, so creating another is not allowed.
+    ImGui::BeginDisabled(hasTerrainTile);
+    if (ImGui::Button("Add Default Terrain", ImVec2(-1, 0)))
+    {
+        addTerrainTile(0, 0);
+        // Select the new tile so the neighbour controls have a reference.
+        if (kTerrain *t = terrainMgr->getTile(0, 0))
+            if (kMesh *m = t->getMesh())
+                manager->selectObject(m->getUuid(), true);
+    }
+    ImGui::EndDisabled();
+    if (hasTerrainTile)
+        ImGui::TextDisabled("A terrain already exists in this scene.");
+
+    ImGui::Spacing();
+
+    // The currently selected terrain tile is the reference for the rows below.
+    kTerrain *selectedTerrain = nullptr;
+    if (kObject *sel = manager->getActiveSelectedObject())
+    {
+        if (kMesh *selMesh = dynamic_cast<kMesh *>(sel))
+        {
+            for (const auto &pair : terrainMgr->getTiles())
+            {
+                kTerrain *t = pair.second.get();
+                if (t && t->getMesh() == selMesh)
+                {
+                    selectedTerrain = t;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (selectedTerrain)
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                           "Selected tile: (%d, %d)",
+                           selectedTerrain->getGridX(), selectedTerrain->getGridZ());
+    else
+        ImGui::TextDisabled("Select a terrain tile to add or remove its neighbours.");
+
+    ImGui::Spacing();
+
+    ImGui::InputFloat("Default Height", &m_defaultHeight);
+
+    ImGui::Spacing();
+
+    // The four neighbours of the selected tile, addressed by axis offset.
+    const int dirDx[4] = {1, -1, 0, 0};
+    const int dirDz[4] = {0, 0, 1, -1};
+    const char *dirLabels[4] = {"+X", "-X", "+Z", "-Z"};
+
+    const int selX = selectedTerrain ? selectedTerrain->getGridX() : 0;
+    const int selZ = selectedTerrain ? selectedTerrain->getGridZ() : 0;
+
+    ImGui::BeginDisabled(selectedTerrain == nullptr);
+
+    ImGui::TextUnformatted("Add neighbour:");
+    for (int i = 0; i < 4; ++i)
+    {
+        if (i > 0)
+            ImGui::SameLine();
+        kString id = kString(dirLabels[i]) + "##addNeighbour";
+        if (ImGui::Button(id.c_str(), ImVec2(60, 28)))
+        {
+            const int tx = selX + dirDx[i];
+            const int tz = selZ + dirDz[i];
+            if (terrainMgr->getTile(tx, tz))
+            {
+                m_messageBoxText = "A tile already exists at (" +
+                                   std::to_string(tx) + ", " + std::to_string(tz) + ").";
+                m_messageBoxPending = true;
+            }
+            else
+            {
+                addTerrainTile(tx, tz);
+            }
+        }
+    }
+
+    ImGui::TextUnformatted("Remove neighbour:");
+    for (int i = 0; i < 4; ++i)
+    {
+        if (i > 0)
+            ImGui::SameLine();
+        kString id = kString(dirLabels[i]) + "##removeNeighbour";
+        if (ImGui::Button(id.c_str(), ImVec2(60, 28)))
+        {
+            const int tx = selX + dirDx[i];
+            const int tz = selZ + dirDz[i];
+            if (!terrainMgr->getTile(tx, tz))
+            {
+                m_messageBoxText = "No tile exists at (" +
+                                   std::to_string(tx) + ", " + std::to_string(tz) + ").";
+                m_messageBoxPending = true;
+            }
+            else
+            {
+                removeTerrainTile(tx, tz);
+            }
+        }
+    }
+
+    ImGui::EndDisabled();
 
     ImGui::Spacing();
 
@@ -923,8 +1240,10 @@ void PanelTerrain::draw(bool &isOpened)
 
     if (ImGui::Button("Apply Noise", ImVec2(-1, 0)) && noiseTile)
     {
+        beginTerrainEdit(noiseTile, true, false);
         applyNoiseToTile(noiseTile, m_noiseScale, m_noiseAmplitude,
                          m_noiseOctaves, m_noiseSeed, m_noiseAdditive);
+        commitTerrainEdit();
         if (manager && manager->getRenderer())
             manager->getRenderer()->setOctreeDirty();
     }
@@ -944,10 +1263,12 @@ void PanelTerrain::draw(bool &isOpened)
 
     if (ImGui::Button("Erode (Hydraulic)", ImVec2(-1, 0)) && noiseTile)
     {
+        beginTerrainEdit(noiseTile, true, false);
         applyErosionToTile(noiseTile, m_erodeDroplets, m_erodeRadius, m_erodeInertia,
                            m_erodeCapacity, m_erodeDeposit, m_erodeErode,
                            m_erodeEvaporate, m_erodeGravity, 0.01f,
                            static_cast<unsigned int>(m_noiseSeed));
+        commitTerrainEdit();
         if (manager && manager->getRenderer())
             manager->getRenderer()->setOctreeDirty();
     }
@@ -957,7 +1278,9 @@ void PanelTerrain::draw(bool &isOpened)
     ImGui::SliderFloat("Thermal Strength##erode", &m_thermalStrength, 0.0f, 1.0f, "%.2f");
     if (ImGui::Button("Erode (Thermal)", ImVec2(-1, 0)) && noiseTile)
     {
+        beginTerrainEdit(noiseTile, true, false);
         applyThermalErosionToTile(noiseTile, m_thermalIterations, m_thermalTalus, m_thermalStrength);
+        commitTerrainEdit();
         if (manager && manager->getRenderer())
             manager->getRenderer()->setOctreeDirty();
     }
@@ -966,8 +1289,10 @@ void PanelTerrain::draw(bool &isOpened)
     ImGui::SliderFloat("Wind Strength##erode", &m_windStrength, 0.0f, 1.0f, "%.2f");
     if (ImGui::Button("Erode (Wind)", ImVec2(-1, 0)) && noiseTile)
     {
+        beginTerrainEdit(noiseTile, true, false);
         applyWindErosionToTile(noiseTile, m_windDir * 3.14159265f / 180.0f,
                                m_windStrength, 8, m_thermalTalus);
+        commitTerrainEdit();
         if (manager && manager->getRenderer())
             manager->getRenderer()->setOctreeDirty();
     }
@@ -979,134 +1304,19 @@ void PanelTerrain::draw(bool &isOpened)
     ImGui::SliderFloat("Hydro Deposit##erode", &m_hydroDeposit, 0.0f, 0.9f, "%.2f");
     if (ImGui::Button("Carve Rivers (Hydrology)", ImVec2(-1, 0)) && noiseTile)
     {
+        beginTerrainEdit(noiseTile, true, false);
         applyHydrologyToTile(noiseTile, m_hydroIterations, m_hydroK, m_hydroM,
                              m_hydroN, m_hydroDeposit, 0.01f);
+        commitTerrainEdit();
         if (manager && manager->getRenderer())
             manager->getRenderer()->setOctreeDirty();
     }
 
     ImGui::Spacing();
 
-    // --- Tile Management ---
-    ImGui::SeparatorText("Tile Management");
-
-    // Add default tile at origin
-    if (ImGui::Button("Add Default Terrain", ImVec2(-1, 0)))
-    {
-        addTerrainTile(0, 0);
-    }
-
-    ImGui::Spacing();
-
-    // Show existing tiles in a grid view
-    int totalTiles = terrainMgr->getTotalCount();
-    int loadedCount = terrainMgr->getLoadedCount();
-    ImGui::Text("Tiles: %d total, %d loaded", totalTiles, loadedCount);
-
-    ImGui::Spacing();
-
-    // --- Fill Grid: create all missing tiles in a rectangular range ---
-    ImGui::Text("Fill Grid:");
-    static int fillMinX = 0;
-    static int fillMaxX = 2;
-    static int fillMinZ = 0;
-    static int fillMaxZ = 2;
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Min X", &fillMinX);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Max X", &fillMaxX);
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Min Z", &fillMinZ);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Max Z", &fillMaxZ);
-
-    // Clamp sane ranges
-    if (fillMaxX < fillMinX)
-        fillMaxX = fillMinX;
-    if (fillMaxZ < fillMinZ)
-        fillMaxZ = fillMinZ;
-    const int kMaxRange = 32;
-    if (fillMaxX - fillMinX > kMaxRange)
-        fillMaxX = fillMinX + kMaxRange;
-    if (fillMaxZ - fillMinZ > kMaxRange)
-        fillMaxZ = fillMinZ + kMaxRange;
-
-    int cellCount = (fillMaxX - fillMinX + 1) * (fillMaxZ - fillMinZ + 1);
-    int existingCount = 0;
-    for (int gx = fillMinX; gx <= fillMaxX; ++gx)
-        for (int gz = fillMinZ; gz <= fillMaxZ; ++gz)
-            if (terrainMgr->getTile(gx, gz))
-                ++existingCount;
-
-    ImGui::Text("Cells: %d total, %d existing, %d to create", cellCount, existingCount, cellCount - existingCount);
-
-    if (ImGui::Button("Fill Grid", ImVec2(-1, 0)))
-    {
-        for (int gx = fillMinX; gx <= fillMaxX; ++gx)
-            for (int gz = fillMinZ; gz <= fillMaxZ; ++gz)
-                addTerrainTile(gx, gz);
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // --- Single-tile expand/remove ---
-    ImGui::Text("Single Tile:");
-    static int expandGridX = 0;
-    static int expandGridZ = 0;
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Grid X##single", &expandGridX);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Grid Z##single", &expandGridZ);
-
-    kTerrain *singleTile = terrainMgr->getTile(expandGridX, expandGridZ);
-    if (singleTile)
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Tile exists");
-    else
-        ImGui::TextDisabled("No tile here");
-
-    if (ImGui::Button("N (+Z)##single", ImVec2(60, 30)))
-        expandTerrain(expandGridX, expandGridZ, "north");
-    ImGui::SameLine();
-    if (ImGui::Button("S (-Z)##single", ImVec2(60, 30)))
-        expandTerrain(expandGridX, expandGridZ, "south");
-    ImGui::SameLine();
-    if (ImGui::Button("E (+X)##single", ImVec2(60, 30)))
-        expandTerrain(expandGridX, expandGridZ, "east");
-    ImGui::SameLine();
-    if (ImGui::Button("W (-X)##single", ImVec2(60, 30)))
-        expandTerrain(expandGridX, expandGridZ, "west");
-
-    ImGui::Spacing();
-
-    // Remove tile
-    if (ImGui::Button("Remove Tile", ImVec2(-1, 0)))
-    {
-        terrainMgr->removeTile(expandGridX, expandGridZ);
-    }
-
-    ImGui::Spacing();
-
-    // --- Player position update ---
-    ImGui::SeparatorText("Player Position");
-    static kVec3 playerPos(0.0f, 0.0f, 0.0f);
-    ImGui::DragFloat3("Position", &playerPos.x, 1.0f);
-
-    if (m_autoUpdate)
-    {
-        terrainMgr->update(playerPos, static_cast<float>(m_loadRadius),
-                           static_cast<float>(m_unloadRadius));
-    }
-
-    if (ImGui::Button("Manual Update", ImVec2(-1, 0)))
-    {
-        terrainMgr->update(playerPos, static_cast<float>(m_loadRadius),
-                           static_cast<float>(m_unloadRadius));
-    }
+    // Loading is fully automatic and has no user interface — the editor keeps
+    // every tile's mesh resident and never unloads tiles.
+    ensureTilesLoaded();
 
     ImGui::Spacing();
 
@@ -1220,32 +1430,103 @@ void PanelTerrain::addTerrainTile(int gridX, int gridZ)
         return;
 
     kTerrainManager *mgr = manager->terrainManager;
+
+    // Already present → nothing to do (createTile would just return it).
+    if (mgr->getTile(gridX, gridZ))
+        return;
+
     kTerrain *tile = mgr->createTile(gridX, gridZ);
-    if (tile)
-    {
-        tile->fillHeight(m_defaultHeight);
+    if (!tile)
+        return;
+
+    tile->fillHeight(m_defaultHeight);
+
+    // createTile() only constructs the object — the GPU mesh is built by
+    // rebuildMesh()/reload(). Build it now so the tile is visible immediately.
+    tile->reload(true);
+
+    // Existing neighbours may have been stitched against a missing edge; refresh
+    // them so the seams line up with the newly added tile.
+    rebuildNeighborMeshes(gridX, gridZ);
+
+    if (manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
-    }
+    manager->projectSaved = false;
 }
 
-void PanelTerrain::expandTerrain(int gridX, int gridZ, const kString &direction)
+void PanelTerrain::removeTerrainTile(int gridX, int gridZ)
 {
     if (!manager || !manager->terrainManager)
         return;
 
-    int newGridX = gridX;
-    int newGridZ = gridZ;
+    kTerrainManager *mgr = manager->terrainManager;
 
-    if (direction == "north")
-        newGridZ += 1;
-    else if (direction == "south")
-        newGridZ -= 1;
-    else if (direction == "east")
-        newGridX += 1;
-    else if (direction == "west")
-        newGridX -= 1;
+    kTerrain *tile = mgr->getTile(gridX, gridZ);
+    if (!tile)
+        return;
 
-    addTerrainTile(newGridX, newGridZ);
+    // Removing a tile deletes its scene mesh, so drop it from the selection
+    // first — otherwise the editor would keep a dangling mesh pointer (which
+    // crashes e.g. the nav-mesh debug draw that dereferences selectedObject).
+    if (kMesh *mesh = tile->getMesh())
+    {
+        const kString uuid = mesh->getUuid();
+
+        kObject *&activeSel = manager->getActiveSelectedObject();
+        if (activeSel == mesh)
+            activeSel = nullptr;
+        if (manager->selectedObject == mesh)
+            manager->selectedObject = nullptr;
+
+        auto eraseUuid = [&uuid](std::vector<kString> &list)
+        {
+            list.erase(std::remove(list.begin(), list.end(), uuid), list.end());
+        };
+        eraseUuid(manager->getActiveSelectedObjects());
+        eraseUuid(manager->selectedObjects);
+    }
+
+    mgr->removeTile(gridX, gridZ);
+
+    // The former neighbours were stitched to this tile; rebuild them so their
+    // edges close up cleanly.
+    rebuildNeighborMeshes(gridX, gridZ);
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+}
+
+void PanelTerrain::rebuildNeighborMeshes(int gridX, int gridZ)
+{
+    if (!manager || !manager->terrainManager)
+        return;
+
+    kTerrainManager *mgr = manager->terrainManager;
+    const int offsets[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (const auto &o : offsets)
+    {
+        kTerrain *n = mgr->getTile(gridX + o[0], gridZ + o[1]);
+        if (n && n->isLoaded())
+            n->rebuildMesh(true);
+    }
+}
+
+void PanelTerrain::ensureTilesLoaded()
+{
+    if (!manager || !manager->terrainManager)
+        return;
+
+    // The editor keeps every tile resident: tiles are created explicitly through
+    // the Tile Management controls and are never unloaded here (unloading would
+    // delete the tile's scene mesh and could leave the current selection
+    // dangling). This only loads any tile that is somehow missing its mesh.
+    for (const auto &pair : manager->terrainManager->getTiles())
+    {
+        kTerrain *tile = pair.second.get();
+        if (tile && !tile->isLoaded())
+            tile->reload(true);
+    }
 }
 
 kString PanelTerrain::getDataDirForTerrain(const kString &terrainFilePath)

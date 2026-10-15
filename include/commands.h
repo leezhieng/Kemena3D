@@ -9,6 +9,7 @@
 #include <kemena/kdatatype.h>
 #include <kemena/kobject.h>
 #include <kemena/kscene.h>
+#include <kemena/kterrain.h>
 
 using namespace kemena;
 
@@ -345,6 +346,44 @@ struct UnpackPrefabCommand : ICommand
 
     void undo() override; ///< Restore the prefab_ref / template_uuid stamps.
     void redo() override; ///< Strip the prefab_ref / template_uuid stamps.
+};
+
+/**
+ * @brief Undoable edit to a terrain tile's height field and/or weight (splat) map.
+ *
+ * Stores only the rectangular sub-region of a tile's buffers that the edit
+ * actually changed, so sculpt/paint strokes and erosion passes stay cheap in the
+ * undo history even for high-resolution tiles. Undo writes the stored "before"
+ * sub-blocks back, redo writes the "after" sub-blocks; both then refresh the
+ * tile's GPU mesh / splat texture.
+ */
+struct TerrainEditCommand : ICommand
+{
+    /// A single tile's changed sub-region(s). One stroke may span several tiles,
+    /// so the command holds one entry per affected tile and undoes them together.
+    struct TileDiff
+    {
+        kTerrain *tile = nullptr;   ///< Tile that was edited.
+        int       res  = 0;         ///< Height resolution of the tile (row stride = res).
+
+        bool hasHeight = false;     ///< Whether a height-field diff is present.
+        int  hx0 = 0, hz0 = 0;      ///< Height diff rectangle origin.
+        int  hxc = 0, hzc = 0;      ///< Height diff rectangle size (columns, rows).
+        std::vector<float> heightBefore; ///< Height sub-block prior to the edit (hxc*hzc).
+        std::vector<float> heightAfter;  ///< Height sub-block after the edit (hxc*hzc).
+
+        bool hasWeight = false;     ///< Whether a weight-map diff is present.
+        int  wx0 = 0, wz0 = 0;      ///< Weight diff rectangle origin.
+        int  wxc = 0, wzc = 0;      ///< Weight diff rectangle size (columns, rows).
+        std::vector<unsigned char> weightBefore; ///< Weight sub-block before (wxc*wzc*16).
+        std::vector<unsigned char> weightAfter;  ///< Weight sub-block after (wxc*wzc*16).
+    };
+
+    std::vector<TileDiff> diffs; ///< Per-tile changes making up this command.
+    Manager *manager = nullptr;  ///< Owning manager (renderer refresh + dirty flag).
+
+    void undo() override; ///< Restore the "before" sub-blocks of every tile.
+    void redo() override; ///< Restore the "after" sub-blocks of every tile.
 };
 
 /**
