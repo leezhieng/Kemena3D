@@ -192,6 +192,7 @@ struct SpotLight
 cbuffer PerMaterial : register(b1)
 {
     float    u_Tiling[4];
+    float    u_MaskChannel[4]; // Per-layer splat-mask channel (0..3 = R/G/B/A)
     float    u_BlendSharpness;
     // Stochastic / triplanar controls (mirror of TerrainPBR.glsl).
     float    u_TileWorldSize;
@@ -393,7 +394,12 @@ float3 computeDisplacedNormal(float3 worldPos)
 {
     float3 dx = ddx(worldPos);
     float3 dy = ddy(worldPos);
-    return normalize(cross(dx, dy));
+    float3 n = normalize(cross(dx, dy));
+    // Heightfield normals always point up (no overhangs); the derivative cross
+    // product's handedness flipped the relief shading, so force the +Y hemisphere.
+    if (n.y < 0.0)
+        n = -n;
+    return n;
 }
 
 // --- Stochastic (anti-tiling) + triplanar helpers ---------------------------
@@ -492,7 +498,8 @@ float4 PSMain(VSOutput input) : SV_Target
     // ----- Per-layer sampling -----------------------------------------------
     for (int i = 0; i < 4; i++)
     {
-        float weight = splat[i];
+        int mc = (int)clamp(u_MaskChannel[i], 0.0, 3.0);
+        float weight = splat[mc];
         if (weight <= 0.001)
             continue;
 

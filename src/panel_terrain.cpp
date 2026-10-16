@@ -7,6 +7,7 @@
 #include "util.h"
 #include "mainmenu.h"   // for terrainDockId / terrainDockRestore (panel docking persistence)
 #include "commands.h"   // for TerrainEditCommand
+#include "panel_project.h"   // for thumbnail icons in the layer texture picker
 
 #include <imgui.h>
 #include <set>
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 
 PanelTerrain::PanelTerrain(kGuiManager *setGuiManager, Manager *setManager)
     : gui(setGuiManager), manager(setManager)
@@ -588,7 +590,7 @@ void PanelTerrain::applyNoiseToTile(kTerrain *tile, float scale, float amplitude
         }
     }
 
-    tile->rebuildMesh(true);
+    rebuildTileMesh(tile);
 }
 
 // --- Erosion ----------------------------------------------------------------
@@ -739,7 +741,7 @@ void PanelTerrain::applyErosionToTile(kTerrain *tile, int droplets, float radius
         }
     }
 
-    tile->rebuildMesh(true);
+    rebuildTileMesh(tile);
 }
 
 // Thermal (talus) erosion adapted from weigert/SoilMachine: any slope steeper
@@ -782,7 +784,7 @@ void PanelTerrain::applyThermalErosionToTile(kTerrain *tile, int iterations, flo
             data[i] += delta[i];
     }
 
-    tile->rebuildMesh(true);
+    rebuildTileMesh(tile);
 }
 
 // Directional wind erosion adapted from weigert/SimpleWindErosion: steep faces
@@ -828,7 +830,7 @@ void PanelTerrain::applyWindErosionToTile(kTerrain *tile, float dirRadians, floa
             data[i] += delta[i];
     }
 
-    tile->rebuildMesh(true);
+    rebuildTileMesh(tile);
 }
 
 // Flow-accumulation river carving adapted from weigert/SimpleHydrology, erodr
@@ -916,7 +918,7 @@ void PanelTerrain::applyHydrologyToTile(kTerrain *tile, int iterations, float k,
         }
     }
 
-    tile->rebuildMesh(true);
+    rebuildTileMesh(tile);
 }
 
 // ---------------------------------------------------------------------------
@@ -937,6 +939,25 @@ void PanelTerrain::saveAllOwnedAssets()
     for (const auto &pair : manager->terrainManager->getTiles())
         if (kTerrain *tile = pair.second.get())
             tile->saveOwnedAssets();
+}
+
+PanelTerrain::LayerEditBuffer &PanelTerrain::layerEditBufferFor(
+    kTerrain *tile, int index, const kTerrainHeightLayer &current)
+{
+    for (auto &buffer : m_layerEditBuffers)
+        if (buffer.tile == tile && buffer.index == index)
+            return buffer;
+
+    m_layerEditBuffers.push_back({tile, index, current});
+    return m_layerEditBuffers.back();
+}
+
+void PanelTerrain::clearLayerEditBuffers(kTerrain *tile)
+{
+    m_layerEditBuffers.erase(
+        std::remove_if(m_layerEditBuffers.begin(), m_layerEditBuffers.end(),
+                       [tile](const LayerEditBuffer &buffer) { return buffer.tile == tile; }),
+        m_layerEditBuffers.end());
 }
 
 int PanelTerrain::applyHeightLayer(kTerrain *tile, int layerIndex,
@@ -992,7 +1013,7 @@ int PanelTerrain::applyHeightLayer(kTerrain *tile, int layerIndex,
     diff.layerAfter = layers[static_cast<size_t>(layerIndex)];
 
     if (tile->isLoaded())
-        tile->rebuildMesh(true);
+        rebuildTileMesh(tile);
 
     cmd->diffs.push_back(std::move(diff));
     manager->undoRedo.push(std::move(cmd));
@@ -1003,6 +1024,16 @@ int PanelTerrain::applyHeightLayer(kTerrain *tile, int layerIndex,
 
     // Persist the layer straight away: offsets are not cheap to regenerate.
     tile->saveOwnedAssets();
+
+    // The stored layer is now authoritative, so drop the scratch copy: the
+    // widgets reseed from the applied values on the next frame.
+    m_layerEditBuffers.erase(
+        std::remove_if(m_layerEditBuffers.begin(), m_layerEditBuffers.end(),
+                       [tile, layerIndex](const LayerEditBuffer &buffer) {
+                           return buffer.tile == tile && buffer.index == layerIndex;
+                       }),
+        m_layerEditBuffers.end());
+
     return layerIndex;
 }
 
@@ -1029,7 +1060,7 @@ void PanelTerrain::removeHeightLayerUndoable(kTerrain *tile, int layerIndex)
 
     tile->removeHeightLayer(layerIndex);
     if (tile->isLoaded())
-        tile->rebuildMesh(true);
+        rebuildTileMesh(tile);
 
     cmd->diffs.push_back(std::move(diff));
     manager->undoRedo.push(std::move(cmd));
@@ -1038,6 +1069,10 @@ void PanelTerrain::removeHeightLayerUndoable(kTerrain *tile, int layerIndex)
         manager->getRenderer()->setOctreeDirty();
     manager->projectSaved = false;
     tile->saveOwnedAssets();
+
+    // Removing a layer shifts every following index, so any in-progress edits for
+    // this tile no longer line up — drop them.
+    clearLayerEditBuffers(tile);
 }
 
 // A few passes of a 3x3 average over a square field. Per-sample operators leave
@@ -1170,32 +1205,329 @@ void PanelTerrain::applyTerrainResize(float worldSize, int heightRes)
     manager->projectSaved = false;
 }
 
-void PanelTerrain::clearSelectedTileHeight(kTerrain *tile)
+void PanelTerrain::applyTileHeight(kTerrain *tile)
 {
     if (!tile || !manager)
         return;
 
     beginTerrainEdit(tile, true, false);
 
-    // Back to the flat default height ...
+    // Settle the base field on the panel's tile height ...
     float *base = tile->getBaseHeightData();
     if (base)
         std::fill(base, base + tile->getHeightDataSize(), m_defaultHeight);
 
-    // ... and the effect layers hold height deltas, so their contribution goes too.
+    // ... and clear the effect layers' height deltas so the tile reads exactly at
+    // that height instead of being pushed away from it by a modifier.
     for (auto &layer : tile->getHeightLayers())
         std::fill(layer.offsets.begin(), layer.offsets.end(), 0.0f);
 
     tile->recomposeHeight();
     if (tile->isLoaded())
-        tile->rebuildMesh(true);
+        rebuildTileMesh(tile);
 
     commitTerrainEdit();
 
     if (manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     manager->projectSaved = false;
+
+    // Persist straight away so the tile's .height file matches what is on screen.
     tile->saveOwnedAssets();
+}
+
+void PanelTerrain::clearSelectedTileHeight(kTerrain *tile)
+{
+    // Clearing to the tile height is the same operation as applying it.
+    applyTileHeight(tile);
+}
+
+void PanelTerrain::appendTileColliderLines(const kTerrain *tile,
+                                           std::vector<kVec3> &out) const
+{
+    if (!tile)
+        return;
+
+    const int res = tile->getHeightRes();
+    const float *heights = tile->getHeightData();
+    if (!heights || res < 2)
+        return;
+
+    const int last = res - 1;
+
+    // The collider mirrors the tile's height grid. Decimate it so a
+    // full-resolution tile (hundreds of samples per side) does not flood the
+    // debug-line buffer every frame.
+    const int stride = (std::max)(1, res / 32);
+
+    auto pointAt = [&](int x, int z)
+    {
+        kVec3 p = tile->heightmapToWorld(x, z);
+        p.y = heights[static_cast<size_t>(z) * res + x];
+        return p;
+    };
+
+    for (int z = 0; z <= last; z += stride)
+    {
+        for (int x = 0; x <= last; x += stride)
+        {
+            const kVec3 a = pointAt(x, z);
+            if (x + stride <= last)
+            {
+                out.push_back(a);
+                out.push_back(pointAt(x + stride, z));
+            }
+            if (z + stride <= last)
+            {
+                out.push_back(a);
+                out.push_back(pointAt(x, z + stride));
+            }
+        }
+    }
+}
+
+void PanelTerrain::generateTileCollider(kTerrain *tile, int resolution)
+{
+    if (!tile || !manager)
+        return;
+
+    kMesh *mesh = tile->getMesh();
+    if (!mesh)
+        return;
+
+    const int res = tile->getHeightRes();
+    const float *heights = tile->getHeightData();
+    if (!heights || res < 2)
+        return;
+
+    const int target = (std::max)(2, (std::min)(resolution, 4096));
+
+    kObject *obj = static_cast<kObject *>(mesh);
+    kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
+    desc.shape.type = kPhysicsShapeType::HeightField;
+    desc.type = kPhysicsObjectType::Static;
+    desc.layer = "Default";
+
+    // Resample the tile's height grid to the requested collider resolution so the
+    // shape's triangle count follows the input (higher = finer, more accurate).
+    desc.shape.heightSamples.resize(static_cast<size_t>(target) * target);
+    for (int z = 0; z < target; ++z)
+    {
+        const float fz = (target > 1) ? (static_cast<float>(z) / (target - 1)) * (res - 1) : 0.0f;
+        const int z0 = static_cast<int>(fz);
+        const int z1 = (std::min)(z0 + 1, res - 1);
+        const float tz = fz - static_cast<float>(z0);
+        for (int x = 0; x < target; ++x)
+        {
+            const float fx = (target > 1) ? (static_cast<float>(x) / (target - 1)) * (res - 1) : 0.0f;
+            const int x0 = static_cast<int>(fx);
+            const int x1 = (std::min)(x0 + 1, res - 1);
+            const float tx = fx - static_cast<float>(x0);
+
+            const float h00 = heights[static_cast<size_t>(z0) * res + x0];
+            const float h10 = heights[static_cast<size_t>(z0) * res + x1];
+            const float h01 = heights[static_cast<size_t>(z1) * res + x0];
+            const float h11 = heights[static_cast<size_t>(z1) * res + x1];
+            const float h0 = h00 + (h10 - h00) * tx;
+            const float h1 = h01 + (h11 - h01) * tx;
+            desc.shape.heightSamples[static_cast<size_t>(z) * target + x] = h0 + (h1 - h0) * tz;
+        }
+    }
+    desc.shape.heightSampleCount = target;
+
+    const float world = tile->getWorldSize();
+    const float spacing = world / static_cast<float>(target - 1);
+    desc.shape.heightScale = kVec3(spacing, 1.0f, spacing);
+    // The mesh is centred on the tile origin, so sample (0,0) is the (-half,-half)
+    // corner in local space.
+    desc.shape.offset = kVec3(-world * 0.5f, 0.0f, -world * 0.5f);
+
+    obj->setHasPhysicsDesc(true);
+    manager->projectSaved = false;
+}
+
+void PanelTerrain::rebuildTileMesh(kTerrain *tile)
+{
+    if (!tile)
+        return;
+
+    kMesh *oldMesh = tile->getMesh();
+
+    tile->rebuildMesh(true);
+
+    kMesh *newMesh = tile->getMesh();
+    if (!manager || !oldMesh || !newMesh || oldMesh == newMesh)
+        return;
+
+    // kTerrain::rebuildMesh() deleted the previous kMesh, so any raw pointer the
+    // editor still holds to it (the active selection) now dangles. Re-point the
+    // selection at the rebuilt mesh; its UUID is preserved, so the uuid lists the
+    // Hierarchy uses stay valid.
+    kObject *&activeSelection = manager->getActiveSelectedObject();
+    if (activeSelection == oldMesh)
+        activeSelection = newMesh;
+    if (manager->selectedObject == oldMesh)
+        manager->selectedObject = newMesh;
+}
+
+void PanelTerrain::drawTexturePickerPopup()
+{
+    if (m_texPickOpen)
+    {
+        m_texPickSelected.clear();
+        m_texPickSearch[0] = '\0';
+        ImGui::OpenPopup("Select Terrain Texture##texpick");
+        m_texPickOpen = false;
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 460.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Select Terrain Texture##texpick", nullptr))
+        return;
+
+    if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##tertexsearch", "Search...", m_texPickSearch,
+                             sizeof(m_texPickSearch));
+
+    std::string filter = m_texPickSearch;
+    std::transform(filter.begin(), filter.end(), filter.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    // Every texture asset in the project, sorted by display name.
+    std::vector<std::pair<std::string, kString>> textures; // {display name, uuid}
+    if (manager)
+    {
+        for (const auto &kv : manager->fileMap)
+        {
+            if (kv.second.type != "image")
+                continue;
+            textures.emplace_back(fs::path(kv.second.path).stem().string(), kv.first);
+        }
+        std::sort(textures.begin(), textures.end(),
+                  [](const auto &a, const auto &b) { return a.first < b.first; });
+    }
+
+    bool doApply = false;
+    const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y;
+    ImGui::BeginChild("##tertexgrid", ImVec2(0.0f, -footer), true);
+    {
+        const float thumb = 72.0f;
+        const float cellW = thumb + 12.0f;
+        const float cellH = thumb + ImGui::GetTextLineHeightWithSpacing() + 6.0f;
+        const float availW = ImGui::GetContentRegionAvail().x;
+        const int cols = (std::max)(1, static_cast<int>(availW / cellW));
+        int col = 0;
+
+        // One thumbnail tile: framed preview + centred, ellipsized name.
+        auto cell = [&](const char *itemLabel, const kString &uuid, bool none)
+        {
+            ImGui::PushID(none ? "##none" : uuid.c_str());
+            const bool selected = none ? m_texPickSelected.empty()
+                                       : (!m_texPickSelected.empty() &&
+                                          m_texPickSelected == uuid);
+
+            const ImVec2 cur0 = ImGui::GetCursorScreenPos();
+            if (ImGui::Selectable("##cell", selected, ImGuiSelectableFlags_AllowDoubleClick,
+                                  ImVec2(cellW - 4.0f, cellH)))
+            {
+                m_texPickSelected = none ? kString() : uuid;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                    doApply = true;
+            }
+
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            const float ix = cur0.x + (cellW - 4.0f - thumb) * 0.5f;
+            const float iy = cur0.y + 3.0f;
+
+            if (none)
+            {
+                dl->AddRect(ImVec2(ix, iy), ImVec2(ix + thumb, iy + thumb),
+                            IM_COL32(120, 120, 130, 180));
+            }
+            else
+            {
+                ImTextureRef img;
+                if (manager && manager->panelProject)
+                    img = manager->panelProject->getThumbnailIcon(uuid, ImTextureRef());
+                if (img._TexData != nullptr || img._TexID != ImTextureID_Invalid)
+                    dl->AddImage(img, ImVec2(ix, iy), ImVec2(ix + thumb, iy + thumb));
+                else
+                    dl->AddRect(ImVec2(ix, iy), ImVec2(ix + thumb, iy + thumb),
+                                IM_COL32(120, 120, 130, 180));
+            }
+
+            const std::string nm = fitTextWithEllipsisUtf8(gui, itemLabel, cellW - 6.0f);
+            const float tw = ImGui::CalcTextSize(nm.c_str()).x;
+            dl->AddText(ImVec2(cur0.x + (cellW - 4.0f - tw) * 0.5f, iy + thumb + 3.0f),
+                        ImGui::GetColorU32(ImGuiCol_Text), nm.c_str());
+
+            ImGui::PopID();
+            if (++col < cols)
+                ImGui::SameLine();
+            else
+                col = 0;
+        };
+
+        cell("(None)", kString(), true);
+        for (const auto &tex : textures)
+        {
+            if (!filter.empty())
+            {
+                std::string lower = tex.first;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c)
+                               { return static_cast<char>(std::tolower(c)); });
+                if (lower.find(filter) == std::string::npos)
+                    continue;
+            }
+            cell(tex.first.c_str(), tex.second, false);
+        }
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Select", ImVec2(120.0f, 0.0f)))
+        doApply = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+        ImGui::CloseCurrentPopup();
+
+    if (doApply)
+    {
+        if (m_texPickTile && m_texPickLayer >= 0 && manager)
+        {
+            auto &layers = m_texPickTile->getLayers();
+            if (m_texPickLayer < static_cast<int>(layers.size()))
+            {
+                kString newPath;
+                if (!m_texPickSelected.empty())
+                {
+                    auto it = manager->fileMap.find(m_texPickSelected);
+                    if (it != manager->fileMap.end())
+                        newPath = (manager->projectPath / "Assets" / it->second.path).string();
+                }
+
+                kTerrainLayer &layer = layers[static_cast<size_t>(m_texPickLayer)];
+                if (m_texPickSlot == 0)
+                    layer.albedoPath = newPath;
+                else if (m_texPickSlot == 1)
+                    layer.normalPath = newPath;
+                else
+                    layer.ormPath = newPath;
+
+                // Repack the layer texture arrays so the change shows immediately.
+                m_texPickTile->rebuildLayerArrays();
+                rebuildTileMesh(m_texPickTile);
+                m_texPickTile->saveOwnedAssets();
+                manager->projectSaved = false;
+            }
+        }
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
 }
 
 kTerrain *PanelTerrain::getSelectedTerrainTile(kTerrainManager *terrainMgr)
@@ -1492,20 +1824,19 @@ void PanelTerrain::draw(bool &isOpened)
 
     const bool hasTerrainTile = (terrainMgr->getTotalCount() > 0);
 
-    // Add default tile at origin. Disabled once the scene already owns a tile —
-    // a scene holds at most one terrain, so creating another is not allowed.
-    ImGui::BeginDisabled(hasTerrainTile);
-    if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
+    // Add default tile at origin. A scene holds at most one terrain, so the
+    // button only appears while the scene has none.
+    if (!hasTerrainTile)
     {
-        addTerrainTile(0, 0);
-        // Select the new tile so the neighbour controls have a reference.
-        if (kTerrain *t = terrainMgr->getTile(0, 0))
-            if (kMesh *m = t->getMesh())
-                manager->selectObject(m->getUuid(), true);
+        if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
+        {
+            addTerrainTile(0, 0);
+            // Select the new tile so the neighbour controls have a reference.
+            if (kTerrain *t = terrainMgr->getTile(0, 0))
+                if (kMesh *m = t->getMesh())
+                    manager->selectObject(m->getUuid(), true);
+        }
     }
-    ImGui::EndDisabled();
-    if (hasTerrainTile)
-        ImGui::TextDisabled("A terrain already exists in this scene.");
 
     ImGui::Spacing();
 
@@ -1521,7 +1852,17 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-    ImGui::InputFloat("Default Height", &m_defaultHeight);
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputFloat("Tile Height", &m_defaultHeight);
+
+    // Push the height onto the selected tile and persist it. Disabled until a tile
+    // is selected so the value cannot be applied to nothing.
+    ImGui::BeginDisabled(selectedTerrain == nullptr);
+    if (ImGui::Button("Apply##tileHeight", ImVec2(160.0f, 0.0f)))
+        applyTileHeight(selectedTerrain);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Set the selected tile to this height and save it.");
 
     ImGui::Spacing();
 
@@ -1635,7 +1976,6 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-            ImGui::Separator();
             ImGui::Spacing();
 
             bool canClear = (selectedTerrain != nullptr);
@@ -1646,6 +1986,12 @@ void PanelTerrain::draw(bool &isOpened)
 
             if (!canClear)
                 ImGui::TextDisabled("Select a terrain tile to clear its height map.");
+
+            // Rebuild the tile's render mesh from its current height / weight data.
+            ImGui::BeginDisabled(!canClear);
+            if (ImGui::Button("Rebuild Mesh", ImVec2(-1, 0)))
+                rebuildTileMesh(selectedTerrain);
+            ImGui::EndDisabled();
 
             ImGui::EndTabItem();
         }
@@ -1729,29 +2075,13 @@ void PanelTerrain::draw(bool &isOpened)
 
         if (ImGui::BeginTabItem("Effect Layers"))
         {
-            ImGui::TextDisabled("Height modifier layers, combined on top of the sculpted height.");
-
     static const char *noiseTypes[] = {"fBm (smooth)", "Ridged (mountains)", "Billowed (clouds)"};
-    ImGui::TextDisabled("Add a layer, then expand it to set its parameters.");
 
-    // Layer target tile — defaults to the selected tile so the common case needs
-    // no manual coordinates.
-    static int layerGridX = 0;
-    static int layerGridZ = 0;
-    if (selectedTerrain)
-    {
-        layerGridX = selectedTerrain->getGridX();
-        layerGridZ = selectedTerrain->getGridZ();
-    }
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Tile X##layer", &layerGridX);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::InputInt("Tile Z##layer", &layerGridZ);
-
-    kTerrain *noiseTile = terrainMgr->getTile(layerGridX, layerGridZ);
+    // Effect layers always target the selected tile, so there is no separate tile
+    // selector to keep in sync here.
+    kTerrain *noiseTile = selectedTerrain;
     if (!noiseTile)
-        ImGui::TextDisabled("No tile at (%d, %d).", layerGridX, layerGridZ);
+        ImGui::TextDisabled("Select a terrain tile to edit its effect layers.");
 
     ImGui::BeginDisabled(noiseTile == nullptr);
 
@@ -1850,7 +2180,10 @@ void PanelTerrain::draw(bool &isOpened)
 
             // Every setting lives inside the expansion, and nothing is committed
             // until Apply is pressed — so a slider drag never re-runs a generator.
-            kTerrainHeightLayer desc = layer;
+            // The edits are parked in a persistent buffer (not a short-lived stack
+            // copy) so the widgets keep the value the user typed instead of
+            // reverting it on the next frame.
+            kTerrainHeightLayer &desc = layerEditBufferFor(noiseTile, li, layer).desc;
             if (ImGui::TreeNode(desc.name.c_str()))
             {
                 ImGui::TextDisabled("Type: %s",
@@ -1999,7 +2332,10 @@ void PanelTerrain::draw(bool &isOpened)
     if (selectedTile)
     {
         auto &layers = selectedTile->getLayers();
-        ImGui::Text("Layers for tile (%d, %d): %zu", selectedTileGridX, selectedTileGridZ, layers.size());
+        // The legacy splat-map path packs four layer weights into one RGBA
+        // texture, so four is the largest stack the material can blend.
+        const size_t maxMaterialLayers = 4;
+        ImGui::Text("Layers: %zu/%zu", layers.size(), maxMaterialLayers);
 
         for (size_t i = 0; i < layers.size(); ++i)
         {
@@ -2021,15 +2357,21 @@ void PanelTerrain::draw(bool &isOpened)
                 // Per-layer textures. These are the *only* terrain textures the
                 // user picks: they are packed into the terrain's sampler2DArrays
                 // and never replace the tile's own material.
-                auto texField = [&](const char *label, kString &path)
+                auto texField = [&](const char *label, kString &path, int slot)
                 {
                     ImGui::TextUnformatted(label);
                     ImGui::SameLine(90.0f);
 
-                    kString shown = path.empty() ? kString("(drop a texture)")
+                    kString shown = path.empty() ? kString("(browse...)")
                                                 : fs::path(path).filename().string();
                     kString id = shown + "##tex" + std::to_string(i) + label;
-                    ImGui::Button(id.c_str(), ImVec2(230, 0));
+                    if (ImGui::Button(id.c_str(), ImVec2(230, 0)))
+                    {
+                        m_texPickTile = selectedTile;
+                        m_texPickLayer = static_cast<int>(i);
+                        m_texPickSlot = slot;
+                        m_texPickOpen = true;
+                    }
 
                     if (ImGui::IsItemHovered() && !path.empty())
                         ImGui::SetTooltip("%s", path.c_str());
@@ -2051,38 +2393,53 @@ void PanelTerrain::draw(bool &isOpened)
                                 path = (manager->projectPath / "Assets" /
                                         it->second.path).string();
                                 selectedTile->rebuildLayerArrays();
-                                selectedTile->rebuildMesh(true);
+                                rebuildTileMesh(selectedTile);
                             }
                         }
                         ImGui::EndDragDropTarget();
                     }
                 };
-                texField("Albedo", layer.albedoPath);
-                texField("Normal", layer.normalPath);
-                texField("ORM", layer.ormPath);
-                texField("Mask", layer.maskPath);
+                texField("Albedo", layer.albedoPath, 0);
+                texField("Normal", layer.normalPath, 1);
+                texField("ORM", layer.ormPath, 2);
+
+                // Which RGBA channel of the terrain splat map masks this layer.
+                {
+                    static const char *kMaskChannels[] = {"Auto (layer index)", "R", "G", "B", "A"};
+                    int current = (layer.maskChannel < 0) ? 0 : layer.maskChannel + 1;
+                    ImGui::SetNextItemWidth(230.0f);
+                    if (ImGui::Combo("Mask Channel", &current, kMaskChannels,
+                                     IM_ARRAYSIZE(kMaskChannels)))
+                    {
+                        layer.maskChannel = (current == 0) ? -1 : current - 1;
+                        selectedTile->syncLayerMaskChannels();
+                        selectedTile->saveOwnedAssets();
+                        manager->projectSaved = false;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Splat-map channel used as this layer's mask.");
+                }
 
                 ImGui::TreePop();
             }
         }
 
+        ImGui::BeginDisabled(layers.size() >= maxMaterialLayers);
         if (ImGui::Button("Add Layer"))
         {
             kTerrainLayer newLayer;
             newLayer.name = "New Layer";
             selectedTile->setLayer(newLayer);
         }
-
-        ImGui::SameLine();
-        if (ImGui::Button("Rebuild Mesh"))
-        {
-            selectedTile->rebuildMesh(true);
-        }
+        ImGui::EndDisabled();
+        if (layers.size() >= maxMaterialLayers)
+            ImGui::TextDisabled("Maximum of %zu layers (the splat map is RGBA).",
+                                maxMaterialLayers);
 
         if (ImGui::Button("Rebuild Layer Textures"))
         {
             selectedTile->rebuildLayerArrays();
-            selectedTile->rebuildMesh(true);
+            rebuildTileMesh(selectedTile);
         }
 
         // --- Terrain material (auto-managed) ---
@@ -2090,69 +2447,123 @@ void PanelTerrain::draw(bool &isOpened)
         // tile. It is deliberately not re-assignable from the Inspector or by
         // dragging a .mat onto the tile — only its parameters are edited here.
         ImGui::Spacing();
-        ImGui::SeparatorText("Terrain Material (auto-managed)");
+        ImGui::SeparatorText("Terrain Material Settings");
 
         if (kMaterial *terrainMat = selectedTile->getTerrainMaterial())
         {
-            auto floatParam = [&](const char *label, const char *name,
-                                  float fallback, float lo, float hi, const char *fmt)
+            // Edits are staged and only committed (and written to the tile's .mat)
+            // when Apply is pressed, so a slider drag never touches the asset.
+            if (m_matSettingsTile != selectedTile)
             {
+                m_matSettingsTile = selectedTile;
                 const auto &params = terrainMat->getParams();
-                auto it = params.find(kString(name));
-                float value = (it != params.end()) ? it->second.value.x : fallback;
-                if (ImGui::SliderFloat(label, &value, lo, hi, fmt))
+                auto read = [&](const char *name, float fallback)
                 {
-                    terrainMat->setParamFloat(name, value);
-                    selectedTile->saveOwnedAssets();
-                }
-            };
-
-            float tiling = 16.0f;
-            {
-                const auto &params = terrainMat->getParams();
-                auto it = params.find(kString("u_Tiling[0]"));
-                if (it != params.end())
-                    tiling = it->second.value.x;
+                    auto it = params.find(kString(name));
+                    return (it != params.end()) ? it->second.value.x : fallback;
+                };
+                m_matSettings.tiling             = read("u_Tiling[0]", 16.0f);
+                m_matSettings.blendSharpness     = read("u_BlendSharpness", 1.0f);
+                m_matSettings.stochastic         = read("u_Stochastic", 1.0f);
+                m_matSettings.triplanarStrength  = read("u_TriplanarStrength", 0.75f);
+                m_matSettings.triplanarSharpness = read("u_TriplanarSharpness", 3.0f);
+                m_matSettings.noiseVariegation   = read("u_NoiseVariegation", 0.25f);
+                m_matSettings.noiseScale         = read("u_NoiseScale", 0.02f);
             }
-            if (ImGui::SliderFloat("Tiling", &tiling, 1.0f, 128.0f, "%.1f"))
+
+            ImGui::SliderFloat("Tiling", &m_matSettings.tiling, 1.0f, 128.0f, "%.1f");
+            ImGui::SliderFloat("Blend Sharpness", &m_matSettings.blendSharpness,
+                               0.1f, 8.0f, "%.2f");
+            ImGui::SliderFloat("Stochastic", &m_matSettings.stochastic, 0.0f, 1.0f, "%.0f");
+            ImGui::SliderFloat("Triplanar Strength", &m_matSettings.triplanarStrength,
+                               0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Triplanar Sharpness", &m_matSettings.triplanarSharpness,
+                               0.5f, 16.0f, "%.1f");
+            ImGui::SliderFloat("Noise Variegation", &m_matSettings.noiseVariegation,
+                               0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Noise Scale", &m_matSettings.noiseScale,
+                               0.001f, 0.5f, "%.3f");
+
+            ImGui::Spacing();
+            if (ImGui::Button("Apply##terrainMat", ImVec2(-1, 0)))
             {
-                for (int li = 0; li < 4; ++li)
-                    terrainMat->setParamFloat("u_Tiling[" + std::to_string(li) + "]", tiling);
+                for (size_t li = 0; li < maxMaterialLayers; ++li)
+                    terrainMat->setParamFloat("u_Tiling[" + std::to_string(li) + "]",
+                                              m_matSettings.tiling);
+                terrainMat->setParamFloat("u_BlendSharpness", m_matSettings.blendSharpness);
+                terrainMat->setParamFloat("u_Stochastic", m_matSettings.stochastic);
+                terrainMat->setParamFloat("u_TriplanarStrength", m_matSettings.triplanarStrength);
+                terrainMat->setParamFloat("u_TriplanarSharpness", m_matSettings.triplanarSharpness);
+                terrainMat->setParamFloat("u_NoiseVariegation", m_matSettings.noiseVariegation);
+                terrainMat->setParamFloat("u_NoiseScale", m_matSettings.noiseScale);
                 selectedTile->saveOwnedAssets();
+                manager->projectSaved = false;
             }
-
-            floatParam("Blend Sharpness", "u_BlendSharpness", 1.0f, 0.1f, 8.0f, "%.2f");
-            floatParam("Stochastic", "u_Stochastic", 1.0f, 0.0f, 1.0f, "%.0f");
-            floatParam("Triplanar Strength", "u_TriplanarStrength", 0.75f, 0.0f, 1.0f, "%.2f");
-            floatParam("Triplanar Sharpness", "u_TriplanarSharpness", 3.0f, 0.5f, 16.0f, "%.1f");
-            floatParam("Noise Variegation", "u_NoiseVariegation", 0.25f, 0.0f, 1.0f, "%.2f");
-            floatParam("Noise Scale", "u_NoiseScale", 0.02f, 0.001f, 0.5f, "%.3f");
-
-            ImGui::TextDisabled("Material .mat is written to Library/Terrains with the tile.");
         }
         else
         {
+            m_matSettingsTile = nullptr;
             ImGui::TextDisabled("No material yet (tile not loaded).");
         }
 
-        // Generate the terrain collision shape. A Jolt HeightFieldShape is the
-        // recommended collider for regular height grids — far cheaper than a
-        // triangle mesh. The runtime builds the sample grid from this tile's
-        // mesh vertices when the game starts.
-        if (ImGui::Button("Generate HeightField Collider", ImVec2(-1, 0)) && selectedTile->getMesh())
+        // --- Terrain physics: collider -------------------------------------
+        // A Jolt HeightFieldShape is the recommended collider for regular height
+        // grids — far cheaper than a triangle mesh. The runtime builds the sample
+        // grid from this tile's mesh vertices when the game starts.
+        ImGui::Spacing();
+        ImGui::SeparatorText("Terrain Physics");
+
+        kObject *tileObject = selectedTile->getMesh()
+                                  ? static_cast<kObject *>(selectedTile->getMesh())
+                                  : nullptr;
+        const bool hasCollider =
+            tileObject && tileObject->getHasPhysicsDesc() &&
+            tileObject->getPhysicsDesc().shape.type == kPhysicsShapeType::HeightField;
+
+        // Collider resolution — samples per side of the HeightField shape. Higher
+        // values give the collider more triangles (a finer, more accurate mesh).
+        if (m_collisionResTile != selectedTile)
         {
-            kObject *obj = static_cast<kObject *>(selectedTile->getMesh());
-            kPhysicsObjectDesc &desc = obj->getPhysicsDesc();
-            desc.shape.type = kPhysicsShapeType::HeightField;
-            desc.type = kPhysicsObjectType::Static;
-            desc.layer = "Default";
-            obj->setHasPhysicsDesc(true);
+            m_collisionResTile = selectedTile;
+            m_collisionResolution =
+                (hasCollider && tileObject->getPhysicsDesc().shape.heightSampleCount >= 2)
+                    ? tileObject->getPhysicsDesc().shape.heightSampleCount
+                    : 129;
         }
+
+        ImGui::BeginDisabled(tileObject == nullptr);
+        ImGui::SliderInt("Collision Resolution", &m_collisionResolution, 8, 512, "%d",
+                         ImGuiSliderFlags_Logarithmic);
+        ImGui::TextDisabled("Higher = more triangles, more precise collision.");
+        // Pressing this again re-creates the collider from the tile's current
+        // geometry at the resolution above.
+        if (ImGui::Button("Generate Tile Collider", ImVec2(-1, 0)))
+            generateTileCollider(selectedTile, m_collisionResolution);
+        ImGui::EndDisabled();
+
+        // Only offer removal while the tile actually owns a collider.
+        if (hasCollider)
+        {
+            if (ImGui::Button("Remove Tile Collider", ImVec2(-1, 0)))
+            {
+                tileObject->setHasPhysicsDesc(false);
+                showCollider = false;
+                manager->projectSaved = false;
+            }
+        }
+
+        ImGui::BeginDisabled(!hasCollider);
+        ImGui::Checkbox("Show collider", &showCollider);
+        ImGui::EndDisabled();
     }
     else
     {
         ImGui::TextDisabled("No tile at (%d, %d). Create one above.", selectedTileGridX, selectedTileGridZ);
     }
+
+    // Layer texture picker modal — drawn last so it is reachable whichever section
+    // raised it.
+    drawTexturePickerPopup();
 
     ImGui::End();
 }
@@ -2231,6 +2642,10 @@ void PanelTerrain::removeTerrainTile(int gridX, int gridZ)
         eraseUuid(manager->selectedObjects);
     }
 
+    // The tile is about to be destroyed — drop any in-progress layer edits it owns
+    // so a later tile cannot accidentally reuse them.
+    clearLayerEditBuffers(tile);
+
     mgr->removeTile(gridX, gridZ);
 
     // The former neighbours were stitched to this tile; rebuild them so their
@@ -2253,7 +2668,7 @@ void PanelTerrain::rebuildNeighborMeshes(int gridX, int gridZ)
     {
         kTerrain *n = mgr->getTile(gridX + o[0], gridZ + o[1]);
         if (n && n->isLoaded())
-            n->rebuildMesh(true);
+            rebuildTileMesh(n);
     }
 }
 
@@ -2304,6 +2719,9 @@ void PanelTerrain::loadProjectTerrains()
     if (!manager || !manager->terrainManager)
         return;
 
+    // Tiles are (re)loaded here, so any in-progress layer edits are stale.
+    m_layerEditBuffers.clear();
+
     // Terrain payloads live in Library/Terrains/, named after the tile's mesh
     // UUID. The manager owns that folder, so each tile creates / reads / deletes
     // its own .height, .splat, .hlayers and .mat files without user involvement.
@@ -2322,7 +2740,7 @@ void PanelTerrain::loadProjectTerrains()
 
         tile->loadOwnedAssets();
         if (tile->isLoaded())
-            tile->rebuildMesh(true);
+            rebuildTileMesh(tile);
     }
 
     if (manager->getRenderer())

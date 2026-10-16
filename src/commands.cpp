@@ -435,7 +435,10 @@ static void applyWeightBlock(kTerrain *tile, int res,
 
 // Writes one tile's stored sub-blocks back and refreshes its GPU data.
 // `after` selects the "after" state (redo) instead of the "before" state (undo).
-static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after)
+// `manager` (optional) is used to keep the editor selection valid across the
+// mesh rebuild, which deletes and re-creates the tile's kMesh.
+static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after,
+                          Manager *manager = nullptr)
 {
     if (!d.tile) return;
 
@@ -475,7 +478,22 @@ static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after)
 
     if (d.tile->isLoaded())
     {
-        if (touchesHeight) d.tile->rebuildMesh(true);
+        if (touchesHeight)
+        {
+            kMesh *oldMesh = d.tile->getMesh();
+            d.tile->rebuildMesh(true);
+            kMesh *newMesh = d.tile->getMesh();
+            if (manager && oldMesh && newMesh && oldMesh != newMesh)
+            {
+                // Re-point the raw selection at the rebuilt mesh (its UUID is
+                // preserved) so it does not dangle.
+                kObject *&activeSelection = manager->getActiveSelectedObject();
+                if (activeSelection == oldMesh)
+                    activeSelection = newMesh;
+                if (manager->selectedObject == oldMesh)
+                    manager->selectedObject = newMesh;
+            }
+        }
         if (d.hasWeight) d.tile->updateSplatTexture();
     }
 }
@@ -483,7 +501,7 @@ static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after)
 void TerrainEditCommand::undo()
 {
     for (const auto &d : diffs)
-        applyTileDiff(d, false);
+        applyTileDiff(d, false, manager);
     if (manager)
     {
         if (manager->getRenderer()) manager->getRenderer()->setOctreeDirty();
@@ -494,7 +512,7 @@ void TerrainEditCommand::undo()
 void TerrainEditCommand::redo()
 {
     for (const auto &d : diffs)
-        applyTileDiff(d, true);
+        applyTileDiff(d, true, manager);
     if (manager)
     {
         if (manager->getRenderer()) manager->getRenderer()->setOctreeDirty();

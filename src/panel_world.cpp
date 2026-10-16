@@ -467,28 +467,6 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 hovered = true;
         }
 
-        // On-screen state readout, drawn by THIS panel so it reports exactly what
-        // the brush code sees (the Terrain panel only shows what it is told). It is
-        // intentionally always visible while a terrain tool is active: if this line
-        // never appears, the World panel is not reaching its tool block at all.
-        {
-            ImDrawList *fg = ImGui::GetForegroundDrawList();
-            const char *toolName = isSculpting ? "Sculpt"
-                                 : isPainting ? "Mask paint"
-                                 : isHeightPaint ? "Height paint"
-                                                 : "none";
-            kString line = kString("Terrain brush: ") + toolName +
-                           " | hovered: " + (hovered ? "y" : "n") +
-                           " | focused: " + (focused ? "y" : "n") +
-                           " | LMB: " + (ImGui::IsMouseDown(ImGuiMouseButton_Left) ? "down" : "up") +
-                           " | modifiers: " + (modifiersDown ? "held" : "none") +
-                           " | gizmo: " + (ImGuizmo::IsUsing() ? "using" : "idle") +
-                           " | cursor: " + (manager->panelTerrain->paintCursorValid ? "on terrain"
-                                                                                   : "off terrain");
-            fg->AddText(ImVec2(panelPos.x + 14.0f, panelPos.y + 14.0f),
-                        IM_COL32(255, 235, 120, 255), line.c_str());
-        }
-
         // When in sculpt or paint mode, block object picking so the user
         // cannot select 3D objects by clicking in the viewport.
         // (The hierarchy panel bypasses this — it selects by tree click.)

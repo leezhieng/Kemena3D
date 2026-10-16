@@ -56,6 +56,10 @@ public:
     kVec3 paintCursorNormal = kVec3(0.0f, 1.0f, 0.0f);
     bool paintCursorValid = false;
 
+    /// @brief When true the selected tile's physics collider is drawn as a
+    ///        wireframe in the viewport (Terrain > Terrain Physics).
+    bool showCollider = false;
+
     PanelTerrain(kGuiManager *setGuiManager, Manager *setManager);
 
     void draw(bool &isOpened);
@@ -154,6 +158,15 @@ public:
     void removeHeightLayerUndoable(kTerrain *tile, int layerIndex);
 
     /**
+     * @brief Applies the panel's "Tile Height" value to @p tile and saves it.
+     *
+     * Fills the tile's base height field with @ref m_defaultHeight and clears
+     * every effect layer's stored delta, so the tile reads flat at exactly that
+     * height. Recorded as one undoable step and written to disk immediately.
+     */
+    void applyTileHeight(kTerrain *tile);
+
+    /**
      * @brief Resets a tile's height map.
      *
      * The sculpted base returns to the panel's default height and every effect
@@ -161,6 +174,35 @@ public:
      * again. Recorded as one undoable step for the base field.
      */
     void clearSelectedTileHeight(kTerrain *tile);
+
+    /**
+     * @brief Appends the wireframe edges of @p tile's physics collider to @p out.
+     *
+     * The collider mirrors the tile's height field; the grid is decimated so a
+     * full-resolution tile does not flood the debug-line buffer. Each pair of
+     * consecutive points is one world-space line segment.
+     */
+    void appendTileColliderLines(const kTerrain *tile, std::vector<kVec3> &out) const;
+
+    /**
+     * @brief Builds (or refreshes) @p tile's HeightField collider at @p resolution.
+     *
+     * The terrain height grid is bilinearly resampled to @p resolution samples per
+     * side, so a higher value produces more triangles and a more accurate collision
+     * mesh. The resolution is stored in the shape descriptor and serialised.
+     */
+    void generateTileCollider(kTerrain *tile, int resolution);
+
+    /**
+     * @brief Rebuilds a tile's render mesh, keeping the editor selection valid.
+     *
+     * kTerrain::rebuildMesh() deletes and re-creates the tile's kMesh, so any raw
+     * pointer the editor holds to the old mesh (the active selection) would dangle
+     * and crash e.g. the Inspector on the next frame. This re-points the selection
+     * at the rebuilt mesh (rebuildMesh preserves the UUID, so the uuid lists stay
+     * valid).
+     */
+    void rebuildTileMesh(kTerrain *tile);
 
     /**
      * @brief Builds the generator functor for a height layer descriptor.
@@ -238,6 +280,61 @@ private:
     std::vector<EditSnapshot> m_editSnapshots;
     EditSnapshot *findOrCreateEditSnapshot(kTerrain *tile);
 
+    /**
+     * @brief Scratch copy of a height-modifier layer while its tree node is open.
+     *
+     * ImGui widgets bind to the address they are given, so editing a short-lived
+     * stack copy made every change snap back to the stored value on the next
+     * frame. This buffer keeps the in-progress descriptor alive until the user
+     * presses Apply. Keyed by tile and layer index.
+     */
+    struct LayerEditBuffer
+    {
+        kTerrain *tile = nullptr;          ///< Tile the layer belongs to.
+        int index = -1;                    ///< Layer index within the tile.
+        kTerrainHeightLayer desc;          ///< In-progress layer descriptor.
+    };
+    std::vector<LayerEditBuffer> m_layerEditBuffers;
+
+    /**
+     * @brief Returns the persistent edit buffer for a layer, seeding it from
+     *        @p current the first time the layer is shown.
+     */
+    LayerEditBuffer &layerEditBufferFor(kTerrain *tile, int index,
+                                        const kTerrainHeightLayer &current);
+
+    /** @brief Discards every in-progress layer edit belonging to @p tile. */
+    void clearLayerEditBuffers(kTerrain *tile);
+
+    // --- Terrain material-layer texture picker (modal) ---
+    kTerrain *m_texPickTile = nullptr; ///< Tile whose layer texture is being chosen.
+    int m_texPickLayer = -1;           ///< Layer index within that tile.
+    int m_texPickSlot = 0;             ///< 0 = Albedo, 1 = Normal, 2 = ORM.
+    kString m_texPickSelected;         ///< Asset UUID chosen in the picker.
+    bool m_texPickOpen = false;        ///< Set to open the picker popup next frame.
+    char m_texPickSearch[128] = "";
+
+    /// @brief Draws the "Select Terrain Texture" modal for the active layer slot.
+    void drawTexturePickerPopup();
+
+    // --- Terrain material parameter staging (committed by the Apply button) ---
+    struct MaterialSettings
+    {
+        float tiling = 16.0f;
+        float blendSharpness = 1.0f;
+        float stochastic = 1.0f;
+        float triplanarStrength = 0.75f;
+        float triplanarSharpness = 3.0f;
+        float noiseVariegation = 0.25f;
+        float noiseScale = 0.02f;
+    };
+    kTerrain *m_matSettingsTile = nullptr; ///< Tile the staged settings belong to.
+    MaterialSettings m_matSettings;
+
+    /// Desired HeightField collider resolution (samples per side).
+    int m_collisionResolution = 129;
+    kTerrain *m_collisionResTile = nullptr; ///< Tile the staged resolution belongs to.
+
     float m_defaultHeight = 0.0f;
 
     // --- Terrain size / resolution settings (applied only after confirmation) ---
@@ -259,7 +356,7 @@ private:
     float m_noiseAmplitude = 10.0f;
     int m_noiseOctaves = 4;
     int m_noiseSeed = 42;
-    bool m_noiseAdditive = false;
+    bool m_noiseAdditive = true;
     int m_noiseType = 0; ///< 0 = fBm, 1 = ridged, 2 = billowed.
 
     // --- Erosion parameters ---------------------------------------------------

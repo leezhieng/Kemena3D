@@ -6484,6 +6484,8 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             }
             desc.shape.radius = phys.value("radius", 0.5f);
             desc.shape.height = phys.value("height", 1.0f);
+            // HeightField collider resolution requested in the Terrain panel.
+            desc.shape.heightSampleCount = phys.value("collision_resolution", 0);
             desc.type = (kPhysicsObjectType)phys.value("body_type", 0);
             desc.mass = phys.value("mass", 1.0f);
             desc.friction = phys.value("friction", 0.5f);
@@ -7846,6 +7848,66 @@ void Manager::revertPrefabEditorChanges()
 // On Stop we destroy every body and detach. The kObject's local transform is
 // restored separately by PanelGame's snapshot mechanism.
 
+// Builds a terrain HeightField collider's sample grid from the owning mesh,
+// honouring the descriptor's requested resolution (shape.heightSampleCount).
+// The editor's Play path hands the descriptor straight to Jolt (unlike kWorld,
+// which rebuilds it), so the samples are generated here — and regenerated after
+// a project load, where they are, by design, not serialised.
+static void buildHeightFieldColliderSamples(kObject *node)
+{
+    if (!node || !node->getHasPhysicsDesc())
+        return;
+    if (node->getType() != NODE_TYPE_MESH)
+        return;
+
+    kPhysicsObjectDesc &desc = node->getPhysicsDesc();
+    if (desc.shape.type != kPhysicsShapeType::HeightField)
+        return;
+
+    kMesh *m = static_cast<kMesh *>(node);
+    std::vector<kVec3> verts = m->getVertices();
+    const size_t n = verts.size();
+    const int g = static_cast<int>(std::lround(std::sqrt(static_cast<double>(n))));
+    if (g < 2 || static_cast<size_t>(g) * g != n)
+        return;
+
+    int target = desc.shape.heightSampleCount;
+    if (target < 2 || target > 4096)
+        target = g;
+
+    desc.shape.heightSamples.resize(static_cast<size_t>(target) * target);
+    for (int z = 0; z < target; ++z)
+    {
+        const float fz = (target > 1) ? (static_cast<float>(z) / (target - 1)) * (g - 1) : 0.0f;
+        const int z0 = static_cast<int>(fz);
+        const int z1 = (std::min)(z0 + 1, g - 1);
+        const float tz = fz - static_cast<float>(z0);
+        for (int x = 0; x < target; ++x)
+        {
+            const float fx = (target > 1) ? (static_cast<float>(x) / (target - 1)) * (g - 1) : 0.0f;
+            const int x0 = static_cast<int>(fx);
+            const int x1 = (std::min)(x0 + 1, g - 1);
+            const float tx = fx - static_cast<float>(x0);
+
+            const float h00 = verts[static_cast<size_t>(z0) * g + x0].y;
+            const float h10 = verts[static_cast<size_t>(z0) * g + x1].y;
+            const float h01 = verts[static_cast<size_t>(z1) * g + x0].y;
+            const float h11 = verts[static_cast<size_t>(z1) * g + x1].y;
+            const float h0 = h00 + (h10 - h00) * tx;
+            const float h1 = h01 + (h11 - h01) * tx;
+            desc.shape.heightSamples[static_cast<size_t>(z) * target + x] = h0 + (h1 - h0) * tz;
+        }
+    }
+    desc.shape.heightSampleCount = target;
+
+    float world = m->getTerrainWorldSize();
+    if (world <= 0.0f)
+        world = 256.0f;
+    const float spacing = world / static_cast<float>(target - 1);
+    desc.shape.heightScale = kVec3(spacing, 1.0f, spacing);
+    desc.shape.offset = kVec3(-world * 0.5f, 0.0f, -world * 0.5f);
+}
+
 void Manager::startPhysicsSimulation()
 {
     if (!scene)
@@ -7879,6 +7941,8 @@ void Manager::startPhysicsSimulation()
             return;
         if (node->getHasPhysicsDesc())
         {
+            // Terrain HeightField colliders need their sample grid built up front.
+            buildHeightFieldColliderSamples(node);
             kPhysicsObjectDesc desc = node->getPhysicsDesc();
             // Seed the body from the object's current world transform so it
             // appears where the editor placed it, not at the descriptor's

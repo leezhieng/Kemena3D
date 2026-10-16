@@ -1142,6 +1142,24 @@ int main()
 				}
 			}
 
+			// Terrain collider wireframe (orange) for the selected tile, when the
+			// Terrain panel's "Show collider" option is enabled.
+			if (manager->projectOpened && manager->panelTerrain &&
+				manager->panelTerrain->showCollider)
+			{
+				kTerrain *colliderTile =
+					manager->panelTerrain->getSelectedTerrainTile(manager->terrainManager);
+				if (colliderTile && colliderTile->getMesh() &&
+					colliderTile->getMesh()->getHasPhysicsDesc())
+				{
+					std::vector<kVec3> colliderLines;
+					manager->panelTerrain->appendTileColliderLines(colliderTile, colliderLines);
+					if (!colliderLines.empty())
+						renderer->renderDebugLines(world, colliderLines,
+													kVec3(1.0f, 0.5f, 0.12f));
+				}
+			}
+
 			// Thumbnail generation (one per frame, main thread only)
 			if (manager->projectOpened)
 			{

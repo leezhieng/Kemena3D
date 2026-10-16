@@ -172,6 +172,9 @@ uniform float u_MaskedBlend;            // 0 = luminance height blend, 1 = albed
 uniform float u_UseArrays;
 // @var float u_Tiling[16]
 uniform float u_Tiling[16];
+// Per-layer splat-mask channel (R/G/B/A = 0..3), written from the Terrain panel.
+// The editor resolves "auto" to the layer index before uploading.
+uniform float u_MaskChannel[16];
 uniform sampler2D u_WeightMap0;
 uniform sampler2D u_WeightMap1;
 uniform sampler2D u_WeightMap2;
@@ -344,7 +347,14 @@ vec3 computeDisplacedNormal(vec3 worldPos)
 {
     vec3 dx = dFdx(worldPos);
     vec3 dy = dFdy(worldPos);
-    return normalize(cross(dx, dy));
+    vec3 n = normalize(cross(dx, dy));
+    // Terrain is a heightfield with no overhangs, so its geometric normal always
+    // points up. The cross product's handedness depends on the window-space axes,
+    // which flipped the relief shading (slopes facing the sun read dark) — force
+    // the normal into the +Y hemisphere.
+    if (n.y < 0.0)
+        n = -n;
+    return n;
 }
 
 // ===========================================================================
@@ -497,7 +507,10 @@ void main()
     int layerCount = (u_UseArrays > 0.5) ? 16 : 4;
     for (int i = 0; i < layerCount; i++)
     {
-        float weight = (u_UseArrays > 0.5) ? getWeightLayer(i) : splat[i];
+        // The layer's mask is the selected RGBA channel of the splat map (which is
+        // weight map 0 in the array path, so both paths agree for layers 0..3).
+        int mc = int(clamp(u_MaskChannel[i], 0.0, 3.0));
+        float weight = splat[mc];
         if (weight <= 0.001)
             continue;
 
