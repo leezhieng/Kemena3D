@@ -49,6 +49,19 @@ set(SOURCES
 # etc.) are still linked below because Kemena3DSDK.lib references them.
 add_executable(${PROJECT_NAME} ${SOURCES})
 
+# resources.rc embeds the shader sources verbatim, but MSVC does not treat the
+# files a .rc references as inputs of the resource compilation — so editing (for
+# example) res/shaders/TerrainPBR.glsl left the old source embedded in the binary
+# and the change appeared to do nothing until a clean rebuild. Stamp the .rc on
+# every build so the resource step always re-embeds the current shader sources
+# (OBJECT_DEPENDS is ignored for ResourceCompile by the Visual Studio generator).
+if(MSVC)
+    add_custom_command(TARGET ${PROJECT_NAME} PRE_BUILD
+        COMMAND ${CMAKE_COMMAND} -E touch_nocreate
+                "${CMAKE_CURRENT_SOURCE_DIR}/resources.rc"
+        COMMENT "Stamping resources.rc so shader edits are re-embedded")
+endif()
+
 # ---------------------------------------------------------------------------
 # DirectX 11 backend
 #

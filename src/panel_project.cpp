@@ -96,7 +96,18 @@ ImTextureRef PanelProject::getThumbnailIcon(const kString& uuid, ImTextureRef de
 	if (it != thumbnailCache.end())
 		return it->second.second;
 
-	fs::path thumbPath = manager->projectPath / "Library" / "Thumbnails" / (uuid + ".png");
+	// A mesh instance has no thumbnail of its own: it reuses the thumbnail of
+	// the source mesh it points at.
+	kString thumbUuid = uuid;
+	auto fit = manager->fileMap.find(uuid);
+	if (fit != manager->fileMap.end() && fit->second.type == "meshInstance")
+	{
+		kString sourceUuid = manager->getMeshInstanceSourceUuid(uuid);
+		if (!sourceUuid.empty())
+			thumbUuid = sourceUuid;
+	}
+
+	fs::path thumbPath = manager->projectPath / "Library" / "Thumbnails" / (thumbUuid + ".png");
 	if (!fs::exists(thumbPath)) return defaultIcon;
 
 	try
@@ -732,6 +743,15 @@ void PanelProject::drawTreeNode(Node& node, Node& rootTree, int level)
 		if (ImGui::MenuItem("Delete"))
 			executeDeleteSelected();
 		ImGui::Separator();
+		if (node.type == 1 && !node.uuid.empty())
+		{
+			auto fit = manager->fileMap.find(node.uuid);
+			if (fit != manager->fileMap.end() && fit->second.type == "mesh")
+			{
+				if (ImGui::MenuItem("Create instanced copy"))
+					{ manager->createMeshInstance(node.uuid, node.fullPath); needRefreshList = true; }
+			}
+		}
 		if (ImGui::MenuItem("Reimport"))
 			{ manager->reimportAsset(node.uuid); needRefreshList = true; }
 		ImGui::EndPopup();
@@ -797,6 +817,8 @@ void PanelProject::populateTree(Node& parent, const fs::path& fullPath)
 				icon = iconModel;
 			else if (ext == ".prefab" || ext == ".pfb")
 				icon = iconPrefab;
+			else if (ext == ".inst")
+				icon = iconModel;    // instanced mesh copy shares the model icon
 			else if (ext == ".particle")
 				icon = iconParticle;
 			else if (ext == ".world")
@@ -939,6 +961,8 @@ void PanelProject::refreshThumbnailList()
 								icon = iconModel;
 							else if (ext == ".prefab" || ext == ".pfb")
 								icon = iconPrefab;
+							else if (ext == ".inst")
+								icon = iconModel;    // instanced mesh copy shares the model icon
 							else if (ext == ".world")
 								icon = iconWorld;
 							else if (ext == ".mat")
@@ -1068,12 +1092,17 @@ void PanelProject::drawThumbnailNode(const Node& currentDir)
 					if (ImGui::MenuItem("Reimport"))
 						{ manager->reimportAsset(child->uuid); needRefreshList = true; }
 					ImGui::Separator();
-					// "Create Animation" for mesh files
+					// Mesh-specific actions: instanced copies and animation clips.
 					if (child->type == 1 && !child->uuid.empty())
 					{
 						auto it = manager->fileMap.find(child->uuid);
 						if (it != manager->fileMap.end() && it->second.type == "mesh")
 						{
+							if (ImGui::MenuItem("Create instanced copy"))
+							{
+								manager->createMeshInstance(child->uuid, child->fullPath);
+								needRefreshList = true;
+							}
 							if (ImGui::MenuItem("Create Animation"))
 							{
 								manager->createNewAnimationFromMesh(child->uuid, child->fullPath);

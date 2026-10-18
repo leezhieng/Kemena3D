@@ -480,7 +480,13 @@ void PanelInspector::drawModelViewer(const PanelProject::SelectedProjectAsset &a
 
         if (!asset.uuid.empty() && manager->getAssetManager())
         {
-            fs::path glbPath = manager->projectPath / "Library" / "ImportedAssets" / (asset.uuid + ".glb");
+            // A mesh-instance asset has no imported mesh of its own; preview
+            // the source mesh it references.
+            kString previewUuid = asset.uuid;
+            if (asset.fileType == "meshInstance")
+                previewUuid = manager->getMeshInstanceSourceUuid(asset.uuid);
+
+            fs::path glbPath = manager->projectPath / "Library" / "ImportedAssets" / (previewUuid + ".glb");
             if (fs::exists(glbPath))
             {
                 kAssetManager *am = manager->getAssetManager();
@@ -619,7 +625,7 @@ void PanelInspector::drawMaterialViewer(const PanelProject::SelectedProjectAsset
 
 ImTextureRef PanelInspector::getFileTypeIcon(const kString &fileType) const
 {
-    if (fileType == "mesh")
+    if (fileType == "mesh" || fileType == "meshInstance")
         return iconFileModel;
     if (fileType == "image")
         return iconFileImage;
@@ -3917,18 +3923,36 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     static std::vector<MaskGroupEdit> maskGroups;
     static BoneTree                   boneTree;
 
-    if (asset.uuid != lastUuid)
+    // Instanced copies are read-only: they display the source mesh's import
+    // settings but never edit or re-import anything themselves.
+    const bool readOnly = (asset.fileType == "meshInstance");
+    kString settingsUuid = asset.uuid;
+    fs::path metaPath = asset.metaPath;
+    if (readOnly && mgr)
     {
-        lastUuid = asset.uuid;
+        kString resolved = mgr->getMeshInstanceSourceUuid(asset.uuid);
+        if (!resolved.empty())
+        {
+            settingsUuid = resolved;
+            metaPath = mgr->projectPath / "Library" / "Metadata" / (resolved + ".json");
+        }
+    }
+
+    // Track both the selected asset and its resolved source, so switching
+    // between a mesh and one of its instances always reloads the right data.
+    const kString settingsKey = asset.uuid + "|" + settingsUuid;
+    if (settingsKey != lastUuid)
+    {
+        lastUuid = settingsKey;
         dirty = false;
-        loadMeshSettings(asset.metaPath, scaleFactor, meshCompression, generateCollider, tangents, generateLightmapUV, importAnimation, animCompression);
-        loadMaskGroups(asset.metaPath, maskGroups);
+        loadMeshSettings(metaPath, scaleFactor, meshCompression, generateCollider, tangents, generateLightmapUV, importAnimation, animCompression);
+        loadMaskGroups(metaPath, maskGroups);
 
         // Bone hierarchy for the checkbox tree, read from the source model.
         boneTree = BoneTree{};
         if (mgr)
         {
-            auto fit = mgr->fileMap.find(asset.uuid);
+            auto fit = mgr->fileMap.find(settingsUuid);
             if (fit != mgr->fileMap.end())
                 boneTree = getMeshBoneTree(mgr->projectPath / "Assets" / fit->second.path);
         }
@@ -3943,10 +3967,35 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         }
     }
 
+    if (readOnly)
+    {
+        kString sourceName;
+        if (mgr)
+        {
+            auto srcIt = mgr->fileMap.find(settingsUuid);
+            if (srcIt != mgr->fileMap.end())
+                sourceName = fs::path(srcIt->second.path).filename().string();
+        }
+
+        if (!sourceName.empty())
+            ImGui::TextWrapped("This asset is an instanced copy. Its model and import settings are inherited from the source mesh \"%s\". Open that mesh to make changes.", sourceName.c_str());
+        else
+            ImGui::TextWrapped("This asset is an instanced copy. Its model and import settings are inherited from its source mesh. Open that mesh to make changes.");
+        gui->spacing();
+    }
+
     if (!gui->collapsingHeader("Import Settings", ImGuiTreeNodeFlags_DefaultOpen))
         return;
+
+    if (readOnly)
+        gui->beginDisabled(true);
+
     if (!beginPropTable(gui, "MeshImportTable"))
+    {
+        if (readOnly)
+            gui->endDisabled();
         return;
+    }
 
     propLabel(gui, "Scale Factor");
     gui->setNextItemWidth(-FLT_MIN);
@@ -4004,9 +4053,9 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
     if (wasDisabled)
         gui->beginDisabled(true);
     float btnW = (gui->getContentRegionAvail().x - 4.0f) * 0.5f;
-    if (ImGui::Button("Apply##Mesh", ImVec2(btnW, 0)) && !asset.metaPath.empty())
+    if (ImGui::Button("Apply##Mesh", ImVec2(btnW, 0)) && !metaPath.empty())
     {
-        auto j = loadMetaJson(asset.metaPath);
+        auto j = loadMetaJson(metaPath);
         j["scaleFactor"] = scaleFactor;
         j["meshCompression"] = meshCompression;
         j["generateCollider"] = generateCollider;
@@ -4026,29 +4075,31 @@ static void drawMeshImportSettings(kGuiManager *gui, const PanelProject::Selecte
         }
         j["boneMasks"] = masksArr;
 
-        saveMetaJson(asset.metaPath, j);
+        saveMetaJson(metaPath, j);
         dirty = false;
 
         // Mirror the settings into Config/import_settings.json. That store is
         // committed with the project while Library/ is only a regenerable cache,
         // so this is what makes the settings survive a move through git.
-        if (mgr && !asset.uuid.empty())
-            mgr->publishImportSettings(asset.uuid, j);
+        if (mgr && !settingsUuid.empty())
+            mgr->publishImportSettings(settingsUuid, j);
 
         // Re-convert the source model into Library/ImportedAssets with these
         // settings (scale / tangents / animation) and refresh its thumbnail.
-        if (mgr && !asset.uuid.empty())
-            mgr->reimportMesh(asset.uuid);
+        if (mgr && !settingsUuid.empty())
+            mgr->reimportMesh(settingsUuid);
     }
     gui->sameLine(0, 4.0f);
     if (ImGui::Button("Revert##Mesh", ImVec2(btnW, 0)))
     {
-        loadMeshSettings(asset.metaPath, scaleFactor, meshCompression, generateCollider,
+        loadMeshSettings(metaPath, scaleFactor, meshCompression, generateCollider,
                          tangents, generateLightmapUV, importAnimation, animCompression);
-        loadMaskGroups(asset.metaPath, maskGroups);
+        loadMaskGroups(metaPath, maskGroups);
         dirty = false;
     }
     if (wasDisabled)
+        gui->endDisabled();
+    if (readOnly)
         gui->endDisabled();
 }
 
@@ -5394,7 +5445,7 @@ void PanelInspector::draw(bool &opened)
             gui->spacing();
             gui->separator();
             gui->spacing();
-            if (!asset.isFolder && asset.fileType == "mesh")
+            if (!asset.isFolder && (asset.fileType == "mesh" || asset.fileType == "meshInstance"))
                 drawModelViewer(asset);
             else if (!asset.isFolder && asset.fileType == "material")
                 drawMaterialViewer(asset);
@@ -5408,7 +5459,7 @@ void PanelInspector::draw(bool &opened)
                 drawAssetThumbnail(gui, asset);
             if (!asset.isFolder)
             {
-                if (asset.fileType == "mesh")
+                if (asset.fileType == "mesh" || asset.fileType == "meshInstance")
                     drawMeshImportSettings(gui, asset, manager);
                 else if (asset.fileType == "image")
                     drawImageImportSettings(gui, asset, manager);

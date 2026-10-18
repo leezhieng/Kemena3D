@@ -531,6 +531,29 @@ public:
     void createNewParticle();
     void createNewGui();
     void createNewAnimationFromMesh(const kString &meshUuid, const fs::path &meshPath);
+
+    /**
+     * @brief Creates a lightweight instanced-copy asset (.inst) for a mesh.
+     *
+     * The generated JSON file records the source mesh's UUID and file name so
+     * the instance can reuse its geometry, thumbnail and import settings while
+     * remaining a distinct project asset. Hardware instancing can then treat
+     * every .inst referencing the same source mesh as a single shared mesh.
+     *
+     * @param meshUuid UUID of the source mesh asset.
+     * @param meshPath Filesystem path of the source mesh (used to pick the
+     *                 destination folder and file name).
+     */
+    void createMeshInstance(const kString &meshUuid, const fs::path &meshPath);
+
+    /**
+     * @brief Resolves the source mesh UUID recorded in a .inst asset.
+     * @param instUuid UUID of the instanced-copy asset.
+     * @return Source mesh UUID, or an empty string when @p instUuid is not a
+     *         mesh instance / its file cannot be read.
+     */
+    kString getMeshInstanceSourceUuid(const kString &instUuid) const;
+
     void deleteAssets(const std::vector<fs::path> &paths);
     void reimportAsset(const kString &uuid);
     bool renameAsset(const fs::path &oldPath, const kString &newName);

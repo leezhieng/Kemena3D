@@ -8,6 +8,10 @@ uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform mat4 finalBonesMatrices[MAX_BONES];
 
+// Hardware instancing toggle. 0 = use the per-object modelMatrix uniform,
+// 1 = use the per-instance matrix stream below.
+uniform int  useInstancing;
+
 layout(location = 0) in vec3  vertexPosition;
 layout(location = 1) in vec3  vertexColor;
 layout(location = 2) in vec2  vertexTexCoord;
@@ -16,6 +20,10 @@ layout(location = 4) in vec3  vertexTangent;
 layout(location = 5) in vec3  vertexBitangent;
 layout(location = 6) in ivec4 boneIDs;
 layout(location = 7) in vec4  weights;
+// Per-instance model matrix at location 8 (..11). GL only guarantees 16 attribute
+// slots (0..15), so location 16 was invalid on some drivers and hid every
+// instanced mesh. See mesh_pbr.glsl.
+layout(location = 8) in mat4 instanceModelMatrix;
 
 out vec2 v_texCoord;
 
@@ -35,8 +43,9 @@ void main()
     }
     if (totalWeight == 0.0) totalPos = vec4(vertexPosition, 1.0);
 
+    mat4 model  = (useInstancing != 0) ? instanceModelMatrix : modelMatrix;
     v_texCoord  = vertexTexCoord;
-    gl_Position = projectionMatrix * viewMatrix * modelMatrix * totalPos;
+    gl_Position = projectionMatrix * viewMatrix * model * totalPos;
 }
 
 // --- FRAGMENT ---

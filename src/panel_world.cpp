@@ -475,14 +475,17 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             kVec2 imMouse = gui->getMousePos();
 
             bool doSculpt = isSculpting && ImGui::IsMouseDown(ImGuiMouseButton_Left);
-            // Mask paint: left=add, right=erase
-            bool doPaintLower = isPainting && ImGui::IsMouseDown(ImGuiMouseButton_Left);
-            bool doPaintRaise = isPainting && ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            // Mask paint: left=add (paint the selected channel), right=erase.
+            // The two were swapped here, so a left-click — the action the panel
+            // advertises as "paint" — actually erased the channel, and erasing a
+            // channel that was already empty changed nothing at all.
+            bool doPaintAdd = isPainting && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            bool doPaintErase = isPainting && ImGui::IsMouseDown(ImGuiMouseButton_Right);
             // Height paint: left=lower, right=raise
             bool doHeightLower = isHeightPaint && ImGui::IsMouseDown(ImGuiMouseButton_Left);
             bool doHeightRaise = isHeightPaint && ImGui::IsMouseDown(ImGuiMouseButton_Right);
 
-            if (doSculpt || doPaintLower || doPaintRaise || doHeightLower || doHeightRaise)
+            if (doSculpt || doPaintAdd || doPaintErase || doHeightLower || doHeightRaise)
             {
                 kVec3 origin, dir;
                 editorCamera->screenToRay(
@@ -584,8 +587,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                         {
                             if (doSculpt)
                                 manager->panelTerrain->sculptAtWorldPos(hitPos);
-                            else if (doPaintLower || doPaintRaise)
-                                manager->panelTerrain->paintSplatAtWorldPos(hitPos, doPaintLower);
+                            else if (doPaintAdd || doPaintErase)
+                                manager->panelTerrain->paintSplatAtWorldPos(hitPos, doPaintErase);
                             else if (doHeightLower || doHeightRaise)
                                 manager->panelTerrain->paintAtWorldPos(hitPos, doHeightLower);
 
@@ -598,7 +601,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                                 {
                                     if (doSculpt || doHeightLower || doHeightRaise)
                                         foundTile->updateMesh();
-                                    else if (doPaintLower || doPaintRaise)
+                                    else if (doPaintAdd || doPaintErase)
                                         foundTile->updateSplatTexture();
                                 }
                             }

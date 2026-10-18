@@ -14,6 +14,7 @@ cbuffer PerObject : register(b0)
     float4x4 viewMatrix;
     float4x4 projectionMatrix;
     float4x4 finalBonesMatrices[MAX_BONES];
+    int      useInstancing; // 0 = modelMatrix, 1 = per-instance matrix stream
 };
 
 struct VSInput
@@ -26,6 +27,10 @@ struct VSInput
     float3 bitangent : BINORMAL;
     int4   boneIDs   : BLENDINDICES;
     float4 weights   : BLENDWEIGHT;
+    float4 instanceRow0 : TEXCOORD14;
+    float4 instanceRow1 : TEXCOORD15;
+    float4 instanceRow2 : TEXCOORD16;
+    float4 instanceRow3 : TEXCOORD17;
 };
 
 struct VSOutput
@@ -50,9 +55,16 @@ VSOutput VSMain(VSInput input)
     }
     if (totalWeight == 0.0) totalPos = float4(input.position, 1.0);
 
+    float4x4 model = modelMatrix;
+    if (useInstancing != 0)
+    {
+        model = float4x4(input.instanceRow0, input.instanceRow1,
+                         input.instanceRow2, input.instanceRow3);
+    }
+
     VSOutput o;
     o.texCoord = input.texCoord;
-    o.position = mul(projectionMatrix, mul(viewMatrix, mul(modelMatrix, totalPos)));
+    o.position = mul(projectionMatrix, mul(viewMatrix, mul(model, totalPos)));
     return o;
 }
 

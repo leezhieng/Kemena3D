@@ -33,6 +33,21 @@ kString projectName = "New Game";
 kString developerName = "My Company";
 kString projectVersion = "0.0.1";
 
+// Raw SDL input is dispatched before ImGui::NewFrame(), so the editor's viewport
+// camera / picking handlers act on last frame's hover state. That let wheel
+// scrolling and clicks land "through" an open modal or popup (the terrain texture
+// picker scrolled the list *and* zoomed the scene, and a click inside it also hit
+// the viewport). These handlers must be skipped while ImGui owns the pointer.
+static bool imguiOwnsPointer(Manager *mgr)
+{
+    if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+        return true;
+    if (mgr != nullptr && mgr->panelTerrain != nullptr &&
+        mgr->panelTerrain->isTexturePickerOpen())
+        return true;
+    return ImGui::GetIO().WantTextInput;
+}
+
 int main()
 {
 	// Install the crash reporter before anything else so an early fault still
@@ -445,7 +460,7 @@ int main()
 			}
 			else if (eventType == K_EVENT_MOUSEBUTTONDOWN)
 			{
-				if (panelWorld->enabled && panelWorld->hovered)
+				if (panelWorld->enabled && panelWorld->hovered && !imguiOwnsPointer(manager))
 				{
 					// Screen-space cursor position (same coordinate space as
 					// panelPos). overViewport is true only when the cursor is
@@ -628,7 +643,7 @@ int main()
 				if (panning && event.getMouseButton() == K_MOUSEBUTTON_MIDDLE)
 					panning = false;
 
-				if (panelWorld->enabled && panelWorld->hovered)
+				if (panelWorld->enabled && panelWorld->hovered && !imguiOwnsPointer(manager))
 				{
 					if (event.getMouseButton() == K_MOUSEBUTTON_LEFT)
 					{
@@ -646,7 +661,7 @@ int main()
 			else if (eventType == K_EVENT_MOUSEMOTION)
 			{
 				// --- World panel camera motion ---
-				if (panelWorld->enabled && panelWorld->hovered)
+				if (panelWorld->enabled && panelWorld->hovered && !imguiOwnsPointer(manager))
 				{
 					if (dragging)
 					{
@@ -677,7 +692,8 @@ int main()
 				}
 
 				// --- Prefab panel camera motion ---
-				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera)
+				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera &&
+				    !imguiOwnsPointer(manager))
 				{
 					kCamera *pcam = manager->prefabCamera;
 					if (prefabDragging)
@@ -708,7 +724,7 @@ int main()
 			else if (eventType == K_EVENT_MOUSEWHEEL)
 			{
 				// --- World panel zoom ---
-				if (panelWorld->enabled && panelWorld->hovered)
+				if (panelWorld->enabled && panelWorld->hovered && !imguiOwnsPointer(manager))
 				{
 					cameraTweenActive = false;
 					float wheel = event.getMouseWheelY();
@@ -718,7 +734,8 @@ int main()
 				}
 
 				// --- Prefab panel zoom ---
-				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera)
+				if (panelPrefab->enabled && panelPrefab->hovered && manager->prefabCamera &&
+				    !imguiOwnsPointer(manager))
 				{
 					float wheel = event.getMouseWheelY();
 					manager->prefabOrbitDistance = std::max(0.1f, manager->prefabOrbitDistance - wheel * 2.0f);

@@ -1734,6 +1734,8 @@ kString Manager::checkAssetType(const fs::path &p)
         return "animation";
     else if (ext == ".ui")
         return "ui";
+    else if (ext == ".inst")
+        return "meshInstance"; // lightweight reference to a source mesh (hardware instancing)
 
     return "unknown"; // Unknown
 }
@@ -5199,6 +5201,97 @@ void Manager::createNewAnimationFromMesh(const kString &meshUuid, const fs::path
     selectProjectAssetByPath(filePath);
 }
 
+void Manager::createMeshInstance(const kString &meshUuid, const fs::path &meshPath)
+{
+    if (!projectOpened || meshUuid.empty())
+        return;
+
+    auto fit = fileMap.find(meshUuid);
+    if (fit == fileMap.end() || fit->second.type != "mesh")
+        return;
+
+    fs::path sourcePath = projectPath / "Assets" / fit->second.path;
+    if (!fs::exists(sourcePath))
+    {
+        std::cerr << "Create mesh instance failed — source does not exist: " << sourcePath << "\n";
+        return;
+    }
+
+    fs::path dir = meshPath.empty() ? sourcePath.parent_path() : meshPath.parent_path();
+    kString baseName = (meshPath.empty() ? sourcePath.stem() : meshPath.stem()).string();
+    fs::path filePath = dir / (baseName + ".inst");
+    int counter = 1;
+    while (fs::exists(filePath))
+        filePath = dir / (baseName + " " + std::to_string(counter++) + ".inst");
+
+    std::error_code ec;
+    kString relativeSource = fs::relative(sourcePath, projectPath / "Assets", ec).generic_string();
+
+    // The instance file is intentionally tiny: it links to the source mesh so
+    // every copy shares one imported mesh, thumbnail and set of import
+    // settings. Rendering can batch all .inst files that resolve to the same
+    // source UUID into one hardware-instanced draw.
+    nlohmann::json j;
+    j["type"]           = "meshInstance";
+    j["sourceMeshUuid"] = meshUuid;
+    j["sourceMeshFile"] = sourcePath.filename().string();
+    j["sourceMeshPath"] = ec ? sourcePath.filename().string() : relativeSource;
+
+    std::ofstream f(filePath);
+    if (!f.is_open())
+    {
+        std::cerr << "Failed to create mesh instance file: " << filePath << "\n";
+        return;
+    }
+    f << j.dump(4);
+    f.close();
+
+    checkAssetChange();
+    selectProjectAssetByPath(filePath);
+}
+
+kString Manager::getMeshInstanceSourceUuid(const kString &instUuid) const
+{
+    if (instUuid.empty())
+        return kString();
+
+    auto fit = fileMap.find(instUuid);
+    if (fit == fileMap.end() || fit->second.type != "meshInstance")
+        return kString();
+
+    fs::path instPath = projectPath / "Assets" / fit->second.path;
+    std::ifstream f(instPath);
+    if (!f.is_open())
+        return kString();
+
+    try
+    {
+        nlohmann::json j;
+        f >> j;
+
+        kString sourceUuid = j.value("sourceMeshUuid", kString());
+        if (!sourceUuid.empty())
+            return sourceUuid;
+
+        // Fallback for hand-authored files that only carry the source name.
+        kString sourceFile = j.value("sourceMeshFile", kString());
+        if (!sourceFile.empty())
+        {
+            for (const auto &[uuid, info] : fileMap)
+            {
+                if (info.type == "mesh" &&
+                    fs::path(info.path).filename().string() == sourceFile)
+                    return uuid;
+            }
+        }
+    }
+    catch (const std::exception &)
+    {
+    }
+
+    return kString();
+}
+
 // Carry an asset's UUID to its new path in assets.json after a move/rename.
 // Without this, checkAssetChange() (which keys the registry by path) treats the
 // file as brand new, assigns a fresh UUID, and orphans the old one — breaking
@@ -5933,6 +6026,25 @@ static kObject *resolveSubmeshByPath(kObject *node, const std::vector<int> &path
     return nullptr;
 }
 
+// Tags every mesh in an instance hierarchy with a stable hardware-instancing
+// key. The path is derived from child indices, so separately-loaded copies of
+// the same .inst asset produce identical keys and batch into one instanced
+// draw call per sub-mesh.
+static void assignInstanceKeysRec(kObject *node, const kString &sourceUuid,
+                                  const kString &path)
+{
+    if (!node)
+        return;
+
+    if (node->getType() == kNodeType::NODE_TYPE_MESH)
+        static_cast<kMesh *>(node)->setHardwareInstanced(true, sourceUuid + "|" + path);
+
+    std::vector<kObject *> children = node->getChildren();
+    for (size_t i = 0; i < children.size(); ++i)
+        assignInstanceKeysRec(children[i], sourceUuid,
+                              path + "/" + std::to_string(i));
+}
+
 static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world,
                                    kAssetManager *am, const fs::path &projectPath,
                                    kCamera *editorCamera, kObject *parent,
@@ -6117,6 +6229,13 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
         // uniquely in the hierarchy and can be selected (they remain excluded
         // from serialization via the import-child flag).
         assignImportChildUuidsRec(mesh);
+
+        // Instanced-copy roots carry a marker instead of serializing the whole
+        // imported sub-mesh tree. Re-tag the freshly loaded hierarchy so the
+        // renderer can batch it with every other copy of this source asset.
+        if (obj.value("hardware_instanced", false) && !refName.empty())
+            assignInstanceKeysRec(mesh, refName, "0");
+
         result = mesh;
     }
     else if (type == "light")
@@ -8382,19 +8501,41 @@ kObject *Manager::instantiateAssetFromUuid(const kString &assetUuid, const kVec3
     fs::path assetPath = projectPath / "Assets" / info.path;
     kAssetManager *am = getAssetManager();
 
-    if (info.type == "mesh")
+    if (info.type == "mesh" || info.type == "meshInstance")
     {
+        const bool isInstance = (info.type == "meshInstance");
+
+        // Instanced copies reference their source mesh's imported geometry; the
+        // scene node itself only carries a transform and the instancing key.
+        kString geometryUuid = assetUuid;
+        if (isInstance)
+        {
+            geometryUuid = getMeshInstanceSourceUuid(assetUuid);
+            auto srcIt = fileMap.find(geometryUuid);
+            if (srcIt == fileMap.end() || srcIt->second.type != "mesh")
+            {
+                std::cerr << "Instantiate: mesh instance '" << info.path
+                          << "' has no valid source mesh.\n";
+                return nullptr;
+            }
+        }
+
         // Imported mesh lives under Library/ImportedAssets/<uuid>.glb.
-        fs::path glb = projectPath / "Library" / "ImportedAssets" / (assetUuid + ".glb");
+        fs::path glb = projectPath / "Library" / "ImportedAssets" / (geometryUuid + ".glb");
         kMesh *mesh = nullptr;
         if (fs::exists(glb))
             mesh = am->loadMesh(glb.string());
         if (!mesh)
             mesh = new kMesh();
-        mesh->setRefName(assetUuid); // remember source asset for save / re-import reload
+        mesh->setRefName(geometryUuid); // remember source asset for save / re-import reload
         if (am)
             applyDefaultMaterial(mesh, am);
         assignImportChildUuidsRec(mesh);
+
+        // Tag the imported hierarchy so every copy of this .inst asset shares
+        // the same per-sub-mesh instancing keys.
+        if (isInstance)
+            assignInstanceKeysRec(mesh, geometryUuid, "0");
 
         mesh->setName(fs::path(info.path).stem().string());
         scene->addMesh(mesh);

@@ -150,14 +150,20 @@ uniform float     u_BlendSharpness;    // Blend edge sharpness (0.5 - 4.0)
 // projection on cliffs, and procedural noise variegation.
 // @var float     u_TileWorldSize       Tile World Size
 // @var float     u_Stochastic          Stochastic Anti-Tiling
+// @var float     u_Triplanar           Triplanar (enable)
 // @var float     u_TriplanarStrength   Triplanar Cliffs
 // @var float     u_TriplanarSharpness  Triplanar Sharpness
+// @var float     u_RotateUV            Rotate UV (enable)
+// @var float     u_UVRotation          UV Rotation
 // @var float     u_NoiseVariegation    Noise Variegation
 // @var float     u_NoiseScale          Noise Scale
 uniform float u_TileWorldSize;          // World size of one tile (for world-space UVs)
 uniform float u_Stochastic;             // 0 = off, 1 = full per-repeat rotation
+uniform float u_Triplanar;              // 0 = top-down projection only, 1 = blend side planes on cliffs
 uniform float u_TriplanarStrength;      // 0 = flat only, 1 = full triplanar on cliffs
 uniform float u_TriplanarSharpness;     // Slope falloff exponent for the triplanar blend
+uniform float u_RotateUV;               // 0 = off, 1 = rotate the world-space UVs
+uniform float u_UVRotation;             // UV rotation in radians (used when u_RotateUV is 1)
 uniform float u_NoiseVariegation;       // Amount of procedural noise tint variation
 uniform float u_NoiseScale;             // Noise frequency (1 / world units)
 // @var float     u_MaskedBlend         Masked Weight Blending
@@ -172,8 +178,8 @@ uniform float u_MaskedBlend;            // 0 = luminance height blend, 1 = albed
 uniform float u_UseArrays;
 // @var float u_Tiling[16]
 uniform float u_Tiling[16];
-// Per-layer splat-mask channel (R/G/B/A = 0..3), written from the Terrain panel.
-// The editor resolves "auto" to the layer index before uploading.
+// Per-layer mask source: the layer index (0..15) whose painted weight masks this
+// layer, or -1 for "auto" (the layer's own weight). Written by the Terrain panel.
 uniform float u_MaskChannel[16];
 uniform sampler2D u_WeightMap0;
 uniform sampler2D u_WeightMap1;
@@ -408,25 +414,39 @@ vec2 stochasticRotate(vec2 uv, float seed)
     return cell + 0.5 + vec2(c * d.x - s * d.y, s * d.x + c * d.y);
 }
 
+// Optional global UV rotation. Rotating the *world* XZ plane keeps neighbouring
+// tiles aligned (they all use the same plane), which breaks the axis-aligned
+// repeat pattern without reintroducing tile seams.
+vec2 rotateWorldUV(vec2 p)
+{
+    if (u_RotateUV <= 0.5)
+        return p;
+    float c = cos(u_UVRotation);
+    float s = sin(u_UVRotation);
+    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
 // World-space UV: dividing the absolute world XZ by the tile size makes UVs
 // continue across tile boundaries instead of restarting at 0..1 per tile.
 vec2 terrainWorldUV()
 {
     float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
-    return v_worldPos.xz / tile;
+    return rotateWorldUV(v_worldPos.xz) / tile;
 }
 
-// Sample one layer's albedo with stochastic anti-tiling on the dominant (top)
-// projection and a triplanar blend toward the side planes on steep slopes.
-vec4 sampleLayerAlbedo(int i, vec3 N, float triW)
+// Sample one legacy albedo slot. The texture is passed in by value: GLSL 330 does
+// NOT allow indexing a sampler array with a variable (`u_AlbedoMap[i]`), and that
+// made the whole fragment shader fail to compile — which corrupted the entire
+// viewport, not just the terrain. Call sites pass a literal index instead.
+vec4 sampleAlbedoSlot(sampler2D tex, int i, vec3 N, float triW)
 {
     vec2 uvTop = terrainWorldUV() * u_Tiling[i];
 
-    vec4 top = texture(u_AlbedoMap[i], uvTop);
+    vec4 top = texture(tex, uvTop);
     if (u_Stochastic > 0.0)
     {
         vec2 ruv = stochasticRotate(uvTop, float(i) * 31.7);
-        top = mix(top, texture(u_AlbedoMap[i], ruv),
+        top = mix(top, texture(tex, ruv),
                   cellEdgeMask(uvTop) * clamp(u_Stochastic, 0.0, 1.0));
     }
 
@@ -434,13 +454,23 @@ vec4 sampleLayerAlbedo(int i, vec3 N, float triW)
         return top;
 
     float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
-    vec2 uvX = (v_worldPos.zy / tile) * u_Tiling[i];
-    vec2 uvZ = (v_worldPos.xy / tile) * u_Tiling[i];
-    vec4 side = texture(u_AlbedoMap[i], uvX) * abs(N.x) +
-                texture(u_AlbedoMap[i], uvZ) * abs(N.z);
+    vec2 uvX = (rotateWorldUV(v_worldPos.zy) / tile) * u_Tiling[i];
+    vec2 uvZ = (rotateWorldUV(v_worldPos.xy) / tile) * u_Tiling[i];
+    vec4 side = texture(tex, uvX) * abs(N.x) +
+                texture(tex, uvZ) * abs(N.z);
     side /= max(abs(N.x) + abs(N.z), 1e-4);
 
     return mix(top, side, clamp(triW, 0.0, 1.0));
+}
+
+// Sample one layer's albedo with stochastic anti-tiling on the dominant (top)
+// projection and a triplanar blend toward the side planes on steep slopes.
+vec4 sampleLayerAlbedo(int i, vec3 N, float triW)
+{
+    if (i <= 0) return sampleAlbedoSlot(u_AlbedoMap[0], 0, N, triW);
+    if (i == 1) return sampleAlbedoSlot(u_AlbedoMap[1], 1, N, triW);
+    if (i == 2) return sampleAlbedoSlot(u_AlbedoMap[2], 2, N, triW);
+    return sampleAlbedoSlot(u_AlbedoMap[3], 3, N, triW);
 }
 
 // Weight of layer l (0..15) from the four packed RGBA weight-map textures.
@@ -467,8 +497,8 @@ vec4 sampleLayerAlbedoArray(int i, vec3 N, float triW)
         return top;
 
     float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
-    vec2 uvX = (v_worldPos.zy / tile) * u_Tiling[i];
-    vec2 uvZ = (v_worldPos.xy / tile) * u_Tiling[i];
+    vec2 uvX = (rotateWorldUV(v_worldPos.zy) / tile) * u_Tiling[i];
+    vec2 uvZ = (rotateWorldUV(v_worldPos.xy) / tile) * u_Tiling[i];
     vec4 side = texture(u_AlbedoArray, vec3(uvX, float(i))) * abs(N.x) +
                 texture(u_AlbedoArray, vec3(uvZ, float(i))) * abs(N.z);
     side /= max(abs(N.x) + abs(N.z), 1e-4);
@@ -486,12 +516,20 @@ void main()
     vec3 N = computeDisplacedNormal(v_worldPos);
 
     // Triplanar weight — grows as the surface tilts away from horizontal.
+    // Opt-in: when disabled the projection stays purely top-down, so the strength /
+    // sharpness controls have an unambiguous on/off switch.
     float slope = clamp(1.0 - abs(N.y), 0.0, 1.0);
-    float triW  = pow(slope, max(u_TriplanarSharpness, 1.0)) *
-                  clamp(u_TriplanarStrength, 0.0, 1.0);
+    float triW  = 0.0;
+    if (u_Triplanar > 0.5)
+        triW = pow(slope, max(u_TriplanarSharpness, 1.0)) *
+               clamp(u_TriplanarStrength, 0.0, 1.0);
 
     // ----- Sample splat map -------------------------------------------------
-    vec4 splat = texture(u_SplatMap, v_texCoord);
+    // Only the legacy path uses the RGBA control map; the array path leaves
+    // u_SplatMap unbound (its samplers are the packed weight maps), and sampling
+    // an unbound sampler would read whatever is bound to unit 0.
+    bool arrayPath = (u_UseArrays > 0.5);
+    vec4 splat = arrayPath ? vec4(1.0) : texture(u_SplatMap, v_texCoord);
 
     // ----- Accumulate blended PBR inputs ------------------------------------
     vec3 albedo    = vec3(0.0);
@@ -504,13 +542,24 @@ void main()
     // ----- Per-layer sampling -----------------------------------------------
     // Array path (u_UseArrays): 16 layers from four weight maps + texture arrays.
     // Legacy path: 4 layers from the RGBA splat map + per-layer sampler2D maps.
-    int layerCount = (u_UseArrays > 0.5) ? 16 : 4;
+    int layerCount = arrayPath ? 16 : 4;
     for (int i = 0; i < layerCount; i++)
     {
-        // The layer's mask is the selected RGBA channel of the splat map (which is
-        // weight map 0 in the array path, so both paths agree for layers 0..3).
-        int mc = int(clamp(u_MaskChannel[i], 0.0, 3.0));
-        float weight = splat[mc];
+        // Weight of this layer.
+        //  * Array path: each layer owns a weight inside the four packed RGBA
+        //    weight maps, so layer i reads weight map i/4, component i%4. A
+        //    u_MaskChannel[i] >= 0 redirects the layer onto that layer's weight
+        //    instead (mask-by-layer); -1 means "auto" (its own weight). Painting a
+        //    layer changes exactly this weight — reading only u_SplatMap (= weight
+        //    map 0) is why painting layers 4..15 used to have no visible effect.
+        //  * Legacy path: all four layers share the u_SplatMap RGBA control map,
+        //    so layer i falls back to channel min(i, 3).
+        int mc = int(u_MaskChannel[i]);
+        float weight;
+        if (arrayPath)
+            weight = (mc < 0) ? getWeightLayer(i) : getWeightLayer(clamp(mc, 0, 15));
+        else
+            weight = splat[clamp(mc < 0 ? i : mc, 0, 3)];
         if (weight <= 0.001)
             continue;
 
@@ -521,7 +570,7 @@ void main()
         vec3  normSample;
         float rSample, mSample, aoSample, maskVal;
 
-        if (u_UseArrays > 0.5)
+        if (arrayPath)
         {
             a          = sampleLayerAlbedoArray(i, N, triW);
             normSample = texture(u_NormalArray, vec3(uv, float(i))).xyz;
@@ -531,11 +580,15 @@ void main()
         }
         else
         {
+            // Only the splat control map and the four albedo maps are bound in the
+            // legacy path (the weight maps / arrays claim the rest of the engine's
+            // eight material texture units), so the remaining PBR inputs come from
+            // neutral constants instead of samplers that would read unit 0.
             a          = sampleLayerAlbedo(i, N, triW);
-            normSample = texture(u_NormalMap[i], uv).rgb;
-            rSample    = texture(u_RoughnessMap[i], uv).r;
-            mSample    = texture(u_MetalnessMap[i], uv).r;
-            aoSample   = texture(u_AOMap[i], uv).r;
+            normSample = vec3(0.5, 0.5, 1.0);
+            rSample    = 0.5;
+            mSample    = 0.0;
+            aoSample   = 1.0;
             maskVal    = a.a;
         }
 

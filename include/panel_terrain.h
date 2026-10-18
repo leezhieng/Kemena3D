@@ -42,7 +42,9 @@ public:
     struct PaintState
     {
         bool active = false;
-        int channel = -1;
+        /// Target material layer (0-based). Starts on the first layer so the brush
+        /// is always aimed at a valid layer.
+        int channel = 0;
         bool heightActive = false;
         float strength = 0.5f;
         float fade = 0.3f;
@@ -59,6 +61,12 @@ public:
     /// @brief When true the selected tile's physics collider is drawn as a
     ///        wireframe in the viewport (Terrain > Terrain Physics).
     bool showCollider = false;
+
+    /// @brief True while the layer texture picker is on screen.
+    ///
+    /// The editor's raw SDL camera/picking handlers run before ImGui refreshes its
+    /// capture state, so they consult this flag to avoid acting through the picker.
+    bool isTexturePickerOpen() const { return m_texPickOpen; }
 
     PanelTerrain(kGuiManager *setGuiManager, Manager *setManager);
 
@@ -123,6 +131,18 @@ public:
     void paintSplatAtWorldPos(const kVec3 &worldPos, bool erase);
     void rebuildPaintedSplatTile();
 
+    /**
+     * @brief Fills one material layer's whole weight map with @p value.
+     *
+     * Recorded as a single undoable step and written to the tile's owned payload,
+     * so "Fill Layer" (0 = black) and "Clear Layer" (255 = white) behave like one
+     * giant brush stroke.
+     * @param tile  Tile to edit.
+     * @param layer Target material layer (0..kMaxTerrainLayers-1).
+     * @param value Weight written to every sample (0..255).
+     */
+    void fillLayerWeight(kTerrain *tile, int layer, unsigned char value);
+
     // --- Owned terrain assets ---
 
     /**
@@ -174,6 +194,20 @@ public:
      * again. Recorded as one undoable step for the base field.
      */
     void clearSelectedTileHeight(kTerrain *tile);
+
+    /**
+     * @brief Removes one material layer from @p tile.
+     *
+     * The per-sample weight map is packed by layer index, so deleting a layer
+     * shifts every higher layer's weights down into the freed slot (otherwise the
+     * painted masks would end up on the wrong materials). Mask-by-layer references
+     * are renumbered, the texture arrays/uniforms are repacked, the mesh is
+     * rebuilt and the tile's owned payload is written. Like adding a layer, this
+     * is not part of the undo history.
+     * @param tile  Tile to edit.
+     * @param index Layer index to delete.
+     */
+    void removeTerrainLayer(kTerrain *tile, int index);
 
     /**
      * @brief Appends the wireframe edges of @p tile's physics collider to @p out.
@@ -311,18 +345,28 @@ private:
     int m_texPickLayer = -1;           ///< Layer index within that tile.
     int m_texPickSlot = 0;             ///< 0 = Albedo, 1 = Normal, 2 = ORM.
     kString m_texPickSelected;         ///< Asset UUID chosen in the picker.
-    bool m_texPickOpen = false;        ///< Set to open the picker popup next frame.
+    bool m_texPickOpen = false;        ///< True while the picker window is shown.
     char m_texPickSearch[128] = "";
 
-    /// @brief Draws the "Select Terrain Texture" modal for the active layer slot.
+    /**
+     * @brief Draws the "Select Terrain Texture" picker window.
+     *
+     * Deliberately a self-managed top-level window (with its own full-viewport
+     * input blocker) instead of an ImGui popup: popups were being dismissed by
+     * unrelated clicks and by the raw input the viewport consumes.
+     */
     void drawTexturePickerPopup();
 
     // --- Terrain material parameter staging (committed by the Apply button) ---
+    // Tiling is deliberately NOT here: it is per material layer
+    // (kTerrainLayer::tiling) and edited in each layer's tree node.
     struct MaterialSettings
     {
-        float tiling = 16.0f;
         float blendSharpness = 1.0f;
-        float stochastic = 1.0f;
+        bool stochastic = true;
+        bool triplanar = true;
+        bool rotateUV = false;
+        float uvRotation = 0.0f; ///< Degrees.
         float triplanarStrength = 0.75f;
         float triplanarSharpness = 3.0f;
         float noiseVariegation = 0.25f;
@@ -388,6 +432,10 @@ private:
     kString m_messageBoxText;
     /// Set to open the message popup on the next frame.
     bool m_messageBoxPending = false;
+
+    /// Re-entrancy guard: rebuilding one tile also refreshes its neighbours so the
+    /// stitched seams stay closed, and a neighbour rebuild must not bounce back.
+    bool m_rebuildingMesh = false;
 };
 
 #endif // PANEL_TERRAIN_H

@@ -16,6 +16,7 @@ cbuffer PerObject : register(b0)
     float4x4 normalMatrix;
     float4x4 lightSpaceMatrix;
     float4x4 finalBonesMatrices[MAX_BONES];
+    int      useInstancing; // 0 = modelMatrix, 1 = per-instance matrix stream
 };
 
 struct VSInput
@@ -28,6 +29,10 @@ struct VSInput
     float3 bitangent : BINORMAL;
     int4   boneIDs   : BLENDINDICES;
     float4 weights   : BLENDWEIGHT;
+    float4 instanceRow0 : TEXCOORD14;
+    float4 instanceRow1 : TEXCOORD15;
+    float4 instanceRow2 : TEXCOORD16;
+    float4 instanceRow3 : TEXCOORD17;
 };
 
 struct VSOutput
@@ -102,8 +107,15 @@ VSOutput VSMain(VSInput input)
     float3 useT    = anim ? totalTangent   : input.tangent;
     float3 useB    = anim ? totalBitangent : input.bitangent;
 
-    float3x3 nm3      = (float3x3)normalMatrix;
-    float3   worldPos = mul(modelMatrix, totalPos).xyz;
+    float4x4 model = modelMatrix;
+    float3x3 nm3   = (float3x3)normalMatrix;
+    if (useInstancing != 0)
+    {
+        model = float4x4(input.instanceRow0, input.instanceRow1,
+                         input.instanceRow2, input.instanceRow3);
+        nm3   = transpose(inverse3x3((float3x3)model));
+    }
+    float3   worldPos = mul(model, totalPos).xyz;
 
     VSOutput o;
     o.worldPos      = worldPos;

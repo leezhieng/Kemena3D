@@ -10,6 +10,10 @@ uniform mat4 normalMatrix;
 uniform mat4 lightSpaceMatrix;
 uniform mat4 finalBonesMatrices[MAX_BONES];
 
+// Hardware instancing toggle. 0 = use the per-object modelMatrix uniform,
+// 1 = use the per-instance matrix stream below.
+uniform int  useInstancing;
+
 layout(location = 0) in vec3  vertexPosition;
 layout(location = 1) in vec3  vertexColor;
 layout(location = 2) in vec2  vertexTexCoord;
@@ -18,6 +22,11 @@ layout(location = 4) in vec3  vertexTangent;
 layout(location = 5) in vec3  vertexBitangent;
 layout(location = 6) in ivec4 boneIDs;
 layout(location = 7) in vec4  weights;
+// Per-instance model matrix. Location 8 (..11) — NOT 16: OpenGL only guarantees
+// 16 attribute slots (0..15), so enabling location 16 fails on drivers that
+// report exactly 16 and every instanced mesh collapses to the generic attribute
+// default (i.e. disappears). The mesh shaders use 0..7, so 8..11 is free here.
+layout(location = 8) in mat4 instanceModelMatrix;
 
 out vec3 v_worldPos;
 out vec3 v_color;
@@ -68,8 +77,10 @@ void main()
     vec3 useT    = anim ? totalTangent   : vertexTangent;
     vec3 useB    = anim ? totalBitangent : vertexBitangent;
 
-    mat3 nm3     = mat3(normalMatrix);
-    vec3 worldPos = vec3(modelMatrix * totalPos);
+    mat4 model    = (useInstancing != 0) ? instanceModelMatrix : modelMatrix;
+    mat3 nm3      = (useInstancing != 0) ? transpose(inverse(mat3(model)))
+                                         : mat3(normalMatrix);
+    vec3 worldPos = vec3(model * totalPos);
 
     v_worldPos      = worldPos;
     v_color         = vertexColor;

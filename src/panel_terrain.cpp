@@ -243,10 +243,11 @@ void PanelTerrain::rebuildSculptedTile()
     if (!sculpt.needsRebuild || !sculpt.affectedTile)
         return;
 
-    // Use fast update instead of full rebuild to preserve the material.
-    // updateMesh() updates vertex positions, normals, GPU buffers, and AABB
-    // without destroying/recreating the mesh (which would delete the material).
-    sculpt.affectedTile->updateMesh();
+    // Full rebuild (rather than the cheap updateMesh used during the stroke) so the
+    // boundary samples are re-stitched against the neighbours: sculpting close to a
+    // tile border otherwise left a visible crack. rebuildMesh() preserves the
+    // tile's material, and rebuildTileMesh() keeps the selection valid.
+    rebuildTileMesh(sculpt.affectedTile);
     if (manager && manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     sculpt.needsRebuild = false;
@@ -348,8 +349,9 @@ void PanelTerrain::rebuildPaintedTile()
     if (!paint.needsRebuild || !paint.affectedTile)
         return;
 
-    // Use updateMesh to preserve material (same reason as sculpting)
-    paint.affectedTile->updateMesh();
+    // Height painting moves geometry too, so rebuild + re-stitch the seams (see
+    // rebuildSculptedTile()).
+    rebuildTileMesh(paint.affectedTile);
     if (manager && manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     paint.needsRebuild = false;
@@ -489,6 +491,27 @@ void PanelTerrain::rebuildPaintedSplatTile()
     paint.needsRebuild = false;
 
     // Mouse-up: record the splat-paint stroke as one undoable command.
+    commitTerrainEdit();
+}
+
+void PanelTerrain::fillLayerWeight(kTerrain *tile, int layer, unsigned char value)
+{
+    if (!tile || layer < 0 || layer >= kTerrain::kMaxTerrainLayers)
+        return;
+
+    // Snapshot the weight map so the whole fill is one undo step.
+    beginTerrainEdit(tile, false, true);
+
+    const int res = tile->getHeightRes();
+    for (int z = 0; z < res; ++z)
+        for (int x = 0; x < res; ++x)
+            tile->setWeight(x, z, layer, value);
+
+    tile->updateSplatTexture();
+    tile->saveOwnedAssets();
+    if (manager)
+        manager->projectSaved = false;
+
     commitTerrainEdit();
 }
 
@@ -1242,12 +1265,130 @@ void PanelTerrain::clearSelectedTileHeight(kTerrain *tile)
     applyTileHeight(tile);
 }
 
+void PanelTerrain::removeTerrainLayer(kTerrain *tile, int index)
+{
+    if (!tile)
+        return;
+
+    auto &layers = tile->getLayers();
+    if (index < 0 || index >= static_cast<int>(layers.size()))
+        return;
+
+    const int L = kTerrain::kMaxTerrainLayers;
+
+    // Weights are packed per layer, so every layer above the removed one must move
+    // down a slot or the painted masks would stay behind on the wrong material.
+    // Layer add/remove is not part of the undo history (the undo command stores
+    // height/weight blocks only), so no edit snapshot is taken here.
+    const int res = tile->getHeightRes();
+    for (int z = 0; z < res; ++z)
+    {
+        for (int x = 0; x < res; ++x)
+        {
+            for (int c = index; c < L - 1; ++c)
+                tile->setWeight(x, z, c, tile->getWeight(x, z, c + 1));
+            tile->setWeight(x, z, L - 1, 0);
+        }
+    }
+    tile->updateSplatTexture();
+
+    // "Mask by layer" references follow their layer.
+    for (auto &layer : layers)
+    {
+        if (layer.maskChannel > index)
+            --layer.maskChannel;
+        else if (layer.maskChannel == index)
+            layer.maskChannel = -1; // the mask layer is gone -> fall back to auto
+    }
+
+    layers.erase(layers.begin() + index);
+
+    // In-progress per-layer edit buffers are keyed by index.
+    clearLayerEditBuffers(tile);
+
+    // Repack texture slots / uniforms (layer indices shifted) and refresh the mesh.
+    tile->syncLayerTiling();
+    tile->syncLayerMaskChannels();
+    tile->rebuildLayerArrays();
+    rebuildTileMesh(tile);
+    tile->saveOwnedAssets();
+
+    // Keep the paint target on a layer that still exists.
+    if (paint.channel >= static_cast<int>(layers.size()))
+        paint.channel = static_cast<int>(layers.size()) - 1;
+    if (paint.channel < 0)
+        paint.channel = 0;
+
+    if (manager)
+        manager->projectSaved = false;
+}
+
 void PanelTerrain::appendTileColliderLines(const kTerrain *tile,
                                            std::vector<kVec3> &out) const
 {
     if (!tile)
         return;
 
+    kMesh *mesh = tile->getMesh();
+    const kPhysicsObjectDesc *desc =
+        (mesh && mesh->getHasPhysicsDesc()) ? &mesh->getPhysicsDesc() : nullptr;
+
+    // Prefer the generated collider's own resampled grid: that is the grid Jolt
+    // fills the HeightFieldShape with, so the wireframe then reflects the
+    // resolution the Physics slider actually produced. Drawing a fixed decimation
+    // of the height grid instead is why changing the resolution looked like it did
+    // nothing at all.
+    if (desc && desc->shape.type == kPhysicsShapeType::HeightField &&
+        desc->shape.heightSampleCount >= 2 &&
+        desc->shape.heightSamples.size() ==
+            static_cast<size_t>(desc->shape.heightSampleCount) *
+                static_cast<size_t>(desc->shape.heightSampleCount))
+    {
+        const int n = desc->shape.heightSampleCount;
+        const kVec3 scale = desc->shape.heightScale;
+        const kVec3 offset = desc->shape.offset;
+        const kVec3 origin = mesh->getGlobalPosition();
+
+        auto colliderPoint = [&](int x, int z)
+        {
+            const float h = desc->shape.heightSamples[static_cast<size_t>(z) * n + x];
+            return origin + kVec3(offset.x + static_cast<float>(x) * scale.x,
+                                  offset.y + h * scale.y,
+                                  offset.z + static_cast<float>(z) * scale.z);
+        };
+
+        // Decimation must never make a COARSER collider draw more lines than a
+        // finer one (the old n/40 stride drew all 79 samples of a 79-sample
+        // collider but only every 12th of a 512-sample one). The cell budget grows
+        // slowly with the resolution instead, so density is monotonic and a
+        // 512-sample collider stays at ~64x64 debug cells.
+        const int maxCells = (std::min)(64, 16 + n / 8);
+        const int stride = (std::max)(1, (n + maxCells - 1) / maxCells);
+        for (int z = 0; z < n; z += stride)
+        {
+            for (int x = 0; x < n; x += stride)
+            {
+                const kVec3 a = colliderPoint(x, z);
+                const int nx = (std::min)(x + stride, n - 1);
+                const int nz = (std::min)(z + stride, n - 1);
+                if (nx != x)
+                {
+                    out.push_back(a);
+                    out.push_back(colliderPoint(nx, z));
+                }
+                if (nz != z)
+                {
+                    out.push_back(a);
+                    out.push_back(colliderPoint(x, nz));
+                }
+            }
+        }
+
+        if (!out.empty())
+            return;
+    }
+
+    // Fallback: no collider samples yet — outline the height grid itself.
     const int res = tile->getHeightRes();
     const float *heights = tile->getHeightData();
     if (!heights || res < 2)
@@ -1255,9 +1396,8 @@ void PanelTerrain::appendTileColliderLines(const kTerrain *tile,
 
     const int last = res - 1;
 
-    // The collider mirrors the tile's height grid. Decimate it so a
-    // full-resolution tile (hundreds of samples per side) does not flood the
-    // debug-line buffer every frame.
+    // Decimate it so a full-resolution tile (hundreds of samples per side) does not
+    // flood the debug-line buffer every frame.
     const int stride = (std::max)(1, res / 32);
 
     auto pointAt = [&](int x, int z)
@@ -1356,41 +1496,81 @@ void PanelTerrain::rebuildTileMesh(kTerrain *tile)
     tile->rebuildMesh(true);
 
     kMesh *newMesh = tile->getMesh();
-    if (!manager || !oldMesh || !newMesh || oldMesh == newMesh)
-        return;
+    if (manager && oldMesh && newMesh && oldMesh != newMesh)
+    {
+        // kTerrain::rebuildMesh() deleted the previous kMesh, so any raw pointer the
+        // editor still holds to it (the active selection) now dangles. Re-point the
+        // selection at the rebuilt mesh; its UUID is preserved, so the uuid lists
+        // the Hierarchy uses stay valid.
+        kObject *&activeSelection = manager->getActiveSelectedObject();
+        if (activeSelection == oldMesh)
+            activeSelection = newMesh;
+        if (manager->selectedObject == oldMesh)
+            manager->selectedObject = newMesh;
+    }
 
-    // kTerrain::rebuildMesh() deleted the previous kMesh, so any raw pointer the
-    // editor still holds to it (the active selection) now dangles. Re-point the
-    // selection at the rebuilt mesh; its UUID is preserved, so the uuid lists the
-    // Hierarchy uses stay valid.
-    kObject *&activeSelection = manager->getActiveSelectedObject();
-    if (activeSelection == oldMesh)
-        activeSelection = newMesh;
-    if (manager->selectedObject == oldMesh)
-        manager->selectedObject = newMesh;
+    // rebuildMesh(true) re-stitched this tile's boundary against the neighbours, so
+    // their meshes now hold stale edge samples. Refresh them to keep the seam
+    // closed; the flag stops rebuildNeighborMeshes() -> rebuildTileMesh() from
+    // recursing back into this tile.
+    if (!m_rebuildingMesh)
+    {
+        m_rebuildingMesh = true;
+        rebuildNeighborMeshes(tile->getGridX(), tile->getGridZ());
+        m_rebuildingMesh = false;
+    }
 }
 
 void PanelTerrain::drawTexturePickerPopup()
 {
-    if (m_texPickOpen)
-    {
-        m_texPickSelected.clear();
-        m_texPickSearch[0] = '\0';
-        ImGui::OpenPopup("Select Terrain Texture##texpick");
-        m_texPickOpen = false;
-    }
-
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(420.0f, 460.0f), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Select Terrain Texture##texpick", nullptr))
+    if (!m_texPickOpen)
         return;
 
-    if (ImGui::IsWindowAppearing())
-        ImGui::SetKeyboardFocusHere();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##tertexsearch", "Search...", m_texPickSearch,
-                             sizeof(m_texPickSearch));
+    // The picker is a self-managed top-level window instead of an ImGui popup.
+    // A popup was dismissed by clicks that did not target it (scrollbar drags,
+    // the empty area around the grid) and by the raw SDL input the viewport
+    // consumes before ImGui refreshes its capture state. Here only Select,
+    // Cancel or the close button dismiss it.
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+
+    // Full-viewport blocker: a click anywhere outside the picker lands on this
+    // window instead of reaching the editor behind it. NoBringToFrontOnFocus keeps
+    // it underneath the picker even when it is clicked.
+    {
+        ImGui::SetNextWindowPos(vp->Pos);
+        ImGui::SetNextWindowSize(vp->Size);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::Begin("##terrainTexBlocker", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(440.0f, 480.0f), ImGuiCond_Appearing);
+
+    bool stayOpen = true;
+    bool doApply = false;
+
+    if (ImGui::Begin("Select Terrain Texture###terrainTexPicker", &stayOpen,
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoSavedSettings))
+    {
+        if (ImGui::IsWindowAppearing())
+        {
+            // Keep the picker above the blocker and focus the search field.
+            ImGui::SetWindowFocus();
+            ImGui::SetKeyboardFocusHere();
+        }
+
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##tertexsearch", "Search...", m_texPickSearch,
+                                 sizeof(m_texPickSearch));
 
     std::string filter = m_texPickSearch;
     std::transform(filter.begin(), filter.end(), filter.begin(),
@@ -1410,7 +1590,6 @@ void PanelTerrain::drawTexturePickerPopup()
                   [](const auto &a, const auto &b) { return a.first < b.first; });
     }
 
-    bool doApply = false;
     const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y;
     ImGui::BeginChild("##tertexgrid", ImVec2(0.0f, -footer), true);
     {
@@ -1488,11 +1667,18 @@ void PanelTerrain::drawTexturePickerPopup()
     }
     ImGui::EndChild();
 
-    if (ImGui::Button("Select", ImVec2(120.0f, 0.0f)))
-        doApply = true;
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-        ImGui::CloseCurrentPopup();
+        if (ImGui::Button("Select", ImVec2(120.0f, 0.0f)))
+            doApply = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+            stayOpen = false;
+
+        // Esc dismisses the picker, matching a modal.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            stayOpen = false;
+    }
+    ImGui::End();
 
     if (doApply)
     {
@@ -1524,10 +1710,15 @@ void PanelTerrain::drawTexturePickerPopup()
                 manager->projectSaved = false;
             }
         }
-        ImGui::CloseCurrentPopup();
+        stayOpen = false;
     }
 
-    ImGui::EndPopup();
+    if (!stayOpen)
+    {
+        m_texPickOpen = false;
+        m_texPickTile = nullptr;
+        m_texPickLayer = -1;
+    }
 }
 
 kTerrain *PanelTerrain::getSelectedTerrainTile(kTerrainManager *terrainMgr)
@@ -1998,68 +2189,65 @@ void PanelTerrain::draw(bool &isOpened)
 
         if (ImGui::BeginTabItem("Painting"))
         {
-            // Height paint is the painting "mode", so it leads the tab.
+            ImGui::Spacing();
+
+            // Splat (mask) painting: arms the brush, which writes the weight of the
+            // layer selected right below.
             {
-                bool paintModeActive = paint.heightActive;
-                if (ImGui::Checkbox("Paint Mode Active", &paintModeActive))
+                bool splatModeActive = paint.active;
+                if (ImGui::Checkbox("Splat Paint Mode Active##splat", &splatModeActive))
                 {
-                    paint.heightActive = paintModeActive;
-                    if (paintModeActive)
+                    paint.active = splatModeActive;
+                    if (splatModeActive)
                     {
                         sculpt.active = false;
-                        paint.active = false;
+                        paint.heightActive = false;
+                        if (paint.channel < 0)
+                            paint.channel = 0;
                     }
                 }
             }
 
-            if (paint.heightActive)
-                ImGui::TextDisabled("Left click lowers, right click raises the height.");
+            // Paint target: the material layer whose painted weight the brush
+            // writes. 0-based, matching the Material Layers list, and clamped so the
+            // brush always starts on a valid layer.
+            if (paint.channel < 0)
+                paint.channel = 0;
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::SliderInt("Layer##paint", &paint.channel,
+                             0, kTerrain::kMaxTerrainLayers - 1, "Layer %d");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Material layer whose weight this brush paints.");
 
-            ImGui::Spacing();
-            ImGui::Text("Splat Mask (R/G/B/A):");
-    static bool splatSelected[4] = {false, false, false, false};
-    ImU32 splatColors[4] = {
-        IM_COL32(255, 60, 60, 255),
-        IM_COL32(60, 255, 60, 255),
-        IM_COL32(60, 60, 255, 255),
-        IM_COL32(200, 200, 200, 255),
-    };
-    const char *splatLabels[4] = {"R", "G", "B", "A"};
-
-    for (int i = 0; i < 4; ++i)
-    {
-        if (i > 0)
-            ImGui::SameLine();
-        if (ImGui::ColorButton(splatLabels[i], ImVec4(((splatColors[i] >> IM_COL32_R_SHIFT) & 0xFF) / 255.0f, ((splatColors[i] >> IM_COL32_G_SHIFT) & 0xFF) / 255.0f, ((splatColors[i] >> IM_COL32_B_SHIFT) & 0xFF) / 255.0f, ((splatColors[i] >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f),
-                               ((paint.channel == i) ? ImGuiColorEditFlags_NoTooltip : 0) | ImGuiColorEditFlags_NoBorder,
-                               ImVec2(48, 24)))
-        {
-            // Turn off sculpt when entering paint mode
-            sculpt.active = false;
-            paint.heightActive = false;
-            paint.active = true;
-            paint.channel = i;
-        }
-    }
-
-    // Paint target layer (0..15). Layers 0..3 also have the quick R/G/B/A swatches.
-    ImGui::SliderInt("Layer##paint", &paint.channel, 0, kTerrain::kMaxTerrainLayers - 1);
+            // Bulk weight edits for the selected layer.
+            ImGui::BeginDisabled(selectedTerrain == nullptr);
+            if (ImGui::Button("Fill Layer##paint", ImVec2(-1, 0)))
+                fillLayerWeight(selectedTerrain, paint.channel, 0);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Fill this layer's weight with black (0): the layer disappears.");
+            if (ImGui::Button("Clear Layer##paint", ImVec2(-1, 0)))
+                fillLayerWeight(selectedTerrain, paint.channel, 255);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Clear this layer's weight to white (255): the layer covers the tile.");
+            ImGui::EndDisabled();
 
     if (paint.active)
     {
         ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                           "L-click paint, R-click erase mask channel.");
+                           "L-click paints this layer's weight, R-click erases it.");
+        // The mask brush shares the sculpt radius; expose its own strength / fade
+        // so a stroke is actually visible (both used to be fixed at the defaults).
+        ImGui::SliderFloat("Paint Radius", &sculpt.radius, 0.5f, 50.0f, "%.1f");
+        ImGui::SliderFloat("Paint Strength", &paint.strength, 0.01f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Paint Fade", &paint.fade, 0.0f, 1.0f, "%.2f");
         // Mask painting only changes the rendered result once the layers use
         // different textures; with none assigned every layer renders neutral white.
         ImGui::TextDisabled("Assign per-layer textures above to see mask changes.");
     }
-    if (paint.heightActive)
-        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                           "L-click lower, R-click raise height");
 
     // Shared live status for every brush tool. A stroke only lands when the World
     // panel is in the Game World view AND the cursor ray is over a terrain tile.
-    if (sculpt.active || paint.active || paint.heightActive)
+    if (sculpt.active || paint.active)
     {
         if (paintCursorValid)
             ImGui::Text("Cursor over terrain at (%.1f, %.1f, %.1f)",
@@ -2332,10 +2520,14 @@ void PanelTerrain::draw(bool &isOpened)
     if (selectedTile)
     {
         auto &layers = selectedTile->getLayers();
-        // The legacy splat-map path packs four layer weights into one RGBA
-        // texture, so four is the largest stack the material can blend.
-        const size_t maxMaterialLayers = 4;
+        // The tile packs sixteen per-layer weights into four RGBA weight maps, so
+        // the material blends up to sixteen layers (TerrainPBR's array path).
+        const size_t maxMaterialLayers = kTerrain::kMaxTerrainLayers;
         ImGui::Text("Layers: %zu/%zu", layers.size(), maxMaterialLayers);
+
+        // Deferred: removing a layer mutates `layers`, which must not happen while
+        // iterating it (or while the tree node using it is still open).
+        int removeLayerRequest = -1;
 
         for (size_t i = 0; i < layers.size(); ++i)
         {
@@ -2347,11 +2539,20 @@ void PanelTerrain::draw(bool &isOpened)
                 strncpy_s(nameBuf, sizeof(nameBuf), layer.name.c_str(), _TRUNCATE);
                 if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
                     layer.name = nameBuf;
-                ImGui::InputFloat("Tile Size", &layer.tileSize);
-                ImGui::InputFloat("Min Height", &layer.minHeight);
-                ImGui::InputFloat("Max Height", &layer.maxHeight);
-                ImGui::InputFloat("Slope Min", &layer.slopeMin);
-                ImGui::InputFloat("Slope Max", &layer.slopeMax);
+                // Per-layer texture tiling: repeats of this layer's texture across
+                // the tile (uploaded as u_Tiling[this layer]).
+                ImGui::SetNextItemWidth(230.0f);
+                if (ImGui::SliderFloat("Tiling##layer", &layer.tiling, 1.0f, 128.0f, "%.1f"))
+                {
+                    selectedTile->syncLayerTiling();
+                    selectedTile->saveOwnedAssets();
+                    manager->projectSaved = false;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How many times this layer's texture repeats across the tile.");
+
+                // (Min/Max Height and Slope Min/Max were removed: the shader does
+                // not consume them, so editing them had no effect.)
 
                 // Per-layer textures packed into the terrain's sampler2DArrays.
                 // Per-layer textures. These are the *only* terrain textures the
@@ -2370,6 +2571,9 @@ void PanelTerrain::draw(bool &isOpened)
                         m_texPickTile = selectedTile;
                         m_texPickLayer = static_cast<int>(i);
                         m_texPickSlot = slot;
+                        // Start from a clean selection/search each time.
+                        m_texPickSelected.clear();
+                        m_texPickSearch[0] = '\0';
                         m_texPickOpen = true;
                     }
 
@@ -2387,13 +2591,19 @@ void PanelTerrain::draw(bool &isOpened)
                                 assetUuid = assetUuid.substr(0, nl);
 
                             auto it = manager->fileMap.find(assetUuid);
+                            // Asset types come from the project scanner, which
+                            // labels images "image" (the picker below already
+                            // looks for that); "texture" matched nothing, so a
+                            // dropped texture was silently ignored.
                             if (it != manager->fileMap.end() &&
-                                it->second.type == "texture")
+                                it->second.type == "image")
                             {
                                 path = (manager->projectPath / "Assets" /
                                         it->second.path).string();
                                 selectedTile->rebuildLayerArrays();
                                 rebuildTileMesh(selectedTile);
+                                selectedTile->saveOwnedAssets();
+                                manager->projectSaved = false;
                             }
                         }
                         ImGui::EndDragDropTarget();
@@ -2403,44 +2613,78 @@ void PanelTerrain::draw(bool &isOpened)
                 texField("Normal", layer.normalPath, 1);
                 texField("ORM", layer.ormPath, 2);
 
-                // Which RGBA channel of the terrain splat map masks this layer.
+                // Which layer's painted weight masks this layer. -1 ("auto") uses
+                // the layer's own weight, which is exactly what painting this layer
+                // edits, so the default needs no extra choice.
                 {
-                    static const char *kMaskChannels[] = {"Auto (layer index)", "R", "G", "B", "A"};
-                    int current = (layer.maskChannel < 0) ? 0 : layer.maskChannel + 1;
-                    ImGui::SetNextItemWidth(230.0f);
-                    if (ImGui::Combo("Mask Channel", &current, kMaskChannels,
-                                     IM_ARRAYSIZE(kMaskChannels)))
+                    bool autoMask = (layer.maskChannel < 0);
+                    if (ImGui::Checkbox("Auto Mask##terrainLayer", &autoMask))
                     {
-                        layer.maskChannel = (current == 0) ? -1 : current - 1;
+                        layer.maskChannel = autoMask ? -1 : static_cast<int>(i);
                         selectedTile->syncLayerMaskChannels();
                         selectedTile->saveOwnedAssets();
                         manager->projectSaved = false;
                     }
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Splat-map channel used as this layer's mask.");
+                        ImGui::SetTooltip("Auto: the layer is masked by its own painted weight.");
+
+                    if (!autoMask)
+                    {
+                        int maskLayer = layer.maskChannel;
+                        ImGui::SetNextItemWidth(230.0f);
+                        if (ImGui::SliderInt("Mask Layer", &maskLayer, 0,
+                                             kTerrain::kMaxTerrainLayers - 1))
+                        {
+                            layer.maskChannel = maskLayer;
+                            selectedTile->syncLayerMaskChannels();
+                            selectedTile->saveOwnedAssets();
+                            manager->projectSaved = false;
+                        }
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Painted weight of this layer masks the layer.");
+                    }
                 }
+
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.16f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.12f, 0.12f, 1.0f));
+                if (ImGui::Button("Remove layer##terrainLayer", ImVec2(230.0f, 0.0f)))
+                    removeLayerRequest = static_cast<int>(i);
+                ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Delete this material layer (weights, textures and mask refs are shifted).");
 
                 ImGui::TreePop();
             }
         }
 
+        if (removeLayerRequest >= 0 && removeLayerRequest < static_cast<int>(layers.size()))
+            removeTerrainLayer(selectedTile, removeLayerRequest);
+
         ImGui::BeginDisabled(layers.size() >= maxMaterialLayers);
         if (ImGui::Button("Add Layer"))
         {
             kTerrainLayer newLayer;
-            newLayer.name = "New Layer";
+            // setLayer() updates the layer that shares the new layer's name, so a
+            // constant default name made every Add after the first overwrite the
+            // previous layer (the stack never grew past one).
+            int n = static_cast<int>(layers.size());
+            newLayer.name = "Layer " + std::to_string(n);
+            while (std::any_of(layers.begin(), layers.end(),
+                               [&](const kTerrainLayer &l) { return l.name == newLayer.name; }))
+                newLayer.name = "Layer " + std::to_string(++n);
+
             selectedTile->setLayer(newLayer);
+            // The new layer needs its weight channel uploaded and its slot in the
+            // .mat / .hlayers payloads written, even though it has no texture yet.
+            selectedTile->syncLayerMaskChannels();
+            selectedTile->saveOwnedAssets();
+            manager->projectSaved = false;
         }
         ImGui::EndDisabled();
         if (layers.size() >= maxMaterialLayers)
-            ImGui::TextDisabled("Maximum of %zu layers (the splat map is RGBA).",
-                                maxMaterialLayers);
-
-        if (ImGui::Button("Rebuild Layer Textures"))
-        {
-            selectedTile->rebuildLayerArrays();
-            rebuildTileMesh(selectedTile);
-        }
+            ImGui::TextDisabled("Maximum of %zu layers.", maxMaterialLayers);
 
         // --- Terrain material (auto-managed) ---
         // Each tile creates its own TerrainPBR material and deletes it with the
@@ -2462,23 +2706,42 @@ void PanelTerrain::draw(bool &isOpened)
                     auto it = params.find(kString(name));
                     return (it != params.end()) ? it->second.value.x : fallback;
                 };
-                m_matSettings.tiling             = read("u_Tiling[0]", 16.0f);
                 m_matSettings.blendSharpness     = read("u_BlendSharpness", 1.0f);
-                m_matSettings.stochastic         = read("u_Stochastic", 1.0f);
+                m_matSettings.stochastic         = read("u_Stochastic", 1.0f) > 0.5f;
+                m_matSettings.triplanar          = read("u_Triplanar", 1.0f) > 0.5f;
+                m_matSettings.rotateUV           = read("u_RotateUV", 0.0f) > 0.5f;
+                m_matSettings.uvRotation         = read("u_UVRotation", 0.0f) * 57.29578f;
                 m_matSettings.triplanarStrength  = read("u_TriplanarStrength", 0.75f);
                 m_matSettings.triplanarSharpness = read("u_TriplanarSharpness", 3.0f);
                 m_matSettings.noiseVariegation   = read("u_NoiseVariegation", 0.25f);
                 m_matSettings.noiseScale         = read("u_NoiseScale", 0.02f);
             }
 
-            ImGui::SliderFloat("Tiling", &m_matSettings.tiling, 1.0f, 128.0f, "%.1f");
+            // Tiling is edited per material layer (see each layer's tree node above).
             ImGui::SliderFloat("Blend Sharpness", &m_matSettings.blendSharpness,
                                0.1f, 8.0f, "%.2f");
-            ImGui::SliderFloat("Stochastic", &m_matSettings.stochastic, 0.0f, 1.0f, "%.0f");
+
+            // Stochastic anti-tiling: random per-cell rotation that hides repeats.
+            ImGui::Checkbox("Stochastic Anti-Tiling", &m_matSettings.stochastic);
+
+            // Global UV rotation — rotates the world-space UVs so the repeat grid is
+            // no longer axis-aligned (breaks the visible tiling seam direction).
+            ImGui::Checkbox("Rotate UV", &m_matSettings.rotateUV);
+            ImGui::BeginDisabled(!m_matSettings.rotateUV);
+            ImGui::SliderFloat("UV Rotation", &m_matSettings.uvRotation,
+                               0.0f, 360.0f, "%.1f deg");
+            ImGui::EndDisabled();
+
+            // Triplanar projection is opt-in; the strength / sharpness sliders only
+            // matter while it is enabled.
+            ImGui::Checkbox("Triplanar", &m_matSettings.triplanar);
+            ImGui::BeginDisabled(!m_matSettings.triplanar);
             ImGui::SliderFloat("Triplanar Strength", &m_matSettings.triplanarStrength,
                                0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("Triplanar Sharpness", &m_matSettings.triplanarSharpness,
                                0.5f, 16.0f, "%.1f");
+            ImGui::EndDisabled();
+
             ImGui::SliderFloat("Noise Variegation", &m_matSettings.noiseVariegation,
                                0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("Noise Scale", &m_matSettings.noiseScale,
@@ -2487,15 +2750,18 @@ void PanelTerrain::draw(bool &isOpened)
             ImGui::Spacing();
             if (ImGui::Button("Apply##terrainMat", ImVec2(-1, 0)))
             {
-                for (size_t li = 0; li < maxMaterialLayers; ++li)
-                    terrainMat->setParamFloat("u_Tiling[" + std::to_string(li) + "]",
-                                              m_matSettings.tiling);
                 terrainMat->setParamFloat("u_BlendSharpness", m_matSettings.blendSharpness);
-                terrainMat->setParamFloat("u_Stochastic", m_matSettings.stochastic);
+                terrainMat->setParamFloat("u_Stochastic", m_matSettings.stochastic ? 1.0f : 0.0f);
+                terrainMat->setParamFloat("u_Triplanar", m_matSettings.triplanar ? 1.0f : 0.0f);
+                terrainMat->setParamFloat("u_RotateUV", m_matSettings.rotateUV ? 1.0f : 0.0f);
+                terrainMat->setParamFloat("u_UVRotation",
+                                          m_matSettings.uvRotation * 3.14159265f / 180.0f);
                 terrainMat->setParamFloat("u_TriplanarStrength", m_matSettings.triplanarStrength);
                 terrainMat->setParamFloat("u_TriplanarSharpness", m_matSettings.triplanarSharpness);
                 terrainMat->setParamFloat("u_NoiseVariegation", m_matSettings.noiseVariegation);
                 terrainMat->setParamFloat("u_NoiseScale", m_matSettings.noiseScale);
+                // Tiling lives on each material layer.
+                selectedTile->syncLayerTiling();
                 selectedTile->saveOwnedAssets();
                 manager->projectSaved = false;
             }
@@ -2534,11 +2800,22 @@ void PanelTerrain::draw(bool &isOpened)
         ImGui::BeginDisabled(tileObject == nullptr);
         ImGui::SliderInt("Collision Resolution", &m_collisionResolution, 8, 512, "%d",
                          ImGuiSliderFlags_Logarithmic);
-        ImGui::TextDisabled("Higher = more triangles, more precise collision.");
-        // Pressing this again re-creates the collider from the tile's current
-        // geometry at the resolution above.
-        if (ImGui::Button("Generate Tile Collider", ImVec2(-1, 0)))
+        // Changing the value re-creates an existing collider on release, so the
+        // slider is not a dead control that only took effect through the button
+        // below (and only after a tile had a collider at all).
+        if (ImGui::IsItemDeactivatedAfterEdit() && hasCollider)
+        {
             generateTileCollider(selectedTile, m_collisionResolution);
+            showCollider = true;
+        }
+        ImGui::TextDisabled("Higher = more triangles, more precise collision.");
+        // (Re)creates the collider from the tile's current geometry at the
+        // resolution above, and turns its wireframe on so the result is visible.
+        if (ImGui::Button("Generate Tile Collider", ImVec2(-1, 0)))
+        {
+            generateTileCollider(selectedTile, m_collisionResolution);
+            showCollider = true;
+        }
         ImGui::EndDisabled();
 
         // Only offer removal while the tile actually owns a collider.
@@ -2561,11 +2838,11 @@ void PanelTerrain::draw(bool &isOpened)
         ImGui::TextDisabled("No tile at (%d, %d). Create one above.", selectedTileGridX, selectedTileGridZ);
     }
 
-    // Layer texture picker modal — drawn last so it is reachable whichever section
-    // raised it.
-    drawTexturePickerPopup();
-
     ImGui::End();
+
+    // Layer texture picker — drawn *after* the panel window because it is a
+    // top-level window (plus its input blocker) rather than a nested one.
+    drawTexturePickerPopup();
 }
 
 void PanelTerrain::addTerrainTile(int gridX, int gridZ)
