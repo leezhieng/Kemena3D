@@ -238,6 +238,13 @@ bool csmProject(int layer, vec3 wp, out vec3 p)
 
 float csmPCF(int layer, vec3 p, float bias)
 {
+    // Screen-space slope bias. On a dense heightfield the shadow depth changes far
+    // faster across one pixel than any constant / N·L-scaled bias can cover, which
+    // is what produced the triangle-aligned acne all over the terrain. Scaling the
+    // bias by the per-pixel depth gradient is the standard cure and only ever adds
+    // bias where the surface is steep relative to the light.
+    bias += max(abs(dFdx(p.z)), abs(dFdy(p.z))) * 2.0;
+
     vec2 ts = (1.0 / vec2(textureSize(shadowMapArray, 0).xy)) * max(shadowSoftness, 0.5);
     float s = 0.0;
     for (int x = -1; x <= 1; x++)

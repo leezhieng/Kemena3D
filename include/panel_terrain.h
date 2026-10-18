@@ -371,6 +371,7 @@ private:
         float triplanarSharpness = 3.0f;
         float noiseVariegation = 0.25f;
         float noiseScale = 0.02f;
+        bool noiseEnabled = false; ///< Procedural noise variegation on/off.
     };
     kTerrain *m_matSettingsTile = nullptr; ///< Tile the staged settings belong to.
     MaterialSettings m_matSettings;

@@ -201,8 +201,8 @@ void PanelTerrain::sculptAtWorldPos(const kVec3 &worldPos)
     if (!manager || !manager->terrainManager)
         return;
 
-    // Search for the tile containing the world position
-    kTerrain *foundTile = nullptr;
+    // The tile under the brush centre, used as the Flatten height reference.
+    kTerrain *centreTile = nullptr;
     for (auto &pair : manager->terrainManager->getTiles())
     {
         kTerrain *tile = pair.second.get();
@@ -212,42 +212,84 @@ void PanelTerrain::sculptAtWorldPos(const kVec3 &worldPos)
         int hx, hz;
         if (tile->worldToHeightmap(worldPos, hx, hz))
         {
-            foundTile = tile;
+            centreTile = tile;
             break;
         }
     }
 
-    if (!foundTile)
-        return;
-
-    beginTerrainEdit(foundTile, true, false);
-
-    // On first stroke in Flatten mode, sample the target height
-    if (sculpt.mode == kTerrain::BrushMode::Flatten && sculpt.affectedTile != foundTile)
+    // On the first stroke in Flatten mode, sample the target height.
+    if (sculpt.mode == kTerrain::BrushMode::Flatten && centreTile &&
+        sculpt.affectedTile != centreTile)
     {
-        sculpt.flattenHeight = foundTile->sampleHeight(worldPos);
+        sculpt.flattenHeight = centreTile->sampleHeight(worldPos);
     }
 
-    foundTile->applyBrush(worldPos, sculpt.radius, sculpt.strength,
-                          sculpt.mode, sculpt.flattenHeight);
+    // Apply the stamp to *every* tile the brush circle touches, not just the one
+    // under the centre. Each tile derives its falloff from the same world-space
+    // distance, so the shared edge rows rise by exactly the same amount and the
+    // seam stays closed. (Previously only the centre tile was edited, so the two
+    // sides of a border were raised by different amounts and the edge shape was
+    // wrong.)
+    const float brushRadius = sculpt.radius;
+    int applied = 0;
 
-    // Fast polygon update for live visual feedback (updates vertex Y and normals on GPU)
-    foundTile->updateMesh();
+    for (auto &pair : manager->terrainManager->getTiles())
+    {
+        kTerrain *tile = pair.second.get();
+        if (!tile || !tile->isLoaded())
+            continue;
 
-    sculpt.affectedTile = foundTile;
+        // Brush circle vs tile rectangle, in world XZ.
+        const float tileSize = tile->getWorldSize();
+        const float minX = static_cast<float>(tile->getGridX()) * tileSize;
+        const float minZ = static_cast<float>(tile->getGridZ()) * tileSize;
+
+        if (worldPos.x + brushRadius < minX || worldPos.x - brushRadius > minX + tileSize ||
+            worldPos.z + brushRadius < minZ || worldPos.z - brushRadius > minZ + tileSize)
+            continue;
+
+        beginTerrainEdit(tile, true, false);
+        tile->applyBrush(worldPos, brushRadius, sculpt.strength,
+                         sculpt.mode, sculpt.flattenHeight);
+
+        // Fast polygon update for live visual feedback.
+        tile->updateMesh();
+
+        sculpt.affectedTile = tile;
+        ++applied;
+    }
+
+    if (applied == 0)
+        return;
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+
     sculpt.needsRebuild = true;
 }
 
 void PanelTerrain::rebuildSculptedTile()
 {
-    if (!sculpt.needsRebuild || !sculpt.affectedTile)
+    if (!sculpt.needsRebuild)
         return;
 
     // Full rebuild (rather than the cheap updateMesh used during the stroke) so the
     // boundary samples are re-stitched against the neighbours: sculpting close to a
-    // tile border otherwise left a visible crack. rebuildMesh() preserves the
-    // tile's material, and rebuildTileMesh() keeps the selection valid.
-    rebuildTileMesh(sculpt.affectedTile);
+    // tile border otherwise left a visible crack. A stroke can span several tiles,
+    // so every tile recorded for this stroke is rebuilt, not just the last one
+    // touched. rebuildMesh() preserves the material, rebuildTileMesh() keeps the
+    // selection valid.
+    bool rebuilt = false;
+    for (const auto &snapshot : m_editSnapshots)
+        if (snapshot.tile)
+        {
+            rebuildTileMesh(snapshot.tile);
+            rebuilt = true;
+        }
+
+    if (!rebuilt && sculpt.affectedTile)
+        rebuildTileMesh(sculpt.affectedTile);
+
     if (manager && manager->getRenderer())
         manager->getRenderer()->setOctreeDirty();
     sculpt.needsRebuild = false;
@@ -1146,6 +1188,21 @@ PanelTerrain::makeHeightLayerGenerator(kTerrain *tile, const kTerrainHeightLayer
         // Every operator reads and writes the tile's height field in place, so seed
         // it with this layer's input, run the operator, then hand the result back.
         // kTerrain::generateHeightLayer turns that into the layer's delta.
+        //
+        // The operators also mutate the tile's own fields as a side effect (several
+        // call rebuildMesh/stitchSeams, which recomposes base + layers). Snapshot the
+        // sculpted base and every layer's offsets so generating a layer is a pure
+        // function of its parameters — pressing Apply twice must produce the same
+        // result, not stack the effect again.
+        std::vector<float> savedBase;
+        if (const float *basePtr = tile->getBaseHeightData())
+            savedBase.assign(basePtr, basePtr + tile->getHeightDataSize());
+
+        std::vector<std::vector<float>> savedOffsets;
+        savedOffsets.reserve(tile->getHeightLayers().size());
+        for (const auto &otherLayer : tile->getHeightLayers())
+            savedOffsets.push_back(otherLayer.offsets);
+
         std::copy(input.begin(), input.end(), height);
 
         // The noise operator reads the fractal variant from the panel member, so
@@ -1181,6 +1238,17 @@ PanelTerrain::makeHeightLayerGenerator(kTerrain *tile, const kTerrainHeightLayer
         m_noiseType = savedNoiseType;
 
         std::copy(height, height + input.size(), output.begin());
+
+        // Undo the operator's side effects on the tile: the sculpted base and the
+        // other layers must be exactly as they were before this sample was taken.
+        if (!savedBase.empty())
+            std::copy(savedBase.begin(), savedBase.end(), tile->getBaseHeightData());
+        {
+            std::vector<kTerrainHeightLayer> &layersNow = tile->getHeightLayers();
+            const size_t count = (std::min)(layersNow.size(), savedOffsets.size());
+            for (size_t i = 0; i < count; ++i)
+                layersNow[i].offsets = savedOffsets[i];
+        }
 
         // Relax the raw operator result before it becomes a layer delta, so the
         // composited terrain renders smooth instead of faceted.
@@ -2221,14 +2289,16 @@ void PanelTerrain::draw(bool &isOpened)
 
             // Bulk weight edits for the selected layer.
             ImGui::BeginDisabled(selectedTerrain == nullptr);
+            // Fill paints the layer in everywhere (white = full weight); Clear wipes
+            // it back out (black = no weight). These two were previously inverted.
             if (ImGui::Button("Fill Layer##paint", ImVec2(-1, 0)))
-                fillLayerWeight(selectedTerrain, paint.channel, 0);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Fill this layer's weight with black (0): the layer disappears.");
-            if (ImGui::Button("Clear Layer##paint", ImVec2(-1, 0)))
                 fillLayerWeight(selectedTerrain, paint.channel, 255);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Clear this layer's weight to white (255): the layer covers the tile.");
+                ImGui::SetTooltip("Fill this layer's weight to white (255): the layer covers the tile.");
+            if (ImGui::Button("Clear Layer##paint", ImVec2(-1, 0)))
+                fillLayerWeight(selectedTerrain, paint.channel, 0);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Clear this layer's weight to black (0): the layer disappears.");
             ImGui::EndDisabled();
 
     if (paint.active)
@@ -2707,8 +2777,8 @@ void PanelTerrain::draw(bool &isOpened)
                     return (it != params.end()) ? it->second.value.x : fallback;
                 };
                 m_matSettings.blendSharpness     = read("u_BlendSharpness", 1.0f);
-                m_matSettings.stochastic         = read("u_Stochastic", 1.0f) > 0.5f;
-                m_matSettings.triplanar          = read("u_Triplanar", 1.0f) > 0.5f;
+                m_matSettings.stochastic         = read("u_Stochastic", 0.0f) > 0.5f;
+                m_matSettings.triplanar          = read("u_Triplanar", 0.0f) > 0.5f;
                 m_matSettings.rotateUV           = read("u_RotateUV", 0.0f) > 0.5f;
                 m_matSettings.uvRotation         = read("u_UVRotation", 0.0f) * 57.29578f;
                 m_matSettings.triplanarStrength  = read("u_TriplanarStrength", 0.75f);
@@ -2718,37 +2788,46 @@ void PanelTerrain::draw(bool &isOpened)
             }
 
             // Tiling is edited per material layer (see each layer's tree node above).
-            ImGui::SliderFloat("Blend Sharpness", &m_matSettings.blendSharpness,
-                               0.1f, 8.0f, "%.2f");
+            // Every control applies immediately — there is no Apply button. The
+            // .mat is only written to disk once the interaction ends, so dragging a
+            // slider updates the view live without rewriting the asset every frame.
+            bool matChanged = false;
+
+            matChanged |= ImGui::SliderFloat("Blend Sharpness", &m_matSettings.blendSharpness,
+                                             0.1f, 8.0f, "%.2f");
 
             // Stochastic anti-tiling: random per-cell rotation that hides repeats.
-            ImGui::Checkbox("Stochastic Anti-Tiling", &m_matSettings.stochastic);
+            matChanged |= ImGui::Checkbox("Stochastic Anti-Tiling", &m_matSettings.stochastic);
 
             // Global UV rotation — rotates the world-space UVs so the repeat grid is
             // no longer axis-aligned (breaks the visible tiling seam direction).
-            ImGui::Checkbox("Rotate UV", &m_matSettings.rotateUV);
+            matChanged |= ImGui::Checkbox("Rotate UV", &m_matSettings.rotateUV);
             ImGui::BeginDisabled(!m_matSettings.rotateUV);
-            ImGui::SliderFloat("UV Rotation", &m_matSettings.uvRotation,
-                               0.0f, 360.0f, "%.1f deg");
+            matChanged |= ImGui::SliderFloat("UV Rotation", &m_matSettings.uvRotation,
+                                             0.0f, 360.0f, "%.1f deg");
             ImGui::EndDisabled();
 
             // Triplanar projection is opt-in; the strength / sharpness sliders only
             // matter while it is enabled.
-            ImGui::Checkbox("Triplanar", &m_matSettings.triplanar);
+            matChanged |= ImGui::Checkbox("Triplanar", &m_matSettings.triplanar);
             ImGui::BeginDisabled(!m_matSettings.triplanar);
-            ImGui::SliderFloat("Triplanar Strength", &m_matSettings.triplanarStrength,
-                               0.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Triplanar Sharpness", &m_matSettings.triplanarSharpness,
-                               0.5f, 16.0f, "%.1f");
+            matChanged |= ImGui::SliderFloat("Triplanar Strength",
+                                             &m_matSettings.triplanarStrength, 0.0f, 1.0f, "%.2f");
+            matChanged |= ImGui::SliderFloat("Triplanar Sharpness",
+                                             &m_matSettings.triplanarSharpness, 0.5f, 16.0f, "%.1f");
             ImGui::EndDisabled();
 
-            ImGui::SliderFloat("Noise Variegation", &m_matSettings.noiseVariegation,
-                               0.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Noise Scale", &m_matSettings.noiseScale,
-                               0.001f, 0.5f, "%.3f");
+            // Procedural noise variegation, with its own on/off above the amount and
+            // scale it controls.
+            matChanged |= ImGui::Checkbox("Noise", &m_matSettings.noiseEnabled);
+            ImGui::BeginDisabled(!m_matSettings.noiseEnabled);
+            matChanged |= ImGui::SliderFloat("Noise Variegation",
+                                             &m_matSettings.noiseVariegation, 0.01f, 1.0f, "%.2f");
+            matChanged |= ImGui::SliderFloat("Noise Scale",
+                                             &m_matSettings.noiseScale, 0.001f, 0.5f, "%.3f");
+            ImGui::EndDisabled();
 
-            ImGui::Spacing();
-            if (ImGui::Button("Apply##terrainMat", ImVec2(-1, 0)))
+            if (matChanged)
             {
                 terrainMat->setParamFloat("u_BlendSharpness", m_matSettings.blendSharpness);
                 terrainMat->setParamFloat("u_Stochastic", m_matSettings.stochastic ? 1.0f : 0.0f);
@@ -2758,12 +2837,18 @@ void PanelTerrain::draw(bool &isOpened)
                                           m_matSettings.uvRotation * 3.14159265f / 180.0f);
                 terrainMat->setParamFloat("u_TriplanarStrength", m_matSettings.triplanarStrength);
                 terrainMat->setParamFloat("u_TriplanarSharpness", m_matSettings.triplanarSharpness);
-                terrainMat->setParamFloat("u_NoiseVariegation", m_matSettings.noiseVariegation);
+                terrainMat->setParamFloat("u_NoiseVariegation",
+                                          m_matSettings.noiseEnabled ? m_matSettings.noiseVariegation
+                                                                     : 0.0f);
                 terrainMat->setParamFloat("u_NoiseScale", m_matSettings.noiseScale);
+
                 // Tiling lives on each material layer.
                 selectedTile->syncLayerTiling();
-                selectedTile->saveOwnedAssets();
                 manager->projectSaved = false;
+
+                // Persist once the user lets go rather than on every drag frame.
+                if (!ImGui::IsAnyItemActive())
+                    selectedTile->saveOwnedAssets();
             }
         }
         else
