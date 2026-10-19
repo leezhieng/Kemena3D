@@ -4351,28 +4351,79 @@ static void migrateLegacyMaterialJson(nlohmann::json &m)
 {
     if (!m.is_object())
         return;
-    if (m.contains("params") && m["params"].is_object())
-        return;
-    nlohmann::json p = nlohmann::json::object();
-    auto move = [&](const char *legacy, const char *var)
+
+    // Bring pre-@var top-level keys into the params object first.
+    if (!m.contains("params") || !m["params"].is_object())
     {
-        if (m.contains(legacy))
-            p[var] = m[legacy];
+        nlohmann::json p = nlohmann::json::object();
+        auto move = [&](const char *legacy, const char *var)
+        {
+            if (m.contains(legacy))
+                p[var] = m[legacy];
+        };
+        move("diffuse", "material.diffuse");
+        move("ambient", "material.ambient");
+        move("specular", "material.specular");
+        move("shininess", "material.shininess");
+        move("metallic", "material.metallic");
+        move("roughness", "material.roughness");
+        move("glossiness", "material.glossiness");
+        move("uv_tiling", "material.tiling");
+        move("texture_albedo", "albedoMap");
+        move("texture_normal", "normalMap");
+        move("texture_specular", "specularMap");
+        move("texture_glossiness", "glossinessMap");
+        move("texture_emissive", "emissiveMap");
+        m["params"] = p;
+    }
+
+    // Layered materials (terrain .mat) own tiling/rotation per layer. Map the
+    // old material-wide values into every layer that does not have its own
+    // value yet, then remove the obsolete global controls.
+    if (!m.contains("layers") || !m["layers"].is_array())
+        return;
+
+    nlohmann::json &params = m["params"];
+    auto readFloat = [&](const char *name, float fallback)
+    {
+        return (params.contains(name) && params[name].is_number())
+                   ? params[name].get<float>()
+                   : fallback;
     };
-    move("diffuse", "material.diffuse");
-    move("ambient", "material.ambient");
-    move("specular", "material.specular");
-    move("shininess", "material.shininess");
-    move("metallic", "material.metallic");
-    move("roughness", "material.roughness");
-    move("glossiness", "material.glossiness");
-    move("uv_tiling", "material.tiling");
-    move("texture_albedo", "albedoMap");
-    move("texture_normal", "normalMap");
-    move("texture_specular", "specularMap");
-    move("texture_glossiness", "glossinessMap");
-    move("texture_emissive", "emissiveMap");
-    m["params"] = p;
+
+    bool  globalRotate = readFloat("u_RotateUV", 0.0f) > 0.5f;
+    float globalAngle  = readFloat("u_UVRotation", 0.0f);
+    float globalTiling = 16.0f;
+    if (params.contains("material.tiling") && params["material.tiling"].is_array() &&
+        !params["material.tiling"].empty())
+        globalTiling = params["material.tiling"][0].get<float>();
+
+    size_t index = 0;
+    for (auto &layer : m["layers"])
+    {
+        ++index;
+        if (!layer.is_object())
+            continue;
+
+        if (!layer.contains("tiling"))
+        {
+            float tiling = globalTiling;
+            const std::string key = "u_Tiling[" + std::to_string(index - 1) + "]";
+            if (params.contains(key) && params[key].is_number())
+                tiling = params[key].get<float>();
+            layer["tiling"] = tiling;
+        }
+        if (!layer.contains("uvOffset"))
+            layer["uvOffset"] = {{"x", 0.0f}, {"y", 0.0f}};
+        if (!layer.contains("rotateUV"))
+            layer["rotateUV"] = globalRotate;
+        if (!layer.contains("uvRotation"))
+            layer["uvRotation"] = globalAngle;
+    }
+
+    params.erase("u_RotateUV");
+    params.erase("u_UVRotation");
+    params.erase("material.tiling");
 }
 
 void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAsset &asset)
@@ -4398,6 +4449,10 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
 
     auto changed = [&]()
     { matInspDirty = true; ++matInspVersion; };
+
+    const bool hasMaterialLayers =
+        matInspJson.contains("layers") && matInspJson["layers"].is_array() &&
+        !matInspJson["layers"].empty();
 
     // --- Shader (built-ins + hand-written raw shader assets) ---
     {
@@ -4528,6 +4583,14 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
 
         for (const ShaderVar &v : vars)
         {
+            // Layered materials own their UV transform per layer; the generic
+            // material-wide tiling/rotation controls are intentionally hidden.
+            if (hasMaterialLayers &&
+                (v.name == "material.tiling" || v.name == "u_RotateUV" ||
+                 v.name == "u_UVRotation" || v.name.rfind("u_Tiling[", 0) == 0 ||
+                 v.name.rfind("u_UVOffset", 0) == 0))
+                continue;
+
             propLabel(gui, v.label.c_str());
             kString id = "##mp_" + v.name;
 
@@ -4747,6 +4810,65 @@ void PanelInspector::drawMaterialInspector(const PanelProject::SelectedProjectAs
                 }
                 ImGui::EndPopup();
             }
+        }
+    }
+
+    // --- Per-layer UV transforms ------------------------------------------
+    if (hasMaterialLayers)
+    {
+        gui->separatorText("Material Layers");
+        for (size_t li = 0; li < matInspJson["layers"].size(); ++li)
+        {
+            auto &layer = matInspJson["layers"][li];
+            if (!layer.is_object())
+                continue;
+
+            std::string name = layer.value("name", std::string("Layer ") + std::to_string(li));
+            const std::string nodeId = name + "##matLayer" + std::to_string(li);
+            if (!ImGui::TreeNode(nodeId.c_str()))
+                continue;
+
+            float tiling = layer.value("tiling", 16.0f);
+            gui->setNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("Tiling##layerUV", &tiling, 0.1f, 1.0f, 128.0f, "%.1f"))
+            {
+                layer["tiling"] = tiling;
+                changed();
+            }
+
+            float ox = 0.0f, oy = 0.0f;
+            if (layer.contains("uvOffset") && layer["uvOffset"].is_object())
+            {
+                ox = layer["uvOffset"].value("x", 0.0f);
+                oy = layer["uvOffset"].value("y", 0.0f);
+            }
+            float offset[2] = {ox, oy};
+            gui->setNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat2("UV Offset##layerUV", offset, 0.01f, -64.0f, 64.0f, "%.3f"))
+            {
+                layer["uvOffset"] = {{"x", offset[0]}, {"y", offset[1]}};
+                changed();
+            }
+
+            bool rotateUV = layer.value("rotateUV", false);
+            if (ImGui::Checkbox("Rotate UV##layerUV", &rotateUV))
+            {
+                layer["rotateUV"] = rotateUV;
+                changed();
+            }
+
+            ImGui::BeginDisabled(!rotateUV);
+            float rotationDeg = layer.value("uvRotation", 0.0f) * 57.29578f;
+            gui->setNextItemWidth(-FLT_MIN);
+            if (ImGui::SliderFloat("UV Rotation##layerUV", &rotationDeg,
+                                   0.0f, 360.0f, "%.1f deg"))
+            {
+                layer["uvRotation"] = rotationDeg * 3.14159265f / 180.0f;
+                changed();
+            }
+            ImGui::EndDisabled();
+
+            ImGui::TreePop();
         }
     }
 

@@ -5860,11 +5860,24 @@ void Manager::saveWorld()
                     {
                         for (const auto &pair : terrainManager->getTiles())
                         {
-                            const kTerrain *tile = pair.second.get();
+                            kTerrain *tile = pair.second.get();
                             if (tile && tile->getMesh() && tile->getMesh()->getUuid() == uuid)
                             {
-                                tile->saveHeightData((libDir / (uuid + ".height")).string());
-                                tile->saveSplatMap((libDir / (uuid + ".splat")).string());
+                                // Write every owned payload (height, splat, the
+                                // .hlayers descriptor+offset blob and .mat)
+                                // through the tile itself. Effect-layer names and
+                                // parameters live in .hlayers, so saving only the
+                                // height/splat pair silently dropped them.
+                                if (tile->getHeightFilePath().empty())
+                                    tile->createOwnedAssets(libDir.string());
+                                tile->saveOwnedAssets();
+                                if (tile->getHeightFilePath().empty())
+                                {
+                                    // No owned paths yet: keep the legacy direct
+                                    // writes as a last resort.
+                                    tile->saveHeightData((libDir / (uuid + ".height")).string());
+                                    tile->saveSplatMap((libDir / (uuid + ".splat")).string());
+                                }
                                 saved = true;
                                 break;
                             }
@@ -6045,6 +6058,74 @@ static void assignInstanceKeysRec(kObject *node, const kString &sourceUuid,
                               path + "/" + std::to_string(i));
 }
 
+// Restores the physics/character descriptors from a serialized object. Terrain
+// tiles return early from loadObjectFromJson before the generic descriptor
+// block, so they call this explicitly; keeping it in one place avoids the
+// terrain and mesh paths drifting apart.
+static void applyPhysicsAndCharacterJson(const json &obj, kObject *target)
+{
+    if (!target)
+        return;
+
+    if (obj.contains("physics") && obj["physics"].is_object())
+    {
+        const json &phys = obj["physics"];
+        kPhysicsObjectDesc &desc = target->getPhysicsDesc();
+        desc.shape.type = (kPhysicsShapeType)phys.value("shape_type", 0);
+        if (phys.contains("half_extents") && phys["half_extents"].is_object())
+        {
+            const auto &he = phys["half_extents"];
+            desc.shape.halfExtents = kVec3(
+                he.value("x", 0.5f), he.value("y", 0.5f), he.value("z", 0.5f));
+        }
+        if (phys.contains("offset") && phys["offset"].is_object())
+        {
+            const auto &off = phys["offset"];
+            desc.shape.offset = kVec3(
+                off.value("x", 0.0f), off.value("y", 0.0f), off.value("z", 0.0f));
+        }
+        desc.shape.radius = phys.value("radius", 0.5f);
+        desc.shape.height = phys.value("height", 1.0f);
+        desc.shape.heightSampleCount = phys.value("collision_resolution", 0);
+        desc.type = (kPhysicsObjectType)phys.value("body_type", 0);
+        desc.mass = phys.value("mass", 1.0f);
+        desc.friction = phys.value("friction", 0.5f);
+        desc.restitution = phys.value("restitution", 0.0f);
+        desc.linearDamping = phys.value("linear_damping", 0.05f);
+        desc.angularDamping = phys.value("angular_damping", 0.05f);
+        desc.gravityFactor = phys.value("gravity_factor", 1.0f);
+        desc.layer = phys.value("layer", std::string("Default"));
+        if (phys.contains("offset_position") && phys["offset_position"].is_object())
+        {
+            const auto &op = phys["offset_position"];
+            desc.offsetPosition = kVec3(op.value("x", 0.0f), op.value("y", 0.0f),
+                                        op.value("z", 0.0f));
+        }
+        if (phys.contains("offset_rotation") && phys["offset_rotation"].is_object())
+        {
+            const auto &orr = phys["offset_rotation"];
+            desc.offsetRotation = kQuat(orr.value("w", 1.0f), orr.value("x", 0.0f),
+                                        orr.value("y", 0.0f), orr.value("z", 0.0f));
+        }
+        target->setHasPhysicsDesc(true);
+    }
+
+    if (obj.contains("character") && obj["character"].is_object())
+    {
+        const json &ch = obj["character"];
+        kCharacterControllerDesc &cd = target->getCharacterDesc();
+        cd.radius = ch.value("radius", 0.3f);
+        cd.height = ch.value("height", 1.8f);
+        cd.mass = ch.value("mass", 80.0f);
+        cd.friction = ch.value("friction", 0.5f);
+        cd.gravityFactor = ch.value("gravity_factor", 1.0f);
+        cd.slopeLimit = ch.value("slope_limit", 45.0f);
+        cd.stepHeight = ch.value("step_height", 0.3f);
+        cd.layer = ch.value("layer", std::string("Default"));
+        target->setHasCharacterDesc(true);
+    }
+}
+
 static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world,
                                    kAssetManager *am, const fs::path &projectPath,
                                    kCamera *editorCamera, kObject *parent,
@@ -6180,17 +6261,22 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                 terrainMgr->setAssetDirectory(libDir.string());
 
                 // The .world records the exact filenames the tile was saved with;
-                // adopt them so older projects keep working.
+                // adopt them so older projects keep working. kMesh::serialize()
+                // historically wrote only heightFile/splatFile, so fall back to
+                // the UUID-based names the owned-asset writer uses.
                 const kString hName = obj.value("heightFile", "");
                 const kString sName = obj.value("splatFile", "");
                 const kString hlName = obj.value("heightLayersFile", "");
                 const kString mName = obj.value("materialFile", "");
+                const kString assetBase = uuid.empty()
+                    ? ("terrain_" + std::to_string(gx) + "_" + std::to_string(gz))
+                    : uuid;
 
                 tile->adoptOwnedAssetPaths(
-                    hName.empty() ? kString() : (libDir / hName).string(),
-                    sName.empty() ? kString() : (libDir / sName).string(),
-                    hlName.empty() ? kString() : (libDir / hlName).string(),
-                    mName.empty() ? kString() : (libDir / mName).string());
+                    (libDir / (hName.empty() ? (assetBase + ".height") : hName)).string(),
+                    (libDir / (sName.empty() ? (assetBase + ".splat") : sName)).string(),
+                    (libDir / (hlName.empty() ? (assetBase + ".hlayers") : hlName)).string(),
+                    (libDir / (mName.empty() ? (assetBase + ".mat") : mName)).string());
 
                 tile->loadOwnedAssets();
                 tile->reload(true);
@@ -6206,12 +6292,23 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                     mesh->setSerializeType("terrain");
                     mesh->setName(name);
                     mesh->setActive(active);
+                    mesh->setStatic(obj.value("static", false));
+                    mesh->setVisible(obj.value("visible", true));
+                    mesh->setCastShadow(obj.value("cast_shadow", true));
+                    mesh->setReceiveShadow(obj.value("receive_shadow", true));
+                    if (obj.contains("layer_mask"))
+                        mesh->setLayerMask(obj["layer_mask"].get<uint32_t>());
                     // Use force-setters for terrain too — the static flag on the
                     // original mesh (line 3978) may have been set before the
                     // terrain branch deleted it and created a replacement.
                     mesh->setPositionForced(pos);
                     mesh->setRotationForced(kQuat(rotEu));
                     mesh->setScaleForced(scale);
+
+                    // Terrain returns before the generic descriptor block, so the
+                    // saved HeightField collider (including its resolution) must be
+                    // restored explicitly here.
+                    applyPhysicsAndCharacterJson(obj, mesh);
 
                     // Restore the material UUID from the saved world JSON.
                     // Without this the early return (result = mesh; return result;)
@@ -10727,6 +10824,56 @@ kMaterial *Manager::buildMaterialFromJson(const nlohmann::json &matJson)
                 else
                     mat->setParamSamplerCube(v.name, tex);
             }
+        }
+    }
+
+    // Layered materials store their UV transform in the `layers` array. Push
+    // those values into the per-layer uniform arrays so the renderer uploads
+    // layer-owned tiling/offset/rotation instead of a material-wide transform.
+    if (matJson.contains("layers") && matJson["layers"].is_array())
+    {
+        bool  globalRotate = false;
+        float globalAngle = 0.0f;
+        if (params)
+        {
+            if (params->contains("u_RotateUV") && (*params)["u_RotateUV"].is_number())
+                globalRotate = (*params)["u_RotateUV"].get<float>() > 0.5f;
+            if (params->contains("u_UVRotation") && (*params)["u_UVRotation"].is_number())
+                globalAngle = (*params)["u_UVRotation"].get<float>();
+        }
+
+        int layerIndex = 0;
+        for (const auto &layer : matJson["layers"])
+        {
+            if (!layer.is_object() || layerIndex >= kTerrain::kMaxTerrainLayers)
+            {
+                ++layerIndex;
+                continue;
+            }
+            const kString idx = std::to_string(layerIndex);
+
+            float tiling = layer.value("tiling", 16.0f);
+            if (!layer.contains("tiling") && params)
+            {
+                const std::string tkey = "u_Tiling[" + idx + "]";
+                if (params->contains(tkey) && (*params)[tkey].is_number())
+                    tiling = (*params)[tkey].get<float>();
+            }
+            float ox = 0.0f, oy = 0.0f;
+            if (layer.contains("uvOffset") && layer["uvOffset"].is_object())
+            {
+                ox = layer["uvOffset"].value("x", 0.0f);
+                oy = layer["uvOffset"].value("y", 0.0f);
+            }
+            const bool rotate = layer.value("rotateUV", globalRotate);
+            const float angle = layer.value("uvRotation", globalAngle);
+
+            mat->setParamFloat("u_Tiling[" + idx + "]", tiling);
+            mat->setParamFloat("u_UVOffsetX[" + idx + "]", ox);
+            mat->setParamFloat("u_UVOffsetY[" + idx + "]", oy);
+            mat->setParamFloat("u_RotateUV[" + idx + "]", rotate ? 1.0f : 0.0f);
+            mat->setParamFloat("u_UVRotation[" + idx + "]", angle);
+            ++layerIndex;
         }
     }
 

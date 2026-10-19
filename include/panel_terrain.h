@@ -159,20 +159,27 @@ public:
     // --- Non-destructive height modifier layers ---
 
     /**
-     * @brief Adds, updates or re-generates one height modifier layer as a single
-     *        undoable step.
+     * @brief Adds, updates or re-generates one height modifier layer.
+     *
+     * When @p generator is non-null the layer's offsets are rebuilt from the
+     * composite *below* the layer, so re-applying the same settings replaces the
+     * previous result instead of accumulating on top of it.
      *
      * @param tile        Target tile.
      * @param layerIndex  Existing layer to update, or -1 to append a new one.
      * @param desc        New layer parameters.
      * @param generator   When non-null, re-runs the operator to rebuild the
      *                    layer's offsets from the composite below it.
+     * @param recordUndo  Push one undo step (false for live auto-apply edits).
+     * @param persist     Write the tile's owned assets immediately (false while a
+     *                    live edit is still in progress).
      * @return The layer index, or -1 on failure.
      */
     int applyHeightLayer(kTerrain *tile, int layerIndex,
                          const kTerrainHeightLayer &desc,
                          const std::function<void(const std::vector<float> &input,
-                                                  std::vector<float> &output)> &generator);
+                                                  std::vector<float> &output)> &generator,
+                         bool recordUndo = true, bool persist = true);
 
     /** @brief Removes a height modifier layer as one undoable step. */
     void removeHeightLayerUndoable(kTerrain *tile, int layerIndex);
@@ -319,16 +326,31 @@ private:
      *
      * ImGui widgets bind to the address they are given, so editing a short-lived
      * stack copy made every change snap back to the stored value on the next
-     * frame. This buffer keeps the in-progress descriptor alive until the user
-     * presses Apply. Keyed by tile and layer index.
+     * frame. This buffer keeps the live descriptor alive while the node is open.
+     * Every widget change is applied immediately; the buffer also owns the
+     * "before" state so a whole drag collapses into one undo step.
      */
     struct LayerEditBuffer
     {
         kTerrain *tile = nullptr;          ///< Tile the layer belongs to.
         int index = -1;                    ///< Layer index within the tile.
         kTerrainHeightLayer desc;          ///< In-progress layer descriptor.
+        kTerrainHeightLayer undoBefore;    ///< Stored layer before the current edit.
+        bool undoPending = false;          ///< True while live edits await one undo step.
     };
     std::vector<LayerEditBuffer> m_layerEditBuffers;
+
+    /**
+     * @brief Records one undo step for an auto-applied layer edit.
+     *
+     * The live edit has already been applied, so this only pushes the command
+     * describing the change and persists the tile's owned payload.
+     * @param tile   Edited tile.
+     * @param index  Layer index that changed.
+     * @param before Layer descriptor captured before the first live change.
+     */
+    void commitHeightLayerAutoEdit(kTerrain *tile, int index,
+                                   const kTerrainHeightLayer &before);
 
     /**
      * @brief Returns the persistent edit buffer for a layer, seeding it from
@@ -357,11 +379,13 @@ private:
      */
     void drawTexturePickerPopup();
 
-    // --- Terrain material parameter staging (committed by the Apply button) ---
+    // --- Terrain material parameter staging ---
     // Tiling is deliberately NOT here: it is per material layer
     // (kTerrainLayer::tiling) and edited in each layer's tree node.
     struct MaterialSettings
     {
+        /// Terrain shading model: 0 = Flat, 1 = Phong, 2 = PBR.
+        int shaderType = 2;
         float blendSharpness = 1.0f;
         bool stochastic = true;
         bool triplanar = true;

@@ -1,5 +1,7 @@
 #include "panel_world.h"
 
+#include <algorithm>
+
 PanelWorld::PanelWorld(kGuiManager *setGuiManager, Manager *setManager)
 {
     gui = setGuiManager;
@@ -870,12 +872,28 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     // ------------------------------------------------------------------
     if (!manager->selectedObjects.empty())
     {
-        // Gather valid selected object pointers
+        // Terrain tiles are authored exclusively through their grid coordinates
+        // and the Terrain panel. Their world transform must never be edited by
+        // hand (moving a tile desynchronises it from its neighbours, its
+        // heightmap and its collider), so they are excluded from the transform
+        // gizmo at all times — including immediately after creation.
+        auto isTerrainNode = [](kObject *obj) -> bool
+        {
+            if (!obj)
+                return false;
+            if (obj->getType() == NODE_TYPE_TERRAIN)
+                return true;
+            if (kMesh *mesh = dynamic_cast<kMesh *>(obj))
+                return mesh->getSerializeType() == "terrain";
+            return false;
+        };
+
+        // Gather valid, manually-transformable selected objects.
         std::vector<kObject *> selObjs;
         for (const auto &uuid : manager->selectedObjects)
         {
             kObject *obj = manager->findObjectByUuid(uuid);
-            if (obj && obj->getActive())
+            if (obj && obj->getActive() && !isTerrainNode(obj))
                 selObjs.push_back(obj);
         }
 
@@ -903,8 +921,13 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             }
             else
             {
-                // LastSelected or Individual → pivot at last selected
-                kObject *pivot = manager->selectedObject ? manager->selectedObject : selObjs.back();
+                // LastSelected or Individual → pivot at last selected. If the
+                // active selection is a terrain tile (which has no gizmo), fall
+                // back to the last transformable object.
+                kObject *pivot = manager->selectedObject;
+                if (!pivot || isTerrainNode(pivot) ||
+                    std::find(selObjs.begin(), selObjs.end(), pivot) == selObjs.end())
+                    pivot = selObjs.back();
                 pivotMatrix = pivot->getModelMatrixWorld();
             }
 

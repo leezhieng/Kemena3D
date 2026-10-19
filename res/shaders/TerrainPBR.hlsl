@@ -31,6 +31,7 @@
 // @var float     u_NoiseVariegation Noise Variegation
 // @var float     u_NoiseScale      Noise Scale
 // @var float     u_MaskedBlend     Masked Weight Blending
+// @var float     u_ShaderType      Terrain Shader Type (0 Flat, 1 Phong, 2 PBR)
 //
 // -----------------------------------------------------------------------------
 // Original GLSL inputs, kept as a reference for the editor / authoring tools
@@ -202,7 +203,20 @@ cbuffer PerMaterial : register(b1)
     float    u_NoiseVariegation;
     float    u_NoiseScale;
     float    u_MaskedBlend;
-    float3   _matPad0;
+    // Terrain shading model: 0 = Flat (unlit), 1 = Phong, 2 = PBR. The terrain
+    // sampling above is shared, so all three modes keep every terrain feature.
+    float    u_ShaderType;
+    // Engine-derived world-space distance between terrain height samples, used
+    // to scale the PCF footprint with the tile's size (mirror of the GLSL
+    // uniform). It reuses the old padding slot, so the CB layout is unchanged.
+    float    u_TerrainSampleSpacing;
+    float    _matPad0;
+    // Per-layer UV transform (tiling is u_Tiling[layer]; offset and rotation
+    // are stored per material layer as well).
+    float    u_RotateUV[16];
+    float    u_UVRotation[16];
+    float    u_UVOffsetX[16];
+    float    u_UVOffsetY[16];
     Material material;
 };
 
@@ -270,17 +284,44 @@ bool csmProject(int layer, float3 wp, out float3 p)
     return p.z <= 1.0 && p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0;
 }
 
+// World-space size of one terrain height sample (mirror of the GLSL helper).
+float terrainSampleWorld()
+{
+    float cell = u_TerrainSampleSpacing;
+    if (cell <= 0.0001)
+    {
+        float tileWorld = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+        cell = tileWorld / 255.0;
+    }
+    return cell;
+}
+
+// Terrain-derived PCF step, in shadow-map texels (mirror of the GLSL helper).
+// One tap spans half a terrain height sample, so the 5x5 kernel covers roughly
+// one sample. Both the sample spacing and the shadow-map resolution scale with
+// the tile's world size, making this follow the terrain independently of the
+// scene's shadowSoftness.
+float terrainShadowStep(int layer)
+{
+    float texelWorld = csmTexelWorld(layer);
+    float stepWorld  = terrainSampleWorld() * 0.5;
+    return (texelWorld > 0.0) ? clamp(stepWorld / texelWorld, 0.5, 16.0) : 1.0;
+}
+
 float csmPCF(int layer, float3 p, float bias)
 {
     // Same texel size the GLSL derives with textureSize().
     uint sw, sh, se;
     shadowMapArray.GetDimensions(sw, sh, se);
-    float2 ts = (1.0 / float2(sw, sh)) * max(shadowSoftness, 0.5);
+
+    // 5x5 kernel — same tap layout as the lit mesh shaders — with a
+    // terrain-derived step instead of the scene's softness setting.
+    float2 ts = (1.0 / float2(sw, sh)) * terrainShadowStep(layer);
 
     float s = 0.0;
-    for (int x = -1; x <= 1; x++)
+    for (int x = -2; x <= 2; x++)
     {
-        for (int y = -1; y <= 1; y++)
+        for (int y = -2; y <= 2; y++)
         {
             // The engine exposes the cascade array through a comparison sampler,
             // so the depth test happens in the sampler: SampleCmp returns 1 for
@@ -290,7 +331,7 @@ float csmPCF(int layer, float3 p, float bias)
             s += 1.0 - lit;
         }
     }
-    return s / 9.0;
+    return s / 25.0;
 }
 
 float csmShadow(float3 wp, float3 n, float3 lightDir)
@@ -298,18 +339,50 @@ float csmShadow(float3 wp, float3 n, float3 lightDir)
     if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
     float3 l = normalize(-lightDir);
     float fd = abs(mul(viewMatrix, float4(wp, 1.0)).z);
+
+    // Select the cascade from the camera-distance split, then validate the
+    // actual light-space bounds. Testing every cascade box first silently pinned
+    // a large terrain to cascade 0, so the farther ranges never used their own
+    // shadow layers.
     int layer = cascadeCount - 1;
     for (int i = 0; i < cascadeCount; i++)
         if (fd < csmSplit(i)) { layer = i; break; }
-    // Normal-offset, then constant + slope-scaled depth bias.
+
     float3 samplePos = wp + normalize(n) * (csmTexelWorld(layer) * shadowNormalOffset);
-    float bias = csmBias(n, l);
     float3 p;
-    if (!csmProject(layer, samplePos, p)) return 0.0;
+    if (!csmProject(layer, samplePos, p))
+    {
+        bool found = false;
+        for (int i = 0; i < cascadeCount; i++)
+        {
+            if (i == layer) continue;
+            float3 candidate = wp + normalize(n) * (csmTexelWorld(i) * shadowNormalOffset);
+            if (csmProject(i, candidate, p))
+            {
+                layer = i;
+                samplePos = candidate;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return 0.0;
+    }
+
+    // Constant + slope-scaled receiver bias from the scene, plus a term derived
+    // from this cascade's texel footprint. The automatic term uses the
+    // terrain-driven shadow-map resolution (via csmTexelWorld), so terrain
+    // self-shadow acne scales with the terrain rather than a screen-space fudge.
+    float bias = csmBias(n, l);
+    {
+        float ndl = max(dot(normalize(n), l), 0.0);
+        float slope = min(sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.05), 8.0);
+        float depthPerWorld = 0.5 * abs(lightSpaceMatrices[layer][2][2]);
+        bias += csmTexelWorld(layer) * slope * depthPerWorld * 2.0;
+    }
     float sh = csmPCF(layer, p, bias);
     float sf = csmSplit(layer);
     float band = sf * 0.1;
-    if (layer + 1 < cascadeCount && fd > sf - band)
+    if (layer + 1 < cascadeCount && sf > 0.0 && fd > sf - band)
     {
         float3 p2;
         if (csmProject(layer + 1, samplePos, p2))
@@ -355,12 +428,24 @@ float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
     float NdotH = max(dot(n, h), 0.0);
     float NdotV = max(dot(n, v), 0.0);
     float NdotL = max(dot(n, l), 0.0);
-    float NDF   = distGGX(NdotH, roughness);
-    float G     = geoSmith(NdotV, NdotL, roughness);
+    float  NDF   = distGGX(NdotH, roughness);
+    float  G     = geoSmith(NdotV, NdotL, roughness);
     float3 F    = fresnelSchlick(max(dot(h, v), 0.0), F0);
     float3 kD   = (1.0 - F) * (1.0 - metallic);
     float3 spec = NDF * G * F / (4.0 * NdotV * NdotL + 0.0001);
     return (kD * albedo / PI + spec) * radiance * NdotL;
+}
+
+// Classic Blinn-Phong term used by the Phong terrain shading model.
+float3 calcPhong(float3 albedo, float shininess, float3 n, float3 v,
+                 float3 l, float3 radiance)
+{
+    float NdotL = max(dot(n, l), 0.0);
+    float3 h    = normalize(v + l);
+    float spec  = (NdotL > 0.0)
+                      ? pow(max(dot(n, h), 0.0), max(shininess, 1.0))
+                      : 0.0;
+    return (albedo * NdotL + material.specular * spec) * radiance;
 }
 
 // Fresnel with a roughness-aware ceiling (see mesh_pbr.hlsl).
@@ -442,15 +527,35 @@ float2 stochasticRotate(float2 uv, float seed)
     return cell + 0.5 + float2(c * d.x - s * d.y, s * d.x + c * d.y);
 }
 
-float2 terrainWorldUV(float3 wp)
+// Rotate each texture repeat cell around its own centre. The tiling grid stays
+// in place; only the texture inside every repeat is rotated. Both the enable
+// flag and the angle are per material layer.
+float2 rotateUVTiles(float2 uv, int i)
+{
+    if (u_RotateUV[i] <= 0.5)
+        return uv;
+    float2 cell = floor(uv);
+    float2 d    = frac(uv) - 0.5;
+    float  c    = cos(u_UVRotation[i]);
+    float  s    = sin(u_UVRotation[i]);
+    return cell + 0.5 + float2(c * d.x - s * d.y, s * d.x + c * d.y);
+}
+
+float2 layerUVOffset(int i)
+{
+    return float2(u_UVOffsetX[i], u_UVOffsetY[i]);
+}
+
+float2 layerUV(float2 planePos, int i)
 {
     float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
-    return wp.xz / tile;
+    float2 uv = (planePos / tile) * u_Tiling[i] + layerUVOffset(i);
+    return rotateUVTiles(uv, i);
 }
 
 float4 sampleLayerAlbedo(int i, float3 wp, float3 N, float triW)
 {
-    float2 uvTop = terrainWorldUV(wp) * u_Tiling[i];
+    float2 uvTop = layerUV(wp.xz, i);
 
     float4 top = u_AlbedoMap[i].Sample(u_Sampler, uvTop);
     if (u_Stochastic > 0.0)
@@ -463,9 +568,8 @@ float4 sampleLayerAlbedo(int i, float3 wp, float3 N, float triW)
     if (triW <= 0.001)
         return top;
 
-    float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
-    float2 uvX = (wp.zy / tile) * u_Tiling[i];
-    float2 uvZ = (wp.xy / tile) * u_Tiling[i];
+    float2 uvX = layerUV(wp.zy, i);
+    float2 uvZ = layerUV(wp.xy, i);
     float4 side = u_AlbedoMap[i].Sample(u_Sampler, uvX) * abs(N.x) +
                   u_AlbedoMap[i].Sample(u_Sampler, uvZ) * abs(N.z);
     side /= max(abs(N.x) + abs(N.z), 1e-4);
@@ -504,7 +608,7 @@ float4 PSMain(VSOutput input) : SV_Target
             continue;
 
         // World-space detail UV (shared by the non-albedo maps below).
-        float2 uv = terrainWorldUV(input.v_worldPos) * u_Tiling[i];
+        float2 uv = layerUV(input.v_worldPos.xz, i);
 
         // Albedo — world-space tiling, stochastic anti-tiling and triplanar
         // projection on steep slopes (see sampleLayerAlbedo()).
@@ -557,66 +661,133 @@ float4 PSMain(VSOutput input) : SV_Target
         albedo *= lerp(float3(1.0, 1.0, 1.0), float3(0.82, 0.86, 0.78), n * u_NoiseVariegation);
     }
 
-    // ----- PBR lighting -----------------------------------------------------
+    // ----- Lighting (Flat / Phong / PBR) ------------------------------------
+    // The splat/array sampling above is shared by every model, so switching the
+    // shading model never loses the height field, layer masks or textures.
     float3 v  = normalize(float3(0.0, 0.0, 0.0) - input.v_worldPos);
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
-    float3 Lo = float3(0.0, 0.0, 0.0);
+    float3 color;
 
-    // Sun lights (directional)
-    float shadow = csmShadow(input.v_worldPos, N,
-                             sunLightNum > 0 ? sunLights[0].direction : float3(0.0, -1.0, 0.0));
-    for (int si = 0; si < sunLightNum; si++)
+    int shadeModel = (int)(u_ShaderType + 0.5);
+
+    if (shadeModel <= 0)
     {
-        float3 l        = normalize(-sunLights[si].direction);
-        float3 radiance = sunLights[si].diffuse * sunLights[si].power;
-        Lo += calcPBR(albedo, metallic, roughness, F0, N, v, l, radiance) * (1.0 - shadow);
+        // Flat: unlit albedo, matching the editor's Flat mesh shader.
+        color = albedo * material.diffuse;
     }
-
-    // Point lights
-    for (int pi = 0; pi < pointLightNum; pi++)
+    else if (shadeModel == 1)
     {
-        float3 l    = normalize(pointLights[pi].position - input.v_worldPos);
-        float  dist = length(pointLights[pi].position - input.v_worldPos);
-        float  att  = 1.0 / (pointLights[pi].constant + pointLights[pi].linear * dist +
-                             pointLights[pi].quadratic * dist * dist);
-        Lo += calcPBR(albedo, metallic, roughness, F0, N, v, l, pointLights[pi].diffuse * att);
+        // Phong: ambient + Blinn-Phong diffuse/specular with CSM shadows.
+        float3 ambient = sceneAmbient * albedo * ao;
+        if (skyboxAmbientEnabled)
+        {
+            float3 irradiance = skyboxMap.SampleLevel(skyboxSampler, N, 8.0).rgb;
+            ambient += albedo * irradiance * skyboxAmbientStrength * ao;
+        }
+
+        float3 Lo = float3(0.0, 0.0, 0.0);
+        float shadow = csmShadow(input.v_worldPos, N,
+                                 sunLightNum > 0 ? sunLights[0].direction
+                                                 : float3(0.0, -1.0, 0.0));
+        for (int si = 0; si < sunLightNum; si++)
+        {
+            float3 l        = normalize(-sunLights[si].direction);
+            float3 radiance = sunLights[si].diffuse * sunLights[si].power;
+            Lo += calcPhong(albedo, material.shininess, N, v, l, radiance) *
+                  (1.0 - shadow);
+        }
+
+        for (int pi = 0; pi < pointLightNum; pi++)
+        {
+            float3 l    = normalize(pointLights[pi].position - input.v_worldPos);
+            float  dist = length(pointLights[pi].position - input.v_worldPos);
+            float  att  = 1.0 / (pointLights[pi].constant + pointLights[pi].linear * dist +
+                                 pointLights[pi].quadratic * dist * dist);
+            Lo += calcPhong(albedo, material.shininess, N, v, l,
+                            pointLights[pi].diffuse * att);
+        }
+
+        for (int li = 0; li < spotLightNum; li++)
+        {
+            float3 l      = normalize(spotLights[li].position - input.v_worldPos);
+            float  theta  = dot(l, normalize(-spotLights[li].direction));
+            float  eps    = spotLights[li].cutOff - spotLights[li].outerCutOff;
+            float  intens = clamp((theta - spotLights[li].outerCutOff) / eps, 0.0, 1.0);
+            float  dist   = length(spotLights[li].position - input.v_worldPos);
+            float  att    = 1.0 / (spotLights[li].constant + spotLights[li].linear * dist +
+                                   spotLights[li].quadratic * dist * dist);
+            Lo += calcPhong(albedo, material.shininess, N, v, l,
+                            spotLights[li].diffuse * att * intens);
+        }
+
+        color = ambient + Lo;
     }
-
-    // Spot lights
-    for (int li = 0; li < spotLightNum; li++)
+    else
     {
-        float3 l      = normalize(spotLights[li].position - input.v_worldPos);
-        float  theta  = dot(l, normalize(-spotLights[li].direction));
-        float  eps    = spotLights[li].cutOff - spotLights[li].outerCutOff;
-        float  intens = clamp((theta - spotLights[li].outerCutOff) / eps, 0.0, 1.0);
-        float  dist   = length(spotLights[li].position - input.v_worldPos);
-        float  att    = 1.0 / (spotLights[li].constant + spotLights[li].linear * dist +
-                               spotLights[li].quadratic * dist * dist);
-        Lo += calcPBR(albedo, metallic, roughness, F0, N, v, l,
-                      spotLights[li].diffuse * att * intens);
-    }
+        // ----- PBR lighting -------------------------------------------------
+        float3 Lo = float3(0.0, 0.0, 0.0);
 
-    // ----- Ambient ----------------------------------------------------------
-    float3 ambient = sceneAmbient * albedo * ao;
+        // Sun lights (directional)
+        float shadow = csmShadow(input.v_worldPos, N,
+                                 sunLightNum > 0 ? sunLights[0].direction
+                                                 : float3(0.0, -1.0, 0.0));
+        for (int si = 0; si < sunLightNum; si++)
+        {
+            float3 l        = normalize(-sunLights[si].direction);
+            float3 radiance = sunLights[si].diffuse * sunLights[si].power;
+            Lo += calcPBR(albedo, metallic, roughness, F0, N, v, l, radiance) *
+                  (1.0 - shadow);
+        }
 
-    // Skybox ambient — physically-based (split-sum IBL) so the terrain's
-    // metallic / roughness / normal (and per-layer AO) shape the result
-    // instead of the sky simply being overlaid.
-    if (skyboxAmbientEnabled)
-    {
-        float  NdotV      = max(dot(N, v), 0.0);
-        float3 R          = reflect(-v, N);
-        float3 irradiance = skyboxMap.SampleLevel(skyboxSampler, N, 8.0).rgb;
-        float3 prefiltered = skyboxMap.SampleLevel(skyboxSampler, R, roughness * 6.0).rgb;
+        // Point lights
+        for (int pi = 0; pi < pointLightNum; pi++)
+        {
+            float3 l    = normalize(pointLights[pi].position - input.v_worldPos);
+            float  dist = length(pointLights[pi].position - input.v_worldPos);
+            float  att  = 1.0 / (pointLights[pi].constant + pointLights[pi].linear * dist +
+                                 pointLights[pi].quadratic * dist * dist);
+            Lo += calcPBR(albedo, metallic, roughness, F0, N, v, l,
+                          pointLights[pi].diffuse * att);
+        }
 
-        float3 F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
-        float3 kD    = (1.0 - F_amb) * (1.0 - metallic);
+        // Spot lights
+        for (int li = 0; li < spotLightNum; li++)
+        {
+            float3 l      = normalize(spotLights[li].position - input.v_worldPos);
+            float  theta  = dot(l, normalize(-spotLights[li].direction));
+            float  eps    = spotLights[li].cutOff - spotLights[li].outerCutOff;
+            float  intens = clamp((theta - spotLights[li].outerCutOff) / eps, 0.0, 1.0);
+            float  dist   = length(spotLights[li].position - input.v_worldPos);
+            float  att    = 1.0 / (spotLights[li].constant + spotLights[li].linear * dist +
+                                   spotLights[li].quadratic * dist * dist);
+            Lo += calcPBR(albedo, metallic, roughness, F0, N, v, l,
+                          spotLights[li].diffuse * att * intens);
+        }
 
-        ambient += (kD * albedo * irradiance +
-                    prefiltered * envBRDFApprox(F0, roughness, NdotV)) *
-                   skyboxAmbientStrength * ao;
+        // ----- Ambient ------------------------------------------------------
+        float3 ambient = sceneAmbient * albedo * ao;
+
+        // Skybox ambient — physically-based (split-sum IBL) so the terrain's
+        // metallic / roughness / normal (and per-layer AO) shape the result
+        // instead of the sky simply being overlaid.
+        if (skyboxAmbientEnabled)
+        {
+            float  NdotV      = max(dot(N, v), 0.0);
+            float3 R          = reflect(-v, N);
+            float3 irradiance = skyboxMap.SampleLevel(skyboxSampler, N, 8.0).rgb;
+            float3 prefiltered = skyboxMap.SampleLevel(skyboxSampler, R, roughness * 6.0).rgb;
+
+            float3 F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
+            float3 kD    = (1.0 - F_amb) * (1.0 - metallic);
+
+            ambient += (kD * albedo * irradiance +
+                        prefiltered * envBRDFApprox(F0, roughness, NdotV)) *
+                       skyboxAmbientStrength * ao;
+        }
+
+        color = ambient + Lo;
     }
 
     // ----- Final color ------------------------------------------------------
-    return float4(ambient + Lo, 1.0);
+    return float4(color, 1.0);
 }
