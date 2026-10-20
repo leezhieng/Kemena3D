@@ -14,6 +14,7 @@
 #include <stb/stb_image_resize2.h>
 
 #include <algorithm> // std::find, std::remove
+#include <chrono>
 
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>
@@ -6309,6 +6310,11 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
                     // saved HeightField collider (including its resolution) must be
                     // restored explicitly here.
                     applyPhysicsAndCharacterJson(obj, mesh);
+                    // Rebuild the collider sample grid from the loaded height field
+                    // at the restored resolution (the samples themselves are not
+                    // serialized).
+                    if (tile)
+                        tile->refreshHeightFieldCollider();
 
                     // Restore the material UUID from the saved world JSON.
                     // Without this the early return (result = mesh; return result;)
@@ -8230,12 +8236,33 @@ void Manager::stepPhysics(float dt)
 {
     if (!physicsManager || dt <= 0.0f)
         return;
+
+    // Clamp a stalled frame so one huge delta cannot turn into an enormous
+    // collision/solver step (the classic "hit an object, everything stalls").
+    dt = (std::min)(dt, 1.0f / 30.0f);
+
+    const auto t0 = std::chrono::steady_clock::now();
     physicsManager->update(dt);
+    const auto t1 = std::chrono::steady_clock::now();
+    physicsStepMs =
+        std::chrono::duration<float, std::milli>(t1 - t0).count();
+    physicsContactEvents = physicsManager->getContactEventCount();
+
     // Sync each body's transform back into the scene-graph node so the
-    // renderer picks up the new positions on the next draw.
+    // renderer picks up the new positions on the next draw. Sleeping bodies do
+    // not move, so skip them: this avoids re-writing the same transform (and
+    // waking the editor's caches) every frame once a pile has settled.
+    int awake = 0;
     for (kObject *obj : physicsBodies)
-        if (obj->getPhysicsObject())
+    {
+        kPhysicsObject *body = obj->getPhysicsObject();
+        if (body && body->isActive())
+        {
+            ++awake;
             obj->syncFromPhysics();
+        }
+    }
+    physicsAwakeBodies = awake;
 
     // Characters update their ground state inside physicsManager->update();
     // copy their resolved position back into the scene node.

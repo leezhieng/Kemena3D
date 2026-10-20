@@ -54,6 +54,7 @@ void PanelTerrain::beginTerrainEdit(kTerrain *tile, bool height, bool weight)
         if (data && n > 0)
         {
             s->height = true;
+            s->tileHeightBefore = tile->getTileHeight();
             s->heightBefore.assign(data, data + n);
         }
     }
@@ -132,6 +133,21 @@ void PanelTerrain::commitTerrainEdit()
             }
         }
 
+        // --- Tile elevation diff ---
+        // Applying a new "Tile Height" translates the base field, so the nominal
+        // elevation must be restored by undo as well or a second apply would use
+        // the wrong delta.
+        if (s.height)
+        {
+            const float tileHeightAfter = tile->getTileHeight();
+            if (tileHeightAfter != s.tileHeightBefore)
+            {
+                diff.hasTileHeight = true;
+                diff.tileHeightBefore = s.tileHeightBefore;
+                diff.tileHeightAfter = tileHeightAfter;
+            }
+        }
+
         // --- Weight (splat) map diff ---
         if (s.weight &&
             s.weightBefore.size() == static_cast<size_t>(res) * res * kTerrain::kMaxTerrainLayers)
@@ -184,7 +200,7 @@ void PanelTerrain::commitTerrainEdit()
             }
         }
 
-        if (diff.hasHeight || diff.hasWeight)
+        if (diff.hasHeight || diff.hasWeight || diff.hasTileHeight)
             cmd->diffs.push_back(std::move(diff));
     }
 
@@ -653,7 +669,7 @@ float PanelTerrain::noiseSmooth(float x, float y, int seed)
 }
 
 void PanelTerrain::applyNoiseToTile(kTerrain *tile, float scale, float amplitude,
-                                    int octaves, int seed, bool additive)
+                                    int octaves, int seed)
 {
     if (!tile)
         return;
@@ -709,11 +725,11 @@ void PanelTerrain::applyNoiseToTile(kTerrain *tile, float scale, float amplitude
             height /= maxAmp;
             height *= amplitude;
 
+            // Always additive: the layer's delta is derived from this result
+            // against its input. Replacing the input destroyed the terrain and
+            // made toggling additive off/on unrecoverable.
             int idx = z * res + x;
-            if (additive)
-                data[idx] += height;
-            else
-                data[idx] = height;
+            data[idx] += height;
         }
     }
 
@@ -1076,7 +1092,19 @@ PanelTerrain::LayerEditBuffer &PanelTerrain::layerEditBufferFor(
 {
     for (auto &buffer : m_layerEditBuffers)
         if (buffer.tile == tile && buffer.index == index)
+        {
+            // Undo/redo can insert or remove a layer and shift this index onto
+            // a different layer. Re-seed the cached descriptor when the slot no
+            // longer describes the layer the tree is about to draw.
+            if (buffer.desc.name != current.name || buffer.desc.type != current.type)
+            {
+                buffer.desc = current;
+                buffer.desc.offsets.clear();
+                buffer.applyPending = false;
+                buffer.generatePending = false;
+            }
             return buffer;
+        }
 
     m_layerEditBuffers.push_back({tile, index, current});
     // The widgets never bind to offsets (they are derived, not edited), and a
@@ -1342,7 +1370,7 @@ PanelTerrain::makeHeightLayerGenerator(kTerrain *tile, const kTerrainHeightLayer
         {
         case kTerrainHeightLayerType::Noise:
             applyNoiseToTile(tile, layer.noiseScale, layer.noiseAmplitude,
-                             layer.noiseOctaves, layer.noiseSeed, layer.noiseAdditive);
+                             layer.noiseOctaves, layer.noiseSeed);
             break;
         case kTerrainHeightLayerType::HydraulicErosion:
             applyErosionToTile(tile, layer.droplets, layer.erodeRadius, layer.erodeInertia,
@@ -1429,18 +1457,27 @@ void PanelTerrain::applyTileHeight(kTerrain *tile)
     if (!tile || !manager)
         return;
 
+    // "Tile Height" is the tile's nominal base elevation. Translate the sculpted
+    // field to the new elevation instead of replacing it: the height map and the
+    // effect layers (whose offsets are relative to the base) must survive a
+    // height change. Translating only the base moves the whole composite because
+    // `composite = base + Σ(offsets * weight)`.
+    const float delta = m_defaultHeight - tile->getTileHeight();
+
     beginTerrainEdit(tile, true, false);
 
-    // Settle the base field on the panel's tile height ...
-    float *base = tile->getBaseHeightData();
-    if (base)
-        std::fill(base, base + tile->getHeightDataSize(), m_defaultHeight);
+    if (delta != 0.0f)
+    {
+        float *base = tile->getBaseHeightData();
+        if (base)
+        {
+            const size_t n = tile->getHeightDataSize();
+            for (size_t i = 0; i < n; ++i)
+                base[i] += delta;
+        }
+    }
 
-    // ... and clear the effect layers' height deltas so the tile reads exactly at
-    // that height instead of being pushed away from it by a modifier.
-    for (auto &layer : tile->getHeightLayers())
-        std::fill(layer.offsets.begin(), layer.offsets.end(), 0.0f);
-
+    tile->setTileHeight(m_defaultHeight);
     tile->recomposeHeight();
     if (tile->isLoaded())
         rebuildTileMesh(tile);
@@ -1457,8 +1494,32 @@ void PanelTerrain::applyTileHeight(kTerrain *tile)
 
 void PanelTerrain::clearSelectedTileHeight(kTerrain *tile)
 {
-    // Clearing to the tile height is the same operation as applying it.
-    applyTileHeight(tile);
+    if (!tile || !manager)
+        return;
+
+    beginTerrainEdit(tile, true, false);
+
+    // Clearing flattens: the base returns to the panel's height and every effect
+    // layer's delta is dropped.
+    float *base = tile->getBaseHeightData();
+    if (base)
+        std::fill(base, base + tile->getHeightDataSize(), m_defaultHeight);
+
+    for (auto &layer : tile->getHeightLayers())
+        std::fill(layer.offsets.begin(), layer.offsets.end(), 0.0f);
+
+    tile->setTileHeight(m_defaultHeight);
+    tile->recomposeHeight();
+    if (tile->isLoaded())
+        rebuildTileMesh(tile);
+
+    commitTerrainEdit();
+
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+
+    tile->saveOwnedAssets();
 }
 
 void PanelTerrain::removeTerrainLayer(kTerrain *tile, int index)
@@ -1670,6 +1731,9 @@ void PanelTerrain::generateTileCollider(kTerrain *tile, int resolution)
         }
     }
     desc.shape.heightSampleCount = target;
+    // Remember the chosen resolution on the tile so later mesh rebuilds refresh
+    // the collider at this resolution instead of falling back to a default.
+    tile->setCollisionResolution(target);
 
     const float world = tile->getWorldSize();
     const float spacing = world / static_cast<float>(target - 1);
@@ -2237,6 +2301,16 @@ void PanelTerrain::draw(bool &isOpened)
     else
         ImGui::TextDisabled("Select a terrain tile to add or remove its neighbours.");
 
+    // The "Tile Height" field reflects the selected tile's nominal elevation, so
+    // switching tiles shows that tile's height instead of carrying the previous
+    // tile's number over.
+    if (selectedTerrain != m_tileHeightTile)
+    {
+        m_tileHeightTile = selectedTerrain;
+        if (selectedTerrain)
+            m_defaultHeight = selectedTerrain->getTileHeight();
+    }
+
     ImGui::Spacing();
 
     ImGui::SetNextItemWidth(160.0f);
@@ -2249,7 +2323,8 @@ void PanelTerrain::draw(bool &isOpened)
         applyTileHeight(selectedTerrain);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Set the selected tile to this height and save it.");
+        ImGui::SetTooltip("Move the selected tile to this base height. The sculpted height map "
+                          "and effect layers are preserved; use Clear Height Map to flatten.");
 
     ImGui::Spacing();
 
@@ -2490,7 +2565,6 @@ void PanelTerrain::draw(bool &isOpened)
         desc.noiseOctaves = m_noiseOctaves;
         desc.noiseSeed = m_noiseSeed;
         desc.noiseType = m_noiseType;
-        desc.noiseAdditive = m_noiseAdditive;
         addLayer(desc);
     }
 
@@ -2606,7 +2680,6 @@ void PanelTerrain::draw(bool &isOpened)
                     paramChanged |= track(ImGui::Combo("Fractal", &desc.noiseType, noiseTypes,
                                                        IM_ARRAYSIZE(noiseTypes)));
                     paramChanged |= track(ImGui::InputInt("Seed", &desc.noiseSeed));
-                    paramChanged |= track(ImGui::Checkbox("Additive", &desc.noiseAdditive));
                     break;
 
                 case kTerrainHeightLayerType::HydraulicErosion:
@@ -2670,25 +2743,35 @@ void PanelTerrain::draw(bool &isOpened)
 
                 if (paramChanged || structuralChanged)
                 {
-                    // Capture the stored layer once per interaction; the live
-                    // apply below mutates it, and the command pushed on release
-                    // must still describe the original "before" state.
+                    // Capture the stored layer once per interaction; the apply
+                    // below mutates it, and the command pushed on release must
+                    // still describe the original "before" state.
                     if (!buffer.undoPending)
                     {
                         buffer.undoBefore = layer;
                         buffer.undoPending = true;
                     }
 
-                    // Generator edits replace the layer's delta, so applying the
-                    // same setting twice is idempotent. Enabled/Weight edits keep
-                    // the existing delta and only recompose.
-                    applyHeightLayer(noiseTile, li, desc,
-                                     paramChanged ? makeHeightLayerGenerator(noiseTile, desc)
-                                                  : nullptr,
-                                     /*recordUndo=*/false, /*persist=*/false);
+                    // Do NOT run the operators while the widget is being dragged.
+                    // Noise/erosion generation is expensive; defer it until the
+                    // interaction ends and apply it exactly once.
+                    buffer.applyPending = true;
+                    buffer.generatePending = buffer.generatePending || paramChanged;
                 }
 
-                // The interaction has ended: record one undo step and persist.
+                // Interaction ended: apply the descriptor once (re-running the
+                // generator only if a generator parameter changed) and persist.
+                if (!itemActive && buffer.applyPending)
+                {
+                    applyHeightLayer(noiseTile, li, desc,
+                                     buffer.generatePending
+                                         ? makeHeightLayerGenerator(noiseTile, desc)
+                                         : nullptr,
+                                     /*recordUndo=*/false, /*persist=*/false);
+                    buffer.applyPending = false;
+                    buffer.generatePending = false;
+                }
+
                 if (buffer.undoPending && !itemActive)
                 {
                     commitHeightLayerAutoEdit(noiseTile, li, buffer.undoBefore);
@@ -2699,6 +2782,23 @@ void PanelTerrain::draw(bool &isOpened)
                     removeIndex = li;
 
                 ImGui::TreePop();
+            }
+            else if (buffer.applyPending)
+            {
+                // The node was collapsed before the interaction ended; commit the
+                // pending edit here so it is not silently lost.
+                applyHeightLayer(noiseTile, li, buffer.desc,
+                                 buffer.generatePending
+                                     ? makeHeightLayerGenerator(noiseTile, buffer.desc)
+                                     : nullptr,
+                                 /*recordUndo=*/false, /*persist=*/false);
+                buffer.applyPending = false;
+                buffer.generatePending = false;
+                if (buffer.undoPending)
+                {
+                    commitHeightLayerAutoEdit(noiseTile, li, buffer.undoBefore);
+                    buffer.undoPending = false;
+                }
             }
 
             ImGui::PopID();
@@ -3018,6 +3118,20 @@ void PanelTerrain::draw(bool &isOpened)
                 m_matSettings.triplanarSharpness = read("u_TriplanarSharpness", 3.0f);
                 m_matSettings.noiseVariegation   = read("u_NoiseVariegation", 0.25f);
                 m_matSettings.noiseScale         = read("u_NoiseScale", 0.02f);
+
+                // Directional (self) shading controls. Defaults preserve the
+                // historical N·L look until the user tunes them.
+                m_matSettings.selfShadowStrength = read("u_TerrainShadowStrength", 0.0f);
+                m_matSettings.selfShadowSoftness = read("u_TerrainShadowSoftness", 0.0f);
+
+                // Drop parameters from earlier builds that are no longer used:
+                // per-tile CSM overrides and the removed brightness/metallic
+                // overrides. CSM follows the scene's shadow settings now.
+                terrainMat->removeParam("shadowBias");
+                terrainMat->removeParam("shadowNormalBias");
+                terrainMat->removeParam("shadowNormalOffset");
+                terrainMat->removeParam("u_TerrainBrightness");
+                terrainMat->removeParam("u_TerrainMetallic");
             }
 
             // Tiling is edited per material layer (see each layer's tree node above).
@@ -3040,6 +3154,22 @@ void PanelTerrain::draw(bool &isOpened)
 
             matChanged |= ImGui::SliderFloat("Blend Sharpness", &m_matSettings.blendSharpness,
                                              0.1f, 8.0f, "%.2f");
+
+            // --- Albedo colour overlay ---------------------------------------------
+            // Multiplies the blended layer albedo (works for Flat, Phong and PBR).
+            {
+                const kVec3 tint = terrainMat->getDiffuseColor();
+                float tintColor[3] = {tint.x, tint.y, tint.z};
+                if (ImGui::ColorEdit3("Terrain Color", tintColor))
+                {
+                    terrainMat->setDiffuseColor(kVec3(tintColor[0], tintColor[1], tintColor[2]));
+                    manager->projectSaved = false;
+                    if (!ImGui::IsAnyItemActive())
+                        selectedTile->saveOwnedAssets();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Colour overlay multiplied into the blended terrain albedo.");
+            }
 
             // Stochastic anti-tiling: random per-cell rotation that hides repeats.
             matChanged |= ImGui::Checkbox("Stochastic Anti-Tiling", &m_matSettings.stochastic);
@@ -3067,6 +3197,25 @@ void PanelTerrain::draw(bool &isOpened)
                                              &m_matSettings.noiseScale, 0.001f, 0.5f, "%.3f");
             ImGui::EndDisabled();
 
+            // --- Directional (self) shading ---
+            // These controls shape the shader's sun response: how quickly slopes
+            // turning away from the sun darken (Strength) and how much light
+            // wraps around the terminator (Softness). CSM is deliberately not
+            // touched here — cast shadows follow the scene's shadow settings.
+            ImGui::Spacing();
+            ImGui::SeparatorText("Self Shading");
+
+            matChanged |= ImGui::SliderFloat("Shadow Strength",
+                                             &m_matSettings.selfShadowStrength, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Extra contrast on slopes facing away from the sun. "
+                                  "0 = plain N·L lighting.");
+            matChanged |= ImGui::SliderFloat("Shadow Softness",
+                                             &m_matSettings.selfShadowSoftness, 0.0f, 1.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Wraps sunlight around the terminator so shaded slopes stay lit. "
+                                  "0 = hard terminator.");
+
             if (matChanged)
             {
                 terrainMat->setParamFloat("u_ShaderType",
@@ -3080,6 +3229,10 @@ void PanelTerrain::draw(bool &isOpened)
                                           m_matSettings.noiseEnabled ? m_matSettings.noiseVariegation
                                                                      : 0.0f);
                 terrainMat->setParamFloat("u_NoiseScale", m_matSettings.noiseScale);
+
+                // Terrain directional (self) shading controls (TerrainPBR uniforms).
+                terrainMat->setParamFloat("u_TerrainShadowStrength", m_matSettings.selfShadowStrength);
+                terrainMat->setParamFloat("u_TerrainShadowSoftness", m_matSettings.selfShadowSoftness);
 
                 // Tiling lives on each material layer.
                 selectedTile->syncLayerTiling();
@@ -3115,10 +3268,11 @@ void PanelTerrain::draw(bool &isOpened)
         if (m_collisionResTile != selectedTile)
         {
             m_collisionResTile = selectedTile;
+            const int storedRes = selectedTile->getCollisionResolution();
             m_collisionResolution =
                 (hasCollider && tileObject->getPhysicsDesc().shape.heightSampleCount >= 2)
                     ? tileObject->getPhysicsDesc().shape.heightSampleCount
-                    : 129;
+                    : ((storedRes >= 2) ? storedRes : 129);
         }
 
         ImGui::BeginDisabled(tileObject == nullptr);
@@ -3138,6 +3292,7 @@ void PanelTerrain::draw(bool &isOpened)
         if (ImGui::Button("Generate Tile Collider", ImVec2(-1, 0)))
         {
             generateTileCollider(selectedTile, m_collisionResolution);
+            selectedTile->setCollisionResolution(m_collisionResolution);
             showCollider = true;
         }
         ImGui::EndDisabled();
@@ -3185,6 +3340,12 @@ void PanelTerrain::addTerrainTile(int gridX, int gridZ)
         return;
 
     tile->fillHeight(m_defaultHeight);
+
+    // A new tile is flat, so morph its shared borders into the neighbouring
+    // terrain over a band before the first mesh build. Without this, stitching
+    // only averages the last boundary row and leaves a one-sample cliff between
+    // the neighbour's sculpted edge and the flat interior.
+    tile->blendEdgesToNeighbors((std::max)(2, tile->getHeightRes() / 16));
 
     // createTile() only constructs the object — the GPU mesh is built by
     // rebuildMesh()/reload(). Build it now so the tile is visible immediately.

@@ -180,6 +180,36 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             renderer->setOctreeDebugEnabled(octreeDebug);
         if (gui->isItemHovered())
             gui->setItemTooltip("Show octree node bounds");
+
+        ImGui::Separator();
+        bool showGrid = manager->showEditorGrid;
+        if (gui->checkbox("Grid", &showGrid))
+        {
+            manager->showEditorGrid = showGrid;
+            if (manager->editorGridMesh)
+                manager->editorGridMesh->setVisible(showGrid);
+        }
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Show the editor grid plane");
+
+        bool showGizmo = manager->showEditorGizmo;
+        if (gui->checkbox("Gizmo", &showGizmo))
+            manager->showEditorGizmo = showGizmo;
+        if (gui->isItemHovered())
+            gui->setItemTooltip("Show the transform gizmo");
+
+        // Live physics cost. If Step is high while Awake is non-zero, the cost
+        // is moving-body contact/solver work; when Awake drops to 0 the pile has
+        // gone to sleep and the step should collapse.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Physics");
+        ImGui::Text("Step: %.2f ms", manager->getPhysicsStepMs());
+        ImGui::Text("Bodies: %d (awake %d)",
+                    manager->getPhysicsBodyCount(), manager->getPhysicsAwakeBodyCount());
+        ImGui::Text("Contact events: %d", manager->getPhysicsContactEventCount());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Last physics step timing and activity counters");
+
         ImGui::EndPopup();
     }
 
@@ -870,7 +900,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
     // ------------------------------------------------------------------
     // Multi-object gizmo
     // ------------------------------------------------------------------
-    if (!manager->selectedObjects.empty())
+    if (manager->showEditorGizmo && !manager->selectedObjects.empty())
     {
         // Terrain tiles are authored exclusively through their grid coordinates
         // and the Terrain panel. Their world transform must never be edited by

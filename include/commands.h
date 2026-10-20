@@ -372,6 +372,12 @@ struct TerrainEditCommand : ICommand
         std::vector<float> heightBefore; ///< BASE height sub-block prior to the edit (hxc*hzc).
         std::vector<float> heightAfter;  ///< BASE height sub-block after the edit (hxc*hzc).
 
+        /// Nominal tile elevation ("Tile Height") before/after, so translating
+        /// the whole tile can be undone together with the base-field diff.
+        bool  hasTileHeight = false;
+        float tileHeightBefore = 0.0f;
+        float tileHeightAfter = 0.0f;
+
         /// Whether a generated height modifier layer changed. Sculpting never
         /// sets this; it only affects the sculpted base field.
         bool hasLayer = false;

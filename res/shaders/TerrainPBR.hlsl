@@ -120,6 +120,7 @@ struct VSOutput
     float3 v_worldPos: TEXCOORD0;
     float3 v_color   : TEXCOORD1;
     float2 v_texCoord: TEXCOORD2;
+    float3 v_normal  : TEXCOORD3;
 };
 
 VSOutput VSMain(VSInput input)
@@ -130,6 +131,8 @@ VSOutput VSMain(VSInput input)
     o.v_worldPos = worldPos.xyz;
     o.v_color    = input.color;
     o.v_texCoord = input.texCoord;
+    // Smooth per-vertex normal for lighting (derivative normals are faceted).
+    o.v_normal   = normalize(mul((float3x3)normalMatrix, input.normal));
     o.position   = mul(projectionMatrix, mul(viewMatrix, worldPos));
     return o;
 }
@@ -210,6 +213,10 @@ cbuffer PerMaterial : register(b1)
     // to scale the PCF footprint with the tile's size (mirror of the GLSL
     // uniform). It reuses the old padding slot, so the CB layout is unchanged.
     float    u_TerrainSampleSpacing;
+    // Terrain directional (self) shading controls (mirror of TerrainPBR.glsl).
+    // They shape the sun's N·L response; CSM uses the scene's shadow settings.
+    float    u_TerrainShadowStrength;
+    float    u_TerrainShadowSoftness;
     float    _matPad0;
     // Per-layer UV transform (tiling is u_Tiling[layer]; offset and rotation
     // are stored per material layer as well).
@@ -314,9 +321,11 @@ float csmPCF(int layer, float3 p, float bias)
     uint sw, sh, se;
     shadowMapArray.GetDimensions(sw, sh, se);
 
-    // 5x5 kernel — same tap layout as the lit mesh shaders — with a
-    // terrain-derived step instead of the scene's softness setting.
-    float2 ts = (1.0 / float2(sw, sh)) * terrainShadowStep(layer);
+    // 5x5 kernel — same tap layout as the lit mesh shaders. The base step is
+    // terrain-derived, then scaled by the scene's softness setting (normalised
+    // to the 1.5 default so the historical look is preserved).
+    float softScale = clamp(shadowSoftness / 1.5, 0.1, 4.0);
+    float2 ts = (1.0 / float2(sw, sh)) * terrainShadowStep(layer) * softScale;
 
     float s = 0.0;
     for (int x = -2; x <= 2; x++)
@@ -421,6 +430,18 @@ float3 fresnelSchlick(float cosTheta, float3 F0)
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Terrain directional (self) shading curve applied to the sun's N·L term.
+// (0, 0) reproduces plain N·L. Softness wraps the terminator; strength adds
+// contrast on slopes turning away from the sun. Independent of CSM.
+float terrainDirectNdotL(float3 n, float3 l)
+{
+    float ndl  = dot(n, l);
+    float wrap = clamp(u_TerrainShadowSoftness, 0.0, 0.95);
+    float softened = clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
+    float contrast = lerp(1.0, 2.5, clamp(u_TerrainShadowStrength, 0.0, 1.0));
+    return pow(softened, contrast);
+}
+
 float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
                float3 n, float3 v, float3 l, float3 radiance)
 {
@@ -433,7 +454,7 @@ float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
     float3 F    = fresnelSchlick(max(dot(h, v), 0.0), F0);
     float3 kD   = (1.0 - F) * (1.0 - metallic);
     float3 spec = NDF * G * F / (4.0 * NdotV * NdotL + 0.0001);
-    return (kD * albedo / PI + spec) * radiance * NdotL;
+    return (kD * albedo / PI + spec) * radiance * terrainDirectNdotL(n, l);
 }
 
 // Classic Blinn-Phong term used by the Phong terrain shading model.
@@ -445,7 +466,7 @@ float3 calcPhong(float3 albedo, float shininess, float3 n, float3 v,
     float spec  = (NdotL > 0.0)
                       ? pow(max(dot(n, h), 0.0), max(shininess, 1.0))
                       : 0.0;
-    return (albedo * NdotL + material.specular * spec) * radiance;
+    return (albedo * terrainDirectNdotL(n, l) + material.specular * spec) * radiance;
 }
 
 // Fresnel with a roughness-aware ceiling (see mesh_pbr.hlsl).
@@ -579,9 +600,12 @@ float4 sampleLayerAlbedo(int i, float3 wp, float3 N, float triW)
 
 float4 PSMain(VSOutput input) : SV_Target
 {
-    // ----- Geometric normal from the displaced world position ---------------
-    // Computed up front: the surface slope drives the triplanar cliff blend.
-    float3 N = computeDisplacedNormal(input.v_worldPos);
+    // ----- Terrain normal ----------------------------------------------------
+    // Interpolate the smooth per-vertex normal. A derivative normal is constant
+    // per triangle, which produced faceted ("pixelated") self-shading on slopes.
+    float3 N = input.v_normal;
+    float nLen = length(N);
+    N = (nLen > 1e-5) ? N / nLen : computeDisplacedNormal(input.v_worldPos);
 
     // Triplanar weight — grows as the surface tilts away from horizontal.
     float slope = clamp(1.0 - abs(N.y), 0.0, 1.0);
@@ -661,6 +685,9 @@ float4 PSMain(VSOutput input) : SV_Target
         albedo *= lerp(float3(1.0, 1.0, 1.0), float3(0.82, 0.86, 0.78), n * u_NoiseVariegation);
     }
 
+    // Colour overlay: the material's diffuse colour tints the blended albedo.
+    albedo *= material.diffuse;
+
     // ----- Lighting (Flat / Phong / PBR) ------------------------------------
     // The splat/array sampling above is shared by every model, so switching the
     // shading model never loses the height field, layer masks or textures.
@@ -672,8 +699,8 @@ float4 PSMain(VSOutput input) : SV_Target
 
     if (shadeModel <= 0)
     {
-        // Flat: unlit albedo, matching the editor's Flat mesh shader.
-        color = albedo * material.diffuse;
+        // Flat: unlit albedo (already tinted by the colour overlay above).
+        color = albedo;
     }
     else if (shadeModel == 1)
     {

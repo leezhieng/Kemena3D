@@ -985,6 +985,16 @@ public:
     std::vector<kObject *> physicsBodies;
     std::vector<kObject *> characterBodies;
 
+    /// Last-frame physics statistics (World panel diagnostics).
+    float physicsStepMs = 0.0f;      ///< Wall time spent in the last physics step.
+    int physicsAwakeBodies = 0;      ///< Dynamic/kinematic bodies still awake.
+    int physicsContactEvents = 0;    ///< Contact events captured by the last step.
+
+    float getPhysicsStepMs() const { return physicsStepMs; }
+    int getPhysicsAwakeBodyCount() const { return physicsAwakeBodies; }
+    int getPhysicsBodyCount() const { return static_cast<int>(physicsBodies.size()); }
+    int getPhysicsContactEventCount() const { return physicsContactEvents; }
+
     std::map<kString, kNavMesh *> bakedNavMeshes;
 
     // --- Scripting ----------------------------------------------------------
@@ -1148,6 +1158,15 @@ public:
     /// and pushed to every renderer (editor, game, prefab). Persisted per-project
     /// (Config/project.json -> "icon_gizmo_size").
     float iconGizmoSize = 0.5f;
+
+    /// World viewport overlay toggles (Preview Settings dropdown). Both default
+    /// to on; they only affect the editor viewport, never the game.
+    bool showEditorGrid = true;   ///< Show the editor grid plane.
+    bool showEditorGizmo = true;  ///< Show the transform (ImGuizmo) manipulator.
+
+    /// Grid overlay mesh created by main(); the World panel toggles its
+    /// visibility through showEditorGrid.
+    kMesh *editorGridMesh = nullptr;
 
     // Prefab panel has its own ImGuizmo state so it doesn't interfere with the
     // world panel's gizmo mode.

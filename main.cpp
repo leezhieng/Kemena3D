@@ -254,6 +254,9 @@ int main()
 	gridMesh->setPosition(kVec3(0.0f, -0.01f, 0.0f));
 	sceneEditor->setFrustumCullingEnabled(false);
 	sceneEditor->addMesh(gridMesh);
+	// Let the World panel's Preview Settings toggle the grid overlay.
+	manager->editorGridMesh = gridMesh;
+	gridMesh->setVisible(manager->showEditorGrid);
 	kShader *gridShader = assetManager->loadGlslFromResource("SHADER_GRID");
 	kMaterial *gridMat = assetManager->createMaterial(gridShader);
 	gridMat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);

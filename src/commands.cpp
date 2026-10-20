@@ -1,5 +1,6 @@
 #include "commands.h"
 #include "manager.h"
+#include "panel_terrain.h"
 
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>
@@ -442,6 +443,10 @@ static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after,
 {
     if (!d.tile) return;
 
+    // Restore the nominal elevation together with the base field.
+    if (d.hasTileHeight)
+        d.tile->setTileHeight(after ? d.tileHeightAfter : d.tileHeightBefore);
+
     const bool touchesHeight = d.hasHeight || d.hasLayer;
     if (d.hasHeight)
         applyHeightBlock(d.tile, d.res, d.hx0, d.hz0, d.hxc, d.hzc,
@@ -466,6 +471,12 @@ static void applyTileDiff(const TerrainEditCommand::TileDiff &d, bool after,
         {
             layers.erase(layers.begin() + d.layerIndex);
         }
+
+        // Inserting/removing a layer shifts every index above it. The panel's
+        // tree buffers are keyed by index, so drop them or the next draw shows
+        // the previous occupant's name and parameters.
+        if (manager && manager->panelTerrain)
+            manager->panelTerrain->invalidateLayerEditBuffers(d.tile);
     }
 
     if (d.hasWeight)

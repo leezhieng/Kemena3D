@@ -187,9 +187,10 @@ public:
     /**
      * @brief Applies the panel's "Tile Height" value to @p tile and saves it.
      *
-     * Fills the tile's base height field with @ref m_defaultHeight and clears
-     * every effect layer's stored delta, so the tile reads flat at exactly that
-     * height. Recorded as one undoable step and written to disk immediately.
+     * "Tile Height" is the tile's nominal base elevation. Applying a new value
+     * translates the sculpted base field by the difference, so the height map
+     * and every effect layer (whose offsets are relative) are preserved.
+     * Recorded as one undoable step and written to disk immediately.
      */
     void applyTileHeight(kTerrain *tile);
 
@@ -258,8 +259,19 @@ public:
     /** @brief Re-runs a layer's generator in place, as one undoable step. */
     void regenerateHeightLayer(kTerrain *tile, int layerIndex);
 
+    /**
+     * @brief Drops the cached per-layer edit descriptors for @p tile.
+     *
+     * Undo/redo can insert or remove layers, which shifts every index above the
+     * edited slot. The persistent tree widgets are keyed by index, so a stale
+     * descriptor would display and edit the wrong layer (e.g. an erosion layer
+     * showing the name of a restored noise layer). Call this after any history
+     * operation that changes the layer stack.
+     */
+    void invalidateLayerEditBuffers(kTerrain *tile) { clearLayerEditBuffers(tile); }
+
     void applyNoiseToTile(kTerrain *tile, float scale, float amplitude,
-                          int octaves, int seed, bool additive);
+                          int octaves, int seed);
 
     /**
      * @brief Hydraulic ("droplet") erosion of a tile's heightfield — each droplet
@@ -315,6 +327,7 @@ private:
         kTerrain *tile = nullptr;             ///< Tile being edited.
         bool height = false;                  ///< Height field captured.
         bool weight = false;                  ///< Weight map captured.
+        float tileHeightBefore = 0.0f;        ///< Nominal elevation at stroke start.
         std::vector<float> heightBefore;      ///< Height copy at stroke start.
         std::vector<unsigned char> weightBefore; ///< Weight copy at stroke start.
     };
@@ -337,6 +350,12 @@ private:
         kTerrainHeightLayer desc;          ///< In-progress layer descriptor.
         kTerrainHeightLayer undoBefore;    ///< Stored layer before the current edit.
         bool undoPending = false;          ///< True while live edits await one undo step.
+        /// Set when the scratch descriptor differs from the stored layer. The
+        /// edit is applied on interaction end instead of every frame.
+        bool applyPending = false;
+        /// True when a generator parameter changed, so the operator must be
+        /// re-run (not just recomposited) when the edit is committed.
+        bool generatePending = false;
     };
     std::vector<LayerEditBuffer> m_layerEditBuffers;
 
@@ -396,6 +415,13 @@ private:
         float noiseVariegation = 0.25f;
         float noiseScale = 0.02f;
         bool noiseEnabled = false; ///< Procedural noise variegation on/off.
+
+        // Terrain self-shadow controls. They shape the shader's directional
+        // (N·L) lighting, not the CSM cast shadows — CSM follows the scene's
+        // shadow settings. Stored as TerrainPBR material params, so they travel
+        // with the tile.
+        float selfShadowStrength = 0.0f; ///< Extra contrast on slopes facing away from the sun.
+        float selfShadowSoftness = 0.0f; ///< Wrap lighting around the terminator (lifts dark slopes).
     };
     kTerrain *m_matSettingsTile = nullptr; ///< Tile the staged settings belong to.
     MaterialSettings m_matSettings;
@@ -405,6 +431,9 @@ private:
     kTerrain *m_collisionResTile = nullptr; ///< Tile the staged resolution belongs to.
 
     float m_defaultHeight = 0.0f;
+    /// Tile whose nominal elevation was last loaded into m_defaultHeight; the
+    /// field adopts the selected tile's value when the selection changes.
+    kTerrain *m_tileHeightTile = nullptr;
 
     // --- Terrain size / resolution settings (applied only after confirmation) ---
     float m_settingsWorldSize = 256.0f; ///< Edited value in the Terrain panel.
@@ -425,7 +454,6 @@ private:
     float m_noiseAmplitude = 10.0f;
     int m_noiseOctaves = 4;
     int m_noiseSeed = 42;
-    bool m_noiseAdditive = true;
     int m_noiseType = 0; ///< 0 = fBm, 1 = ridged, 2 = billowed.
 
     // --- Erosion parameters ---------------------------------------------------
