@@ -12,7 +12,7 @@
 #include "panel_logicgraph.h"
 #include "panel_game.h"
 #include "panel_prefab.h"
-#include "panel_terrain.h"
+#include "terrain.h"
 #include "panel_animator.h"
 #include "panel_animation.h"
 #include "panel_particle.h"
@@ -1320,9 +1320,9 @@ int main()
 		applyPendingFocus("Logic Graph", showPanel.scriptEditor);
 		panelLogicGraph->draw(showPanel.scriptEditor);
 		panelGame->draw(showPanel.game);
-		applyPendingFocus("Terrain", showPanel.terrain);
+		// The terrain editor now lives inside the Inspector (shown while a
+		// terrain tile is selected), so there is no separate Terrain window.
 		panelTerrain->enabled = true;
-		panelTerrain->draw(showPanel.terrain);
 		applyPendingFocus("Prefab", showPanel.prefab);
 		panelPrefab->draw(showPanel.prefab);
 		// Consume pending Cinematic Editor open request from inspector

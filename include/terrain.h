@@ -1,10 +1,10 @@
 /**
- * @file panel_terrain.h
- * @brief Editor panel for managing grid-based terrain tiles.
+ * @file terrain.h
+ * @brief Terrain editor for grid-based terrain tiles (drawn inside the Inspector).
  */
 
-#ifndef PANEL_TERRAIN_H
-#define PANEL_TERRAIN_H
+#ifndef KEMENA3D_EDITOR_TERRAIN_H
+#define KEMENA3D_EDITOR_TERRAIN_H
 
 #include <string>
 #include <filesystem>
@@ -70,7 +70,23 @@ public:
 
     PanelTerrain(kGuiManager *setGuiManager, Manager *setManager);
 
-    void draw(bool &isOpened);
+    /**
+     * @brief Draws the whole terrain editor inline, inside the caller's window.
+     *
+     * The terrain UI has no window of its own any more: the Inspector calls
+     * this while a terrain tile is selected, so the tile's settings, brushes,
+     * effect layers, materials and collider live next to the object header.
+     * Callers must already be inside a window — the method only emits widgets.
+     */
+    void drawContents();
+
+    /**
+     * @brief Draws the layer texture picker (a self-managed top-level window).
+     *
+     * Must be called *outside* the host window (after its End()) because it
+     * creates its own window plus a full-viewport input blocker.
+     */
+    void drawTexturePickerPopup();
 
     /**
      * @brief Draws the Terrain Size / resolution section and its confirm modal.
@@ -389,15 +405,6 @@ private:
     bool m_texPickOpen = false;        ///< True while the picker window is shown.
     char m_texPickSearch[128] = "";
 
-    /**
-     * @brief Draws the "Select Terrain Texture" picker window.
-     *
-     * Deliberately a self-managed top-level window (with its own full-viewport
-     * input blocker) instead of an ImGui popup: popups were being dismissed by
-     * unrelated clicks and by the raw input the viewport consumes.
-     */
-    void drawTexturePickerPopup();
-
     // --- Terrain material parameter staging ---
     // Tiling is deliberately NOT here: it is per material layer
     // (kTerrainLayer::tiling) and edited in each layer's tree node.
@@ -491,4 +498,4 @@ private:
     bool m_rebuildingMesh = false;
 };
 
-#endif // PANEL_TERRAIN_H
+#endif // KEMENA3D_EDITOR_TERRAIN_H

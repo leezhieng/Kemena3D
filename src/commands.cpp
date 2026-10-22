@@ -1,6 +1,6 @@
 #include "commands.h"
 #include "manager.h"
-#include "panel_terrain.h"
+#include "terrain.h"
 
 #include <kemena/kmesh.h>
 #include <kemena/klight.h>

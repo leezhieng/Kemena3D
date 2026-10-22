@@ -947,10 +947,10 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 			if (gui->menuItem("Terrain", "", false, manager->projectOpened))
 			{
 				manager->createTerrain();
-				// Creating (or selecting) a terrain opens its editor panel and
-				// brings it to the front, mirroring how the inspector reveals it.
-				showPanel.terrain = true;
-				pendingFocusWindow = "Terrain";
+				// The terrain editor lives in the Inspector now, so revealing it is
+				// enough to bring the new (selected) tile's settings on screen.
+				showPanel.inspector = true;
+				pendingFocusWindow = "Inspector";
 			}
 			if (gui->menuItem("Nav Mesh", "", false, manager->projectOpened))
 				manager->createNavMesh();
@@ -977,8 +977,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					showPanel.scriptEditor = !showPanel.scriptEditor;
 				if (gui->menuItem("Game", "", showPanel.game))
 					showPanel.game = !showPanel.game;
-				if (gui->menuItem("Terrain", "", showPanel.terrain))
-					showPanel.terrain = !showPanel.terrain;
+				// (No separate Terrain window: the terrain editor is part of the
+				// Inspector and appears while a terrain tile is selected.)
 				if (gui->menuItem("Animator Editor", "", showPanel.animatorEditor))
 					showPanel.animatorEditor = !showPanel.animatorEditor;
 				if (gui->menuItem("Cinematic Editor", "", showPanel.animationEditor))
@@ -1237,11 +1237,15 @@ static void applyPanelStateLine(const char *line)
 	else if (sscanf_s(line, "GameOpened=%d", &tmp) == 1)
 		showPanel.game = (tmp != 0);
 	else if (sscanf_s(line, "TerrainOpened=%d", &tmp) == 1)
+	{
+		// Legacy layout key: the terrain editor is part of the Inspector now, so
+		// there is no Terrain window to reopen. Still parsed so older layout.ini
+		// files load without warnings.
 		showPanel.terrain = (tmp != 0);
+	}
 	else if (sscanf_s(line, "TerrainDockId=%u", &dockId) == 1)
 	{
-		// Remember which dock node the Terrain panel occupied so it can be
-		// re-attached when the project is reopened (see PanelTerrain::draw).
+		// Legacy layout key (see above): the dock node is remembered but unused.
 		terrainDockId = (ImGuiID)dockId;
 		terrainDockRestore = true;
 	}

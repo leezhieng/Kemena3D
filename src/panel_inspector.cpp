@@ -5785,10 +5785,10 @@ void PanelInspector::draw(bool &opened)
                     }
                 }
 
-                drawInlineIcon(typeIcon, typeLabel);
-
-                // Terrain tiles are authored in the dedicated Terrain panel, so the
-                // Inspector shows only their identity icon/label — no editable fields.
+                // Terrain tiles are authored directly in the Inspector: while a
+                // terrain tile is selected, the Inspector shows the whole terrain
+                // editor (tile settings, brushes, effect layers, materials and
+                // collider) and nothing else.
                 bool isTerrainObj = (type == NODE_TYPE_TERRAIN);
                 if (type == NODE_TYPE_MESH)
                 {
@@ -5799,17 +5799,14 @@ void PanelInspector::draw(bool &opened)
 
                 if (isTerrainObj)
                 {
-                    gui->spacing();
-                    gui->textDisabled("Terrain is edited in the Terrain panel.");
-                    gui->spacing();
-                    if (ImGui::Button("Open Terrain Editor", ImVec2(-1.0f, 0.0f)))
-                    {
-                        showPanel.terrain = true;
-                        pendingFocusWindow = "Terrain";
-                    }
+                    if (manager->panelTerrain)
+                        manager->panelTerrain->drawContents();
+                    else
+                        gui->textDisabled("Terrain editor unavailable.");
                 }
                 else
                 {
+                drawInlineIcon(typeIcon, typeLabel);
                 gui->sameLine(0, 4.0f);
 
                 {
@@ -6073,6 +6070,12 @@ void PanelInspector::draw(bool &opened)
 
     // --- Tag / Layer editor modals (drawn outside the inspector window) -----
     drawTagLayerEditorModals(manager);
+
+    // --- Terrain texture picker ---------------------------------------------
+    // The terrain layer texture picker is a top-level window (with its own input
+    // blocker), so it must be drawn after the Inspector window has ended.
+    if (manager->panelTerrain)
+        manager->panelTerrain->drawTexturePickerPopup();
 }
 
 // ---------------------------------------------------------------------------

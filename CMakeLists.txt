@@ -29,7 +29,7 @@ set(SOURCES
     src/panel_logicgraph.cpp
     src/panel_game.cpp
     src/panel_prefab.cpp
-    src/panel_terrain.cpp
+    src/terrain.cpp
     src/panel_animator.cpp
     src/panel_animation.cpp
     src/panel_particle.cpp

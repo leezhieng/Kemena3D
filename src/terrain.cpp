@@ -1,11 +1,10 @@
 /**
- * @file panel_terrain.cpp
- * @brief Editor panel for managing grid-based terrain tiles.
+ * @file terrain.cpp
+ * @brief Terrain editor for grid-based terrain tiles (drawn inside the Inspector).
  */
 
-#include "panel_terrain.h"
+#include "terrain.h"
 #include "util.h"
-#include "mainmenu.h"   // for terrainDockId / terrainDockRestore (panel docking persistence)
 #include "commands.h"   // for TerrainEditCommand
 #include "panel_project.h"   // for thumbnail icons in the layer texture picker
 
@@ -19,6 +18,42 @@
 #include <vector>
 #include <algorithm>
 #include <cctype>
+
+// ---------------------------------------------------------------------------
+// Label-on-the-left property layout
+// ---------------------------------------------------------------------------
+// ImGui draws a widget's label to the *right* of the input by default, which
+// pushed every caption off the row inside this panel. Every control below is
+// therefore drawn through a two-column table: the caption in a fixed left-hand
+// column, the input filling the remaining width.
+namespace
+{
+constexpr float kTerrainLabelWidth = 110.0f;
+
+/// @brief Opens a caption/input table (call EndTable() when it returns true).
+bool beginTerrainTable(const char *id)
+{
+    if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp))
+        return false;
+    ImGui::TableSetupColumn("##TerrainLabel", ImGuiTableColumnFlags_WidthFixed,
+                            kTerrainLabelWidth);
+    ImGui::TableSetupColumn("##TerrainValue", ImGuiTableColumnFlags_WidthStretch);
+    return true;
+}
+
+/// @brief Emits the caption for the next row and prepares the value column.
+void terrainLabel(const char *label)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    if (ImGui::IsItemHovered() && ImGui::CalcTextSize(label).x > ImGui::GetColumnWidth())
+        ImGui::SetTooltip("%s", label);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-1.0f);
+}
+} // namespace
 
 PanelTerrain::PanelTerrain(kGuiManager *setGuiManager, Manager *setManager)
     : gui(setGuiManager), manager(setManager)
@@ -2034,8 +2069,15 @@ void PanelTerrain::drawTerrainSizeSettings(kTerrainManager *terrainMgr)
     if (m_settingsHeightRes < 2 && terrainMgr)
         m_settingsHeightRes = terrainMgr->getHeightRes();
 
-    ImGui::DragFloat("Tile World Size", &m_settingsWorldSize, 1.0f, 8.0f, 8192.0f, "%.1f");
-    ImGui::DragInt("Height Resolution", &m_settingsHeightRes, 1, 33, 4097);
+    if (beginTerrainTable("##terrainSizeTable"))
+    {
+        terrainLabel("World Size");
+        ImGui::DragFloat("##terrainWorldSize", &m_settingsWorldSize, 1.0f, 8.0f, 8192.0f, "%.1f");
+
+        terrainLabel("Resolution");
+        ImGui::DragInt("##terrainHeightRes", &m_settingsHeightRes, 1, 33, 4097);
+        ImGui::EndTable();
+    }
 
     if (ImGui::Button("Save", ImVec2(-1, 0)))
     {
@@ -2101,35 +2143,14 @@ void PanelTerrain::drawTerrainSizeSettings(kTerrainManager *terrainMgr)
     ImGui::Spacing();
 }
 
-void PanelTerrain::draw(bool &isOpened)
+void PanelTerrain::drawContents()
 {
-    if (!isOpened)
+    if (!manager)
         return;
 
-    // Re-attach the panel to the dock node it occupied when the layout was last
-    // saved. Applied only once (and cleared immediately after) so the user can
-    // still freely undock or move the panel afterwards.
-    if (terrainDockRestore && terrainDockId != 0)
-    {
-        ImGui::SetNextWindowDockID(terrainDockId, ImGuiCond_Always);
-        terrainDockRestore = false;
-    }
+    kTerrainManager *terrainMgr = manager->terrainManager;
 
-    ImGui::SetNextWindowSize(ImVec2(420, 650), ImGuiCond_FirstUseEver);
-    bool windowOpen = ImGui::Begin("Terrain", &isOpened);
-
-    // Remember where the panel is currently attached so File > Save Project can
-    // persist the dock node and restore it when the project is reopened.
-    if (ImGui::GetWindowDockID() != 0)
-        terrainDockId = ImGui::GetWindowDockID();
-
-    if (!windowOpen)
-    {
-        ImGui::End();
-        return;
-    }
-
-    // Deferred info popup used by the Tile Management controls.
+    // Deferred info popup used by the tile management controls.
     if (m_messageBoxPending)
     {
         ImGui::OpenPopup("Terrain Message");
@@ -2146,160 +2167,41 @@ void PanelTerrain::draw(bool &isOpened)
         ImGui::EndPopup();
     }
 
-    kWorld *world = manager->getWorld();
-    kScene *scene = manager->getScene();
-    kTerrainManager *terrainMgr = manager->terrainManager;
-
-    if (!world || !scene)
+    if (!terrainMgr)
     {
-        ImGui::TextDisabled("No scene loaded.");
-        ImGui::End();
-        return;
-    }
-
-    // A scene holds at most one terrain. Detect whether the active scene already
-    // contains one (via the terrain manager, or by scanning the scene graph).
-    bool sceneHasTerrain = (terrainMgr && terrainMgr->getTotalCount() > 0);
-    if (!sceneHasTerrain && scene->getRootNode())
-    {
-        std::function<void(kObject *)> scan = [&](kObject *n)
+        ImGui::TextDisabled("This scene has no terrain yet.");
+        ImGui::Spacing();
+        if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
         {
-            if (sceneHasTerrain || !n)
-                return;
-            kMesh *m = dynamic_cast<kMesh *>(n);
-            if (m && m->getSerializeType() == "terrain")
+            manager->createTerrain();
+            // A size / resolution confirmed before any tile existed is applied to
+            // the manager now that it exists.
+            if (m_applySizeOnCreate && manager->terrainManager)
             {
-                sceneHasTerrain = true;
-                return;
-            }
-            for (kObject *c : n->getChildren())
-            {
-                if (sceneHasTerrain)
-                    break;
-                scan(c);
-            }
-        };
-        for (kObject *c : scene->getRootNode()->getChildren())
-        {
-            if (sceneHasTerrain)
-                break;
-            scan(c);
-        }
-    }
-
-    // Is the current selection a terrain tile (or the scene that owns one)?
-    //
-    // The editor keeps two selections: the singular `getActiveSelectedObject()`
-    // (set when an object is picked/created) and the plural
-    // `getActiveSelectedObjects()` UUID list that the Hierarchy actually updates
-    // when a row is clicked. Both must be consulted, which is why selecting a
-    // terrain tile from the Hierarchy previously showed nothing here.
-    bool terrainSelected = false;
-
-    if (kObject *sel = manager->getActiveSelectedObject())
-    {
-        if (sel->getType() == kNodeType::NODE_TYPE_TERRAIN)
-            terrainSelected = true;
-        else if (kMesh *sm = dynamic_cast<kMesh *>(sel))
-            terrainSelected = (sm->getSerializeType() == "terrain");
-    }
-
-    if (!terrainSelected && terrainMgr)
-    {
-        const std::vector<kString> &selectedUuids = manager->getActiveSelectedObjects();
-        for (const auto &pair : terrainMgr->getTiles())
-        {
-            kTerrain *tile = pair.second.get();
-            kMesh *tileMesh = tile ? tile->getMesh() : nullptr;
-            if (!tileMesh)
-                continue;
-
-            const kString &uuid = tileMesh->getUuid();
-            if (uuid.empty())
-                continue;
-
-            if (std::find(selectedUuids.begin(), selectedUuids.end(), uuid) !=
-                selectedUuids.end())
-            {
-                terrainSelected = true;
-                break;
+                manager->terrainManager->resizeAllTiles(m_settingsWorldSize,
+                                                        m_settingsHeightRes);
+                m_applySizeOnCreate = false;
             }
         }
-    }
-
-    bool sceneSelected = (manager->selectedScene == scene);
-
-    // Show only "Create New Terrain" until the scene has a terrain; afterwards
-    // show the full editor only while the scene or a terrain tile is selected.
-    bool showFullUi = (terrainMgr != nullptr) &&
-                      (terrainSelected || (sceneSelected && sceneHasTerrain));
-
-    if (!showFullUi)
-    {
-        if (!sceneHasTerrain)
-        {
-            // No terrain in this scene yet: only Tile Management and the size /
-            // resolution settings are meaningful. Everything else — sculpting,
-            // painting, height layers, material, file operations — stays hidden.
-            ImGui::TextDisabled("This scene has no terrain yet.");
-            ImGui::Spacing();
-
-            ImGui::SeparatorText("Terrain Tile Settings");
-            if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
-            {
-                manager->createTerrain();
-                // A size / resolution confirmed before any tile existed is applied
-                // to the manager now that it exists.
-                if (m_applySizeOnCreate && manager->terrainManager)
-                {
-                    manager->terrainManager->resizeAllTiles(m_settingsWorldSize,
-                                                            m_settingsHeightRes);
-                    m_applySizeOnCreate = false;
-                }
-            }
-
-            ImGui::Spacing();
-
-            drawTerrainSizeSettings(terrainMgr);
-        }
-        else
-        {
-            ImGui::TextDisabled("Select the scene or a terrain tile to edit its terrain.");
-        }
-        ImGui::End();
         return;
     }
 
     // --- Terrain Tile Settings ---
     ImGui::SeparatorText("Terrain Tile Settings");
 
-    const bool hasTerrainTile = (terrainMgr->getTotalCount() > 0);
-
-    // Add default tile at origin. A scene holds at most one terrain, so the
-    // button only appears while the scene has none.
-    if (!hasTerrainTile)
+    // The selected terrain tile is the reference for every section below. The
+    // Inspector calls this only while a terrain tile is selected, so this
+    // normally resolves back to that tile.
+    kTerrain *selectedTerrain = getSelectedTerrainTile(terrainMgr);
+    if (!selectedTerrain)
     {
-        if (ImGui::Button("Add Terrain to Scene", ImVec2(-1, 0)))
-        {
-            addTerrainTile(0, 0);
-            // Select the new tile so the neighbour controls have a reference.
-            if (kTerrain *t = terrainMgr->getTile(0, 0))
-                if (kMesh *m = t->getMesh())
-                    manager->selectObject(m->getUuid(), true);
-        }
+        ImGui::TextDisabled("Select a terrain tile to edit its terrain.");
+        return;
     }
 
-    ImGui::Spacing();
-
-    // The selected terrain tile is the reference for the sections below.
-    kTerrain *selectedTerrain = getSelectedTerrainTile(terrainMgr);
-
-    if (selectedTerrain)
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
-                           "Selected tile: (%d, %d)",
-                           selectedTerrain->getGridX(), selectedTerrain->getGridZ());
-    else
-        ImGui::TextDisabled("Select a terrain tile to add or remove its neighbours.");
+    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                       "Selected tile: (%d, %d)",
+                       selectedTerrain->getGridX(), selectedTerrain->getGridZ());
 
     // The "Tile Height" field reflects the selected tile's nominal elevation, so
     // switching tiles shows that tile's height instead of carrying the previous
@@ -2313,18 +2215,20 @@ void PanelTerrain::draw(bool &isOpened)
 
     ImGui::Spacing();
 
-    ImGui::SetNextItemWidth(160.0f);
-    ImGui::InputFloat("Tile Height", &m_defaultHeight);
+    if (beginTerrainTable("##terrainTileHeightTable"))
+    {
+        terrainLabel("Tile Height");
+        ImGui::InputFloat("##terrainTileHeight", &m_defaultHeight, 0.0f, 0.0f, "%.3f");
 
-    // Push the height onto the selected tile and persist it. Disabled until a tile
-    // is selected so the value cannot be applied to nothing.
-    ImGui::BeginDisabled(selectedTerrain == nullptr);
-    if (ImGui::Button("Apply##tileHeight", ImVec2(160.0f, 0.0f)))
-        applyTileHeight(selectedTerrain);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Move the selected tile to this base height. The sculpted height map "
-                          "and effect layers are preserved; use Clear Height Map to flatten.");
+        // Push the height onto the selected tile and persist it.
+        terrainLabel("Apply Height");
+        if (ImGui::Button("Apply##tileHeight", ImVec2(-1.0f, 0.0f)))
+            applyTileHeight(selectedTerrain);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Move the selected tile to this base height. The sculpted height map "
+                              "and effect layers are preserved; use Clear Height Map to flatten.");
+        ImGui::EndTable();
+    }
 
     ImGui::Spacing();
 
@@ -2403,9 +2307,11 @@ void PanelTerrain::draw(bool &isOpened)
             // Toggling sculpt must clear the paint modes exactly once. Doing this
             // unconditionally each frame is what used to un-check this box as soon
             // as the user switched to another Edit Tile tab.
+            if (beginTerrainTable("##terrainSculptTable"))
             {
+                terrainLabel("Sculpt Mode");
                 bool sculptModeActive = sculpt.active;
-                if (ImGui::Checkbox("Sculpt Mode Active", &sculptModeActive))
+                if (ImGui::Checkbox("##sculptActive", &sculptModeActive))
                 {
                     sculpt.active = sculptModeActive;
                     if (sculptModeActive)
@@ -2414,29 +2320,31 @@ void PanelTerrain::draw(bool &isOpened)
                         paint.heightActive = false;
                     }
                 }
+
+                // Brush mode
+                static const char *modes[] = {"Raise", "Lower", "Flatten", "Smooth"};
+                terrainLabel("Brush Mode");
+                int currentMode = static_cast<int>(sculpt.mode);
+                if (ImGui::Combo("##brushMode", &currentMode, modes, 4))
+                {
+                    sculpt.mode = static_cast<kTerrain::BrushMode>(currentMode);
+                    sculpt.affectedTile = nullptr; // Reset flatten sample on mode change
+                }
+
+                terrainLabel("Brush Radius");
+                ImGui::SliderFloat("##brushRadius", &sculpt.radius, 0.5f, 50.0f, "%.1f");
+
+                terrainLabel("Brush Strength");
+                ImGui::SliderFloat("##brushStrength", &sculpt.strength, 0.01f, 1.0f, "%.2f");
+                ImGui::EndTable();
             }
-    if (sculpt.active)
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
-                           "Hold left mouse in viewport to sculpt");
 
-    // Brush mode radio buttons
-    const char *modes[] = {"Raise", "Lower", "Flatten", "Smooth"};
-    int currentMode = static_cast<int>(sculpt.mode);
-    if (ImGui::Combo("Brush Mode", &currentMode, modes, 4))
-    {
-        sculpt.mode = static_cast<kTerrain::BrushMode>(currentMode);
-        sculpt.affectedTile = nullptr; // Reset flatten sample on mode change
-    }
+            if (sculpt.active)
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                                   "Hold left mouse in viewport to sculpt");
 
-    ImGui::SliderFloat("Brush Radius", &sculpt.radius, 0.5f, 50.0f, "%.1f");
-    ImGui::SliderFloat("Brush Strength", &sculpt.strength, 0.01f, 1.0f, "%.2f");
-
-    if (sculpt.mode == kTerrain::BrushMode::Flatten)
-    {
-        ImGui::Text("Flatten target: %.2f (sampled on first click)", sculpt.flattenHeight);
-    }
-
-    ImGui::Spacing();
+            if (sculpt.mode == kTerrain::BrushMode::Flatten)
+                ImGui::Text("Flatten target: %.2f (sampled on first click)", sculpt.flattenHeight);
 
             ImGui::Spacing();
 
@@ -2464,9 +2372,11 @@ void PanelTerrain::draw(bool &isOpened)
 
             // Splat (mask) painting: arms the brush, which writes the weight of the
             // layer selected right below.
+            if (beginTerrainTable("##terrainPaintTable"))
             {
+                terrainLabel("Splat Paint");
                 bool splatModeActive = paint.active;
-                if (ImGui::Checkbox("Splat Paint Mode Active##splat", &splatModeActive))
+                if (ImGui::Checkbox("##splatActive", &splatModeActive))
                 {
                     paint.active = splatModeActive;
                     if (splatModeActive)
@@ -2477,18 +2387,19 @@ void PanelTerrain::draw(bool &isOpened)
                             paint.channel = 0;
                     }
                 }
-            }
 
-            // Paint target: the material layer whose painted weight the brush
-            // writes. 0-based, matching the Material Layers list, and clamped so the
-            // brush always starts on a valid layer.
-            if (paint.channel < 0)
-                paint.channel = 0;
-            ImGui::SetNextItemWidth(-1.0f);
-            ImGui::SliderInt("Layer##paint", &paint.channel,
-                             0, kTerrain::kMaxTerrainLayers - 1, "Layer %d");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Material layer whose weight this brush paints.");
+                // Paint target: the material layer whose painted weight the brush
+                // writes. 0-based, matching the Material Layers list, and clamped so
+                // the brush always starts on a valid layer.
+                if (paint.channel < 0)
+                    paint.channel = 0;
+                terrainLabel("Paint Layer");
+                ImGui::SliderInt("##paintLayer", &paint.channel,
+                                 0, kTerrain::kMaxTerrainLayers - 1, "Layer %d");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Material layer whose weight this brush paints.");
+                ImGui::EndTable();
+            }
 
             // Bulk weight edits for the selected layer.
             ImGui::BeginDisabled(selectedTerrain == nullptr);
@@ -2504,19 +2415,28 @@ void PanelTerrain::draw(bool &isOpened)
                 ImGui::SetTooltip("Clear this layer's weight to black (0): the layer disappears.");
             ImGui::EndDisabled();
 
-    if (paint.active)
-    {
-        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
-                           "L-click paints this layer's weight, R-click erases it.");
-        // The mask brush shares the sculpt radius; expose its own strength / fade
-        // so a stroke is actually visible (both used to be fixed at the defaults).
-        ImGui::SliderFloat("Paint Radius", &sculpt.radius, 0.5f, 50.0f, "%.1f");
-        ImGui::SliderFloat("Paint Strength", &paint.strength, 0.01f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Paint Fade", &paint.fade, 0.0f, 1.0f, "%.2f");
-        // Mask painting only changes the rendered result once the layers use
-        // different textures; with none assigned every layer renders neutral white.
-        ImGui::TextDisabled("Assign per-layer textures above to see mask changes.");
-    }
+            if (paint.active)
+            {
+                ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
+                                   "L-click paints this layer's weight, R-click erases it.");
+                // The mask brush shares the sculpt radius; expose its own strength /
+                // fade so a stroke is actually visible.
+                if (beginTerrainTable("##terrainPaintBrushTable"))
+                {
+                    terrainLabel("Paint Radius");
+                    ImGui::SliderFloat("##paintRadius", &sculpt.radius, 0.5f, 50.0f, "%.1f");
+
+                    terrainLabel("Paint Strength");
+                    ImGui::SliderFloat("##paintStrength", &paint.strength, 0.01f, 1.0f, "%.2f");
+
+                    terrainLabel("Paint Fade");
+                    ImGui::SliderFloat("##paintFade", &paint.fade, 0.0f, 1.0f, "%.2f");
+                    ImGui::EndTable();
+                }
+                // Mask painting only changes the rendered result once the layers use
+                // different textures; with none assigned every layer renders neutral white.
+                ImGui::TextDisabled("Assign per-layer textures above to see mask changes.");
+            }
 
     // Shared live status for every brush tool. A stroke only lands when the World
     // panel is in the Game World view AND the cursor ray is over a terrain tile.
@@ -2665,80 +2585,113 @@ void PanelTerrain::draw(bool &isOpened)
                 ImGui::TextDisabled("Type: %s",
                                     kLayerTypeNames[static_cast<int>(desc.type)]);
 
-                structuralChanged |= track(ImGui::Checkbox("Enabled", &desc.enabled));
-                structuralChanged |= track(ImGui::SliderFloat("Weight", &desc.weight,
-                                                              0.0f, 4.0f, "%.2f"));
-
-                switch (desc.type)
+                if (beginTerrainTable("##terrainLayerTable"))
                 {
-                case kTerrainHeightLayerType::Noise:
-                    paramChanged |= track(ImGui::SliderFloat("Scale", &desc.noiseScale,
-                                                             1.0f, 200.0f, "%.0f"));
-                    paramChanged |= track(ImGui::SliderFloat("Amplitude", &desc.noiseAmplitude,
-                                                             0.1f, 100.0f, "%.1f"));
-                    paramChanged |= track(ImGui::SliderInt("Octaves", &desc.noiseOctaves, 1, 8));
-                    paramChanged |= track(ImGui::Combo("Fractal", &desc.noiseType, noiseTypes,
-                                                       IM_ARRAYSIZE(noiseTypes)));
-                    paramChanged |= track(ImGui::InputInt("Seed", &desc.noiseSeed));
-                    break;
+                    terrainLabel("Enabled");
+                    structuralChanged |= track(ImGui::Checkbox("##layerEnabled", &desc.enabled));
 
-                case kTerrainHeightLayerType::HydraulicErosion:
-                    paramChanged |= track(ImGui::SliderInt("Droplets", &desc.droplets,
-                                                           1000, 500000, "%d",
-                                                           ImGuiSliderFlags_Logarithmic));
-                    paramChanged |= track(ImGui::SliderFloat("Radius", &desc.erodeRadius,
-                                                             1.0f, 16.0f, "%.1f"));
-                    paramChanged |= track(ImGui::SliderFloat("Inertia", &desc.erodeInertia,
-                                                             0.0f, 0.99f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderFloat("Capacity", &desc.erodeCapacity,
-                                                             1.0f, 16.0f, "%.1f"));
-                    paramChanged |= track(ImGui::SliderFloat("Deposit", &desc.erodeDeposit,
-                                                             0.0f, 1.0f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderFloat("Erode", &desc.erodeErode,
-                                                             0.0f, 1.0f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderFloat("Evaporate", &desc.erodeEvaporate,
-                                                             0.0f, 0.1f, "%.3f"));
-                    paramChanged |= track(ImGui::SliderFloat("Gravity", &desc.erodeGravity,
-                                                             0.1f, 20.0f, "%.1f"));
-                    paramChanged |= track(ImGui::InputInt("Seed", &desc.noiseSeed));
-                    break;
+                    terrainLabel("Weight");
+                    structuralChanged |= track(ImGui::SliderFloat("##layerWeight", &desc.weight,
+                                                                  0.0f, 4.0f, "%.2f"));
 
-                case kTerrainHeightLayerType::ThermalErosion:
-                    paramChanged |= track(ImGui::SliderInt("Iterations", &desc.iterations, 1, 64));
-                    paramChanged |= track(ImGui::SliderFloat("Talus", &desc.talus,
-                                                             0.0f, 5.0f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderFloat("Strength", &desc.strength,
-                                                             0.0f, 1.0f, "%.2f"));
-                    break;
-
-                case kTerrainHeightLayerType::WindErosion:
-                {
-                    float degrees = desc.windDirection * 180.0f / 3.14159265f;
-                    if (track(ImGui::SliderFloat("Direction (deg)", &degrees,
-                                                 0.0f, 360.0f, "%.0f")))
+                    switch (desc.type)
                     {
-                        desc.windDirection = degrees * 3.14159265f / 180.0f;
-                        paramChanged = true;
-                    }
-                    paramChanged |= track(ImGui::SliderFloat("Strength", &desc.strength,
-                                                             0.0f, 1.0f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderInt("Iterations", &desc.iterations, 1, 32));
-                    paramChanged |= track(ImGui::SliderFloat("Talus", &desc.talus,
-                                                             0.0f, 5.0f, "%.2f"));
-                    break;
-                }
+                    case kTerrainHeightLayerType::Noise:
+                        terrainLabel("Scale");
+                        paramChanged |= track(ImGui::SliderFloat("##layerScale", &desc.noiseScale,
+                                                                 1.0f, 200.0f, "%.0f"));
+                        terrainLabel("Amplitude");
+                        paramChanged |= track(ImGui::SliderFloat("##layerAmplitude", &desc.noiseAmplitude,
+                                                                 0.1f, 100.0f, "%.1f"));
+                        terrainLabel("Octaves");
+                        paramChanged |= track(ImGui::SliderInt("##layerOctaves", &desc.noiseOctaves, 1, 8));
+                        terrainLabel("Fractal");
+                        paramChanged |= track(ImGui::Combo("##layerFractal", &desc.noiseType, noiseTypes,
+                                                           IM_ARRAYSIZE(noiseTypes)));
+                        terrainLabel("Seed");
+                        paramChanged |= track(ImGui::InputInt("##layerSeed", &desc.noiseSeed));
+                        break;
 
-                case kTerrainHeightLayerType::Hydrology:
-                    paramChanged |= track(ImGui::SliderInt("Iterations", &desc.iterations, 1, 32));
-                    paramChanged |= track(ImGui::SliderFloat("K", &desc.hydroK,
-                                                             0.001f, 0.2f, "%.3f"));
-                    paramChanged |= track(ImGui::SliderFloat("M", &desc.hydroM,
-                                                             0.1f, 1.0f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderFloat("N", &desc.hydroN,
-                                                             0.5f, 2.0f, "%.2f"));
-                    paramChanged |= track(ImGui::SliderFloat("Deposit", &desc.hydroDeposit,
-                                                             0.0f, 0.9f, "%.2f"));
-                    break;
+                    case kTerrainHeightLayerType::HydraulicErosion:
+                        terrainLabel("Droplets");
+                        paramChanged |= track(ImGui::SliderInt("##layerDroplets", &desc.droplets,
+                                                               1000, 500000, "%d",
+                                                               ImGuiSliderFlags_Logarithmic));
+                        terrainLabel("Radius");
+                        paramChanged |= track(ImGui::SliderFloat("##layerErodeRadius", &desc.erodeRadius,
+                                                                 1.0f, 16.0f, "%.1f"));
+                        terrainLabel("Inertia");
+                        paramChanged |= track(ImGui::SliderFloat("##layerInertia", &desc.erodeInertia,
+                                                                 0.0f, 0.99f, "%.2f"));
+                        terrainLabel("Capacity");
+                        paramChanged |= track(ImGui::SliderFloat("##layerCapacity", &desc.erodeCapacity,
+                                                                 1.0f, 16.0f, "%.1f"));
+                        terrainLabel("Deposit");
+                        paramChanged |= track(ImGui::SliderFloat("##layerDeposit", &desc.erodeDeposit,
+                                                                 0.0f, 1.0f, "%.2f"));
+                        terrainLabel("Erode");
+                        paramChanged |= track(ImGui::SliderFloat("##layerErode", &desc.erodeErode,
+                                                                 0.0f, 1.0f, "%.2f"));
+                        terrainLabel("Evaporate");
+                        paramChanged |= track(ImGui::SliderFloat("##layerEvaporate", &desc.erodeEvaporate,
+                                                                 0.0f, 0.1f, "%.3f"));
+                        terrainLabel("Gravity");
+                        paramChanged |= track(ImGui::SliderFloat("##layerGravity", &desc.erodeGravity,
+                                                                 0.1f, 20.0f, "%.1f"));
+                        terrainLabel("Seed");
+                        paramChanged |= track(ImGui::InputInt("##layerErodeSeed", &desc.noiseSeed));
+                        break;
+
+                    case kTerrainHeightLayerType::ThermalErosion:
+                        terrainLabel("Iterations");
+                        paramChanged |= track(ImGui::SliderInt("##layerIterations", &desc.iterations, 1, 64));
+                        terrainLabel("Talus");
+                        paramChanged |= track(ImGui::SliderFloat("##layerTalus", &desc.talus,
+                                                                 0.0f, 5.0f, "%.2f"));
+                        terrainLabel("Strength");
+                        paramChanged |= track(ImGui::SliderFloat("##layerStrength", &desc.strength,
+                                                                 0.0f, 1.0f, "%.2f"));
+                        break;
+
+                    case kTerrainHeightLayerType::WindErosion:
+                    {
+                        float degrees = desc.windDirection * 180.0f / 3.14159265f;
+                        terrainLabel("Direction");
+                        if (track(ImGui::SliderFloat("##layerWindDir", &degrees,
+                                                     0.0f, 360.0f, "%.0f deg")))
+                        {
+                            desc.windDirection = degrees * 3.14159265f / 180.0f;
+                            paramChanged = true;
+                        }
+                        terrainLabel("Strength");
+                        paramChanged |= track(ImGui::SliderFloat("##layerWindStrength", &desc.strength,
+                                                                 0.0f, 1.0f, "%.2f"));
+                        terrainLabel("Iterations");
+                        paramChanged |= track(ImGui::SliderInt("##layerWindIterations", &desc.iterations, 1, 32));
+                        terrainLabel("Talus");
+                        paramChanged |= track(ImGui::SliderFloat("##layerWindTalus", &desc.talus,
+                                                                 0.0f, 5.0f, "%.2f"));
+                        break;
+                    }
+
+                    case kTerrainHeightLayerType::Hydrology:
+                        terrainLabel("Iterations");
+                        paramChanged |= track(ImGui::SliderInt("##layerHydroIterations", &desc.iterations, 1, 32));
+                        terrainLabel("K");
+                        paramChanged |= track(ImGui::SliderFloat("##layerK", &desc.hydroK,
+                                                                 0.001f, 0.2f, "%.3f"));
+                        terrainLabel("M");
+                        paramChanged |= track(ImGui::SliderFloat("##layerM", &desc.hydroM,
+                                                                 0.1f, 1.0f, "%.2f"));
+                        terrainLabel("N");
+                        paramChanged |= track(ImGui::SliderFloat("##layerN", &desc.hydroN,
+                                                                 0.5f, 2.0f, "%.2f"));
+                        terrainLabel("Deposit");
+                        paramChanged |= track(ImGui::SliderFloat("##layerHydroDeposit", &desc.hydroDeposit,
+                                                                 0.0f, 0.9f, "%.2f"));
+                        break;
+                    }
+                    ImGui::EndTable();
                 }
 
                 if (paramChanged || structuralChanged)
@@ -2866,16 +2819,21 @@ void PanelTerrain::draw(bool &isOpened)
     ImGui::SeparatorText("Material Layers");
 
     // Follow the editor selection; the manual grid coordinates stay as a fallback
-    // for when nothing is selected. Both are function-scope because the tile
-    // coordinates are also printed further down.
+    // for when nothing is selected.
     static int selectedTileGridX = 0;
     static int selectedTileGridZ = 0;
 
     kTerrain *selectedTile = getSelectedTerrainTile(terrainMgr);
     if (!selectedTile)
     {
-        ImGui::InputInt("Tile Grid X##layer", &selectedTileGridX);
-        ImGui::InputInt("Tile Grid Z##layer", &selectedTileGridZ);
+        if (beginTerrainTable("##terrainTileGridTable"))
+        {
+            terrainLabel("Tile Grid X");
+            ImGui::InputInt("##tileGridX", &selectedTileGridX);
+            terrainLabel("Tile Grid Z");
+            ImGui::InputInt("##tileGridZ", &selectedTileGridZ);
+            ImGui::EndTable();
+        }
         selectedTile = terrainMgr->getTile(selectedTileGridX, selectedTileGridZ);
     }
     if (selectedTile)
@@ -2898,71 +2856,19 @@ void PanelTerrain::draw(bool &isOpened)
             {
                 static char nameBuf[128];
                 strncpy_s(nameBuf, sizeof(nameBuf), layer.name.c_str(), _TRUNCATE);
-                if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
-                    layer.name = nameBuf;
-                // Per-layer texture tiling: repeats of this layer's texture across
-                // the tile (uploaded as u_Tiling[this layer]).
-                ImGui::SetNextItemWidth(230.0f);
-                if (ImGui::SliderFloat("Tiling##layer", &layer.tiling, 1.0f, 128.0f, "%.1f"))
-                {
-                    selectedTile->syncLayerTiling();
-                    selectedTile->saveOwnedAssets();
-                    manager->projectSaved = false;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How many times this layer's texture repeats across the tile.");
-
-                // Per-layer UV offset, in tiling units. 1.0 shifts the pattern by
-                // exactly one repeat; values are independent on each axis.
-                ImGui::SetNextItemWidth(230.0f);
-                float uvOffset[2] = {layer.uvOffset.x, layer.uvOffset.y};
-                if (ImGui::DragFloat2("UV Offset##layer", uvOffset, 0.01f, -64.0f, 64.0f, "%.3f"))
-                {
-                    layer.uvOffset = kVec2(uvOffset[0], uvOffset[1]);
-                    selectedTile->syncLayerTiling();
-                    selectedTile->saveOwnedAssets();
-                    manager->projectSaved = false;
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Shifts this layer's tiling pattern. 1.0 = one full texture repeat.");
-
-                // Per-layer UV rotation. Each texture repeat cell rotates around
-                // its own centre; the option is owned by this material layer.
-                if (ImGui::Checkbox("Rotate UV##layer", &layer.rotateUV))
-                {
-                    selectedTile->syncLayerTiling();
-                    selectedTile->saveOwnedAssets();
-                    manager->projectSaved = false;
-                }
-                ImGui::BeginDisabled(!layer.rotateUV);
-                float uvRotationDeg = layer.uvRotation * 57.29578f;
-                ImGui::SetNextItemWidth(230.0f);
-                if (ImGui::SliderFloat("UV Rotation##layer", &uvRotationDeg,
-                                       0.0f, 360.0f, "%.1f deg"))
-                {
-                    layer.uvRotation = uvRotationDeg * 3.14159265f / 180.0f;
-                    selectedTile->syncLayerTiling();
-                    selectedTile->saveOwnedAssets();
-                    manager->projectSaved = false;
-                }
-                ImGui::EndDisabled();
-
-                // (Min/Max Height and Slope Min/Max were removed: the shader does
-                // not consume them, so editing them had no effect.)
 
                 // Per-layer textures packed into the terrain's sampler2DArrays.
-                // Per-layer textures. These are the *only* terrain textures the
-                // user picks: they are packed into the terrain's sampler2DArrays
-                // and never replace the tile's own material.
+                // These are the *only* terrain textures the user picks: they are
+                // packed into the terrain's sampler2DArrays and never replace the
+                // tile's own material.
                 auto texField = [&](const char *label, kString &path, int slot)
                 {
-                    ImGui::TextUnformatted(label);
-                    ImGui::SameLine(90.0f);
+                    terrainLabel(label);
 
                     kString shown = path.empty() ? kString("(browse...)")
                                                 : fs::path(path).filename().string();
                     kString id = shown + "##tex" + std::to_string(i) + label;
-                    if (ImGui::Button(id.c_str(), ImVec2(230, 0)))
+                    if (ImGui::Button(id.c_str(), ImVec2(-1.0f, 0)))
                     {
                         m_texPickTile = selectedTile;
                         m_texPickLayer = static_cast<int>(i);
@@ -3005,16 +2911,75 @@ void PanelTerrain::draw(bool &isOpened)
                         ImGui::EndDragDropTarget();
                     }
                 };
-                texField("Albedo", layer.albedoPath, 0);
-                texField("Normal", layer.normalPath, 1);
-                texField("ORM", layer.ormPath, 2);
 
-                // Which layer's painted weight masks this layer. -1 ("auto") uses
-                // the layer's own weight, which is exactly what painting this layer
-                // edits, so the default needs no extra choice.
+                if (beginTerrainTable("##terrainMatLayerTable"))
                 {
+                    terrainLabel("Name");
+                    if (ImGui::InputText("##layerName", nameBuf, sizeof(nameBuf)))
+                        layer.name = nameBuf;
+
+                    // Per-layer texture tiling: repeats of this layer's texture
+                    // across the tile (uploaded as u_Tiling[this layer]).
+                    terrainLabel("Tiling");
+                    if (ImGui::SliderFloat("##layerTiling", &layer.tiling, 1.0f, 128.0f, "%.1f"))
+                    {
+                        selectedTile->syncLayerTiling();
+                        selectedTile->saveOwnedAssets();
+                        manager->projectSaved = false;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How many times this layer's texture repeats across the tile.");
+
+                    // Per-layer UV offset, in tiling units. 1.0 shifts the pattern
+                    // by exactly one repeat; values are independent on each axis.
+                    terrainLabel("UV Offset");
+                    float uvOffset[2] = {layer.uvOffset.x, layer.uvOffset.y};
+                    if (ImGui::DragFloat2("##layerUVOffset", uvOffset, 0.01f, -64.0f, 64.0f, "%.3f"))
+                    {
+                        layer.uvOffset = kVec2(uvOffset[0], uvOffset[1]);
+                        selectedTile->syncLayerTiling();
+                        selectedTile->saveOwnedAssets();
+                        manager->projectSaved = false;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Shifts this layer's tiling pattern. 1.0 = one full texture repeat.");
+
+                    // Per-layer UV rotation. Each texture repeat cell rotates
+                    // around its own centre; the option is owned by this layer.
+                    terrainLabel("Rotate UV");
+                    if (ImGui::Checkbox("##layerRotateUV", &layer.rotateUV))
+                    {
+                        selectedTile->syncLayerTiling();
+                        selectedTile->saveOwnedAssets();
+                        manager->projectSaved = false;
+                    }
+
+                    terrainLabel("UV Rotation");
+                    ImGui::BeginDisabled(!layer.rotateUV);
+                    float uvRotationDeg = layer.uvRotation * 57.29578f;
+                    if (ImGui::SliderFloat("##layerUVRotation", &uvRotationDeg,
+                                           0.0f, 360.0f, "%.1f deg"))
+                    {
+                        layer.uvRotation = uvRotationDeg * 3.14159265f / 180.0f;
+                        selectedTile->syncLayerTiling();
+                        selectedTile->saveOwnedAssets();
+                        manager->projectSaved = false;
+                    }
+                    ImGui::EndDisabled();
+
+                    // (Min/Max Height and Slope Min/Max were removed: the shader
+                    // does not consume them, so editing them had no effect.)
+
+                    texField("Albedo", layer.albedoPath, 0);
+                    texField("Normal", layer.normalPath, 1);
+                    texField("ORM", layer.ormPath, 2);
+
+                    // Which layer's painted weight masks this layer. -1 ("auto")
+                    // uses the layer's own weight, which is exactly what painting
+                    // this layer edits, so the default needs no extra choice.
+                    terrainLabel("Auto Mask");
                     bool autoMask = (layer.maskChannel < 0);
-                    if (ImGui::Checkbox("Auto Mask##terrainLayer", &autoMask))
+                    if (ImGui::Checkbox("##layerAutoMask", &autoMask))
                     {
                         layer.maskChannel = autoMask ? -1 : static_cast<int>(i);
                         selectedTile->syncLayerMaskChannels();
@@ -3026,9 +2991,9 @@ void PanelTerrain::draw(bool &isOpened)
 
                     if (!autoMask)
                     {
+                        terrainLabel("Mask Layer");
                         int maskLayer = layer.maskChannel;
-                        ImGui::SetNextItemWidth(230.0f);
-                        if (ImGui::SliderInt("Mask Layer", &maskLayer, 0,
+                        if (ImGui::SliderInt("##layerMaskLayer", &maskLayer, 0,
                                              kTerrain::kMaxTerrainLayers - 1))
                         {
                             layer.maskChannel = maskLayer;
@@ -3039,13 +3004,14 @@ void PanelTerrain::draw(bool &isOpened)
                         if (ImGui::IsItemHovered())
                             ImGui::SetTooltip("Painted weight of this layer masks the layer.");
                     }
+                    ImGui::EndTable();
                 }
 
                 ImGui::Spacing();
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.16f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.12f, 0.12f, 1.0f));
-                if (ImGui::Button("Remove layer##terrainLayer", ImVec2(230.0f, 0.0f)))
+                if (ImGui::Button("Remove layer##terrainLayer", ImVec2(-1.0f, 0.0f)))
                     removeLayerRequest = static_cast<int>(i);
                 ImGui::PopStyleColor(3);
                 if (ImGui::IsItemHovered())
@@ -3145,57 +3111,71 @@ void PanelTerrain::draw(bool &isOpened)
             // so switching only changes the lighting. The shader receives the
             // selection through u_ShaderType.
             static const char *shaderTypes[] = {"Flat", "Phong", "PBR"};
-            matChanged |= ImGui::Combo("Shader Type", &m_matSettings.shaderType,
-                                       shaderTypes, IM_ARRAYSIZE(shaderTypes));
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Flat: unlit albedo. Phong: ambient + diffuse + specular. "
-                                  "PBR: physically based. All keep the terrain's height, "
-                                  "splat and layer textures.");
-
-            matChanged |= ImGui::SliderFloat("Blend Sharpness", &m_matSettings.blendSharpness,
-                                             0.1f, 8.0f, "%.2f");
-
-            // --- Albedo colour overlay ---------------------------------------------
-            // Multiplies the blended layer albedo (works for Flat, Phong and PBR).
+            if (beginTerrainTable("##terrainMaterialTable"))
             {
-                const kVec3 tint = terrainMat->getDiffuseColor();
-                float tintColor[3] = {tint.x, tint.y, tint.z};
-                if (ImGui::ColorEdit3("Terrain Color", tintColor))
-                {
-                    terrainMat->setDiffuseColor(kVec3(tintColor[0], tintColor[1], tintColor[2]));
-                    manager->projectSaved = false;
-                    if (!ImGui::IsAnyItemActive())
-                        selectedTile->saveOwnedAssets();
-                }
+                terrainLabel("Shader Type");
+                matChanged |= ImGui::Combo("##shaderType", &m_matSettings.shaderType,
+                                           shaderTypes, IM_ARRAYSIZE(shaderTypes));
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Colour overlay multiplied into the blended terrain albedo.");
+                    ImGui::SetTooltip("Flat: unlit albedo. Phong: ambient + diffuse + specular. "
+                                      "PBR: physically based. All keep the terrain's height, "
+                                      "splat and layer textures.");
+
+                terrainLabel("Blend Sharpness");
+                matChanged |= ImGui::SliderFloat("##blendSharpness", &m_matSettings.blendSharpness,
+                                                 0.1f, 8.0f, "%.2f");
+
+                // --- Albedo colour overlay ---------------------------------------
+                // Multiplies the blended layer albedo (Flat, Phong and PBR).
+                terrainLabel("Terrain Color");
+                {
+                    const kVec3 tint = terrainMat->getDiffuseColor();
+                    float tintColor[3] = {tint.x, tint.y, tint.z};
+                    if (ImGui::ColorEdit3("##terrainColor", tintColor))
+                    {
+                        terrainMat->setDiffuseColor(kVec3(tintColor[0], tintColor[1], tintColor[2]));
+                        manager->projectSaved = false;
+                        if (!ImGui::IsAnyItemActive())
+                            selectedTile->saveOwnedAssets();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Colour overlay multiplied into the blended terrain albedo.");
+                }
+
+                // Stochastic anti-tiling: random per-cell rotation that hides repeats.
+                terrainLabel("Stochastic");
+                matChanged |= ImGui::Checkbox("##stochastic", &m_matSettings.stochastic);
+
+                // Tiling, UV offset and rotation are per material layer (see each
+                // layer's tree node above); there is no material-wide UV transform.
+
+                // Triplanar projection is opt-in; the strength / sharpness sliders
+                // only matter while it is enabled.
+                terrainLabel("Triplanar");
+                matChanged |= ImGui::Checkbox("##triplanar", &m_matSettings.triplanar);
+                ImGui::BeginDisabled(!m_matSettings.triplanar);
+                terrainLabel("Triplanar Strength");
+                matChanged |= ImGui::SliderFloat("##triplanarStrength",
+                                                 &m_matSettings.triplanarStrength, 0.0f, 1.0f, "%.2f");
+                terrainLabel("Triplanar Sharpness");
+                matChanged |= ImGui::SliderFloat("##triplanarSharpness",
+                                                 &m_matSettings.triplanarSharpness, 0.5f, 16.0f, "%.1f");
+                ImGui::EndDisabled();
+
+                // Procedural noise variegation, with its own on/off above the amount
+                // and scale it controls.
+                terrainLabel("Noise");
+                matChanged |= ImGui::Checkbox("##noiseEnabled", &m_matSettings.noiseEnabled);
+                ImGui::BeginDisabled(!m_matSettings.noiseEnabled);
+                terrainLabel("Noise Variegation");
+                matChanged |= ImGui::SliderFloat("##noiseVariegation",
+                                                 &m_matSettings.noiseVariegation, 0.01f, 1.0f, "%.2f");
+                terrainLabel("Noise Scale");
+                matChanged |= ImGui::SliderFloat("##noiseScale",
+                                                 &m_matSettings.noiseScale, 0.001f, 0.5f, "%.3f");
+                ImGui::EndDisabled();
+                ImGui::EndTable();
             }
-
-            // Stochastic anti-tiling: random per-cell rotation that hides repeats.
-            matChanged |= ImGui::Checkbox("Stochastic Anti-Tiling", &m_matSettings.stochastic);
-
-            // Tiling, UV offset and rotation are per material layer (see each
-            // layer's tree node above); there is no material-wide UV transform.
-
-            // Triplanar projection is opt-in; the strength / sharpness sliders only
-            // matter while it is enabled.
-            matChanged |= ImGui::Checkbox("Triplanar", &m_matSettings.triplanar);
-            ImGui::BeginDisabled(!m_matSettings.triplanar);
-            matChanged |= ImGui::SliderFloat("Triplanar Strength",
-                                             &m_matSettings.triplanarStrength, 0.0f, 1.0f, "%.2f");
-            matChanged |= ImGui::SliderFloat("Triplanar Sharpness",
-                                             &m_matSettings.triplanarSharpness, 0.5f, 16.0f, "%.1f");
-            ImGui::EndDisabled();
-
-            // Procedural noise variegation, with its own on/off above the amount and
-            // scale it controls.
-            matChanged |= ImGui::Checkbox("Noise", &m_matSettings.noiseEnabled);
-            ImGui::BeginDisabled(!m_matSettings.noiseEnabled);
-            matChanged |= ImGui::SliderFloat("Noise Variegation",
-                                             &m_matSettings.noiseVariegation, 0.01f, 1.0f, "%.2f");
-            matChanged |= ImGui::SliderFloat("Noise Scale",
-                                             &m_matSettings.noiseScale, 0.001f, 0.5f, "%.3f");
-            ImGui::EndDisabled();
 
             // --- Directional (self) shading ---
             // These controls shape the shader's sun response: how quickly slopes
@@ -3205,16 +3185,22 @@ void PanelTerrain::draw(bool &isOpened)
             ImGui::Spacing();
             ImGui::SeparatorText("Self Shading");
 
-            matChanged |= ImGui::SliderFloat("Shadow Strength",
-                                             &m_matSettings.selfShadowStrength, 0.0f, 1.0f, "%.2f");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Extra contrast on slopes facing away from the sun. "
-                                  "0 = plain N·L lighting.");
-            matChanged |= ImGui::SliderFloat("Shadow Softness",
-                                             &m_matSettings.selfShadowSoftness, 0.0f, 1.0f, "%.2f");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Wraps sunlight around the terminator so shaded slopes stay lit. "
-                                  "0 = hard terminator.");
+            if (beginTerrainTable("##terrainSelfShadingTable"))
+            {
+                terrainLabel("Shadow Strength");
+                matChanged |= ImGui::SliderFloat("##selfShadowStrength",
+                                                 &m_matSettings.selfShadowStrength, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Extra contrast on slopes facing away from the sun. "
+                                      "0 = plain N·L lighting.");
+                terrainLabel("Shadow Softness");
+                matChanged |= ImGui::SliderFloat("##selfShadowSoftness",
+                                                 &m_matSettings.selfShadowSoftness, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Wraps sunlight around the terminator so shaded slopes stay lit. "
+                                      "0 = hard terminator.");
+                ImGui::EndTable();
+            }
 
             if (matChanged)
             {
@@ -3276,15 +3262,25 @@ void PanelTerrain::draw(bool &isOpened)
         }
 
         ImGui::BeginDisabled(tileObject == nullptr);
-        ImGui::SliderInt("Collision Resolution", &m_collisionResolution, 8, 512, "%d",
-                         ImGuiSliderFlags_Logarithmic);
-        // Changing the value re-creates an existing collider on release, so the
-        // slider is not a dead control that only took effect through the button
-        // below (and only after a tile had a collider at all).
-        if (ImGui::IsItemDeactivatedAfterEdit() && hasCollider)
+        if (beginTerrainTable("##terrainPhysicsTable"))
         {
-            generateTileCollider(selectedTile, m_collisionResolution);
-            showCollider = true;
+            terrainLabel("Collision Res");
+            ImGui::SliderInt("##collisionResolution", &m_collisionResolution, 8, 512, "%d",
+                             ImGuiSliderFlags_Logarithmic);
+            // Changing the value re-creates an existing collider on release, so the
+            // slider is not a dead control that only took effect through the button
+            // below (and only after a tile had a collider at all).
+            if (ImGui::IsItemDeactivatedAfterEdit() && hasCollider)
+            {
+                generateTileCollider(selectedTile, m_collisionResolution);
+                showCollider = true;
+            }
+
+            terrainLabel("Show Collider");
+            ImGui::BeginDisabled(!hasCollider);
+            ImGui::Checkbox("##showCollider", &showCollider);
+            ImGui::EndDisabled();
+            ImGui::EndTable();
         }
         ImGui::TextDisabled("Higher = more triangles, more precise collision.");
         // (Re)creates the collider from the tile's current geometry at the
@@ -3307,21 +3303,11 @@ void PanelTerrain::draw(bool &isOpened)
                 manager->projectSaved = false;
             }
         }
-
-        ImGui::BeginDisabled(!hasCollider);
-        ImGui::Checkbox("Show collider", &showCollider);
-        ImGui::EndDisabled();
     }
     else
     {
-        ImGui::TextDisabled("No tile at (%d, %d). Create one above.", selectedTileGridX, selectedTileGridZ);
+        ImGui::TextDisabled("No terrain tile selected.");
     }
-
-    ImGui::End();
-
-    // Layer texture picker — drawn *after* the panel window because it is a
-    // top-level window (plus its input blocker) rather than a nested one.
-    drawTexturePickerPopup();
 }
 
 void PanelTerrain::addTerrainTile(int gridX, int gridZ)

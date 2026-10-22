@@ -41,7 +41,7 @@
 #include "panel_hierarchy.h"
 #include "panel_console.h"
 #include "panel_game.h"
-#include "panel_terrain.h"
+#include "terrain.h"
 #include "panel_animator.h"
 #include "panel_animation.h"
 #include "panel_particle.h"
