@@ -254,9 +254,12 @@ int main()
 	gridMesh->setPosition(kVec3(0.0f, -0.01f, 0.0f));
 	sceneEditor->setFrustumCullingEnabled(false);
 	sceneEditor->addMesh(gridMesh);
-	// Let the World panel's Preview Settings toggle the grid overlay.
+	// Let the World panel's Preview Settings toggle the grid overlay. The
+	// renderer's draw traversal checks getActive() (not getVisible()), so the
+	// grid must carry both flags for the checkbox to hide it.
 	manager->editorGridMesh = gridMesh;
 	gridMesh->setVisible(manager->showEditorGrid);
+	gridMesh->setActive(manager->showEditorGrid);
 	kShader *gridShader = assetManager->loadGlslFromResource("SHADER_GRID");
 	kMaterial *gridMat = assetManager->createMaterial(gridShader);
 	gridMat->setTransparent(kTransparentType::TRANSP_TYPE_BLEND);
@@ -341,6 +344,12 @@ int main()
 			// Re-open the graph editor files that were saved with the workspace
 			// (Logic Graph, Animator, Shader Graph, Cinematic).
 			manager->restoreOpenEditorFiles(layoutFileName);
+
+			// Now that every saved panel has been restored, re-arm the focus
+			// restore for the panel that was focused when the project was saved.
+			// The layout above recreates/docks the windows and picks a tab, so a
+			// single focus request made before it would be lost.
+			manager->armEditorFocusRestore(8);
 
 			isReloadLayout = false;
 		}
@@ -1298,10 +1307,22 @@ int main()
 		// earlier in the frame are focused on the following frame.
 		auto applyPendingFocus = [&](const char *windowId, bool visible)
 		{
-			if (visible && !pendingFocusWindow.empty() && pendingFocusWindow == windowId)
+			// Two sources: the menu-driven pending window (opening an asset) and
+			// the panel restored from project.json when a project is loaded.
+			// The menu request is consumed once; the restored-panel request is
+			// re-asserted for `restoreFocusFrames` frames (counted down below)
+			// because the restored layout docks/re-creates windows later in the
+			// frame and would otherwise move the focus to a tab drawn after this
+			// one (the IngameUI editor in particular).
+			bool fromMenu = (!pendingFocusWindow.empty() && pendingFocusWindow == windowId);
+			bool fromProject = (manager->restoreFocusFrames > 0 &&
+			                    !manager->restoreFocusWindow.empty() &&
+			                    manager->restoreFocusWindow == windowId);
+			if (visible && (fromMenu || fromProject))
 			{
 				ImGui::SetNextWindowFocus();
-				pendingFocusWindow.clear();
+				if (fromMenu)
+					pendingFocusWindow.clear();
 			}
 		};
 
@@ -1312,7 +1333,9 @@ int main()
 		panelWorld->draw(worldVisible, renderer, cameraEditor);
 		applyPendingFocus("Inspector", showPanel.inspector);
 		panelInspector->draw(showPanel.inspector);
+		applyPendingFocus("Hierarchy", showPanel.hierarchy);
 		panelHierarchy->draw(showPanel.hierarchy);
+		applyPendingFocus("Project", showPanel.project);
 		panelProject->draw(showPanel.project);
 		panelConsole->draw(showPanel.console);
 		applyPendingFocus("Shader", showPanel.shaderEditor);
@@ -1340,6 +1363,15 @@ int main()
 		panelParticle->draw(showPanel.particleEditor);
 		applyPendingFocus("IngameUI", showPanel.guiEditor);
 		panelGui->draw(showPanel.guiEditor);
+
+		// Count down the restored-panel focus request now that every panel has
+		// been drawn this frame. Re-asserting it for a few frames survives the
+		// deferred layout load and the dock tab ImGui selects for windows that
+		// are created after the target one (see applyPendingFocus above). The
+		// window id itself is kept so a layout reload processed on a later frame
+		// (manager->armEditorFocusRestore) can still re-apply it.
+		if (manager->restoreFocusFrames > 0)
+			--manager->restoreFocusFrames;
 
 		// Track the last focused panel to drive what the Inspector displays and
 		// which world the Hierarchy edits. The Inspector reads this on the next

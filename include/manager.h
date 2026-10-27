@@ -1184,6 +1184,36 @@ public:
     /// Most recently focused editor panel; drives what PanelInspector displays.
     FocusedPanel lastFocusedPanel = FocusedPanel::None;
 
+    /// ImGui window id (see main.cpp's applyPendingFocus) to focus after a
+    /// project load. A project load restores the panel that had focus when the
+    /// project was saved by setting this; main.cpp re-asserts the focus on every
+    /// frame while restoreFocusFrames > 0 (panels are created in draw order, so
+    /// a window drawn *after* the target — e.g. the IngameUI editor — would
+    /// otherwise become the active dock tab and steal the restored focus).
+    /// Kept separate from mainmenu.h's global `pendingFocusWindow`, which is
+    /// cleared while restoring the workspace layout and must not cancel the
+    /// restored-panel focus.
+    kString restoreFocusWindow;
+
+    /// Frames left to re-assert restoreFocusWindow. Armed by
+    /// loadEditorFocusSettings() and re-armed by main.cpp when the deferred
+    /// workspace layout is finally applied; main.cpp counts it down. Zero means
+    /// "stop requesting focus" — the window id is kept so a layout reload on a
+    /// later frame can re-arm it.
+    int restoreFocusFrames = 0;
+
+    /// @brief (Re)starts the countdown that keeps re-focusing the saved panel.
+    ///
+    /// Called when the saved project is loaded and again right after its
+    /// workspace layout has been applied, so the focus survives the layout
+    /// (dock node tab selection) and any panel opened later in the same frame.
+    /// Does nothing (and disarms) when no window was restored.
+    void armEditorFocusRestore(int frames = 6);
+
+    /// Restores lastFocusedPanel (and queues the matching window focus) from the
+    /// saved Config/project.json. Called after a project is opened/loaded.
+    void loadEditorFocusSettings();
+
 private:
     kWindow *window;
     kWorld *world;

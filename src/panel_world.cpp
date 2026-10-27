@@ -187,7 +187,13 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         {
             manager->showEditorGrid = showGrid;
             if (manager->editorGridMesh)
+            {
+                // kRenderer's draw traversal filters on getActive(), not on
+                // getVisible(), so toggling visibility alone left the grid on
+                // screen. Set both flags so the checkbox actually hides it.
                 manager->editorGridMesh->setVisible(showGrid);
+                manager->editorGridMesh->setActive(showGrid);
+            }
         }
         if (gui->isItemHovered())
             gui->setItemTooltip("Show the editor grid plane");
@@ -529,6 +535,12 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 kTerrainManager *tmgr = manager->terrainManager;
                 if (tmgr)
                 {
+                    // The Position control can move the whole grid away from its
+                    // grid-space origin, so march the ray in terrain space and add
+                    // the offset back only for the on-screen brush cursor.
+                    const kVec3 terrainOffset = manager->panelTerrain->getTerrainGroupOffset();
+                    origin -= terrainOffset;
+
                     float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
                     // March regardless of orientation: a top-down camera gives
                     // dirXZ ≈ 0, which previously skipped the raycast and made
@@ -639,8 +651,10 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                             }
                         }
 
-                        // Remember hit for paint cursor
-                        manager->panelTerrain->paintCursorPos = hitPos;
+                        // hitPos is in terrain space (the whole grid may be offset
+                        // by the Position control), so add the offset back for the
+                        // on-screen brush cursor.
+                        manager->panelTerrain->paintCursorPos = hitPos + terrainOffset;
                         manager->panelTerrain->paintCursorNormal = hitNormal;
                         manager->panelTerrain->paintCursorValid = hitTerrain;
                         cursorOverTerrain = hitTerrain;
@@ -670,6 +684,11 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     kTerrainManager *tmgr = manager->terrainManager;
                     if (tmgr)
                     {
+                        // See the brush raycast above: march in terrain space so a
+                        // grid moved by the Position control still lines up.
+                        const kVec3 terrainOffset = manager->panelTerrain->getTerrainGroupOffset();
+                        origin -= terrainOffset;
+
                         float dirXZ = std::sqrt(dir.x * dir.x + dir.z * dir.z);
                         if (dirXZ > 0.0001f || std::abs(dir.y) > 0.0001f)
                         {
@@ -746,7 +765,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                                 prevTerrainY = terrainY;
                             }
 
-                            manager->panelTerrain->paintCursorPos = hitPos;
+                            manager->panelTerrain->paintCursorPos = hitPos + terrainOffset;
                             manager->panelTerrain->paintCursorNormal = hitNormal;
                             manager->panelTerrain->paintCursorValid = hitTerrain;
                             cursorOverTerrain = hitTerrain;

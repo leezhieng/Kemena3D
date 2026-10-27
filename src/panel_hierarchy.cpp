@@ -72,6 +72,14 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	node.isSelected = std::find(activeSel.begin(), activeSel.end(),
 	                             node.uuid) != activeSel.end();
 
+	// Terrain is presented as a single row for the whole tile grid, so it also
+	// reads as selected while any of its tiles is the active selection (e.g.
+	// after picking a tile in the World viewport).
+	bool isTerrainRow = (node.type == "terrain");
+	if (!node.isSelected && isTerrainRow && manager->panelTerrain &&
+	    manager->panelTerrain->getSelectedTerrainTile(manager->terrainManager))
+		node.isSelected = true;
+
 	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
 	if (node.isSelected)
 		flags |= ImGuiTreeNodeFlags_Selected;
@@ -125,8 +133,10 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	int  objectStartLevel = manager->hierarchyShowsPrefab ? 1 : 2;
 	bool isObjectRow = (level >= objectStartLevel);
 
-	// Drag source: only for real scene objects, never prefab descendants.
-	if (isObjectRow && !node.isPrefabDescendant &&
+	// Drag source: only for real scene objects, never prefab descendants or the
+	// synthetic Terrain row (its tiles are owned by the terrain manager and must
+	// not be reparented/reordered).
+	if (isObjectRow && !node.isPrefabDescendant && !isTerrainRow &&
 		ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 	{
 		ImGui::SetDragDropPayload("SCENE_OBJECT",
@@ -140,7 +150,7 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	// We use AcceptBeforeDelivery so the payload is accessible during hover,
 	// letting us draw a custom indicator (line for drop-before, rect for
 	// drop-as-child) rather than ImGui's default highlight.
-	if (!node.isPrefabDescendant && ImGui::BeginDragDropTarget())
+	if (!node.isPrefabDescendant && !isTerrainRow && ImGui::BeginDragDropTarget())
 	{
 		ImVec2 rmin = ImGui::GetItemRectMin();
 		ImVec2 rmax = ImGui::GetItemRectMax();
@@ -251,8 +261,11 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 		    manager->activeMode != Manager::EditorMode::PrefabPreview)
 			manager->setEditorMode(Manager::EditorMode::GameWorld);
 
-		// Disable terrain sculpt mode when selecting any object from the hierarchy
-		if (manager->panelTerrain)
+		// Disable terrain sculpt mode when selecting a non-terrain object from the
+		// hierarchy. Selecting a terrain tile must keep the brush state intact so
+		// the Inspector shows exactly the same terrain editor as picking the tile
+		// in the World viewport.
+		if (manager->panelTerrain && node.type != "terrain")
 			manager->panelTerrain->sculpt.active = false;
 
 		// Snapshot selection before change (for undo)
@@ -327,10 +340,23 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 			// Objects
 			manager->worldSelected = false;
 			manager->selectedScene = nullptr;
-			if (manager->objectMap[node.uuid.c_str()].object != nullptr)
+
+			// Resolve through the cached map first (the Hierarchy repopulates it on
+			// every refresh), then fall back to a scene-graph lookup. Terrain tiles
+			// re-create their mesh when rebuilt, so relying on a single cached
+			// pointer made a row click select a dead object (and the Inspector then
+			// failed to show the terrain editor).
+			kObject *clickedObj = nullptr;
+			auto mapIt = manager->objectMap.find(node.uuid);
+			if (mapIt != manager->objectMap.end())
+				clickedObj = mapIt->second.object;
+			if (clickedObj == nullptr)
+				clickedObj = manager->findObjectByUuid(node.uuid);
+
+			if (clickedObj != nullptr)
 			{
 				std::cout << "FOUND: " << node.uuid.c_str() << std::endl;
-				manager->getActiveSelectedObject() = manager->objectMap[node.uuid.c_str()].object;
+				manager->getActiveSelectedObject() = clickedObj;
 				newSelObj = manager->getActiveSelectedObject();
 			}
 			else
@@ -356,7 +382,7 @@ void PanelHierarchy::drawNode(Node &node, Node &root, int level)
 	// of the clicked node (which doesn't push its own ID onto ImGui's ID stack)
 	// resolves to the same popup ID, so each of them re-emits the menu items
 	// and the context menu shows duplicated Rename/Duplicate/Delete entries.
-	if (isObjectRow && !node.isPrefabDescendant)
+	if (isObjectRow && !node.isPrefabDescendant && !isTerrainRow)
 	{
 		const kString ctxPopupId = kString("##HierarchyCtx_") + node.uuid;
 		if (ImGui::BeginPopupContextItem(ctxPopupId.c_str()))
@@ -639,6 +665,11 @@ void PanelHierarchy::refreshList()
 		}
 	};
 
+	// Number of terrain tiles found while walking the current scene. The tiles
+	// are internal to the terrain system, so they are collapsed into one
+	// "Terrain" row per scene instead of one row each.
+	int sceneTerrainTiles = 0;
+
 	// Walk the scene-graph subtree below `obj` and mirror it into the
 	// hierarchy panel. `insidePrefab` propagates the disabled state down to
 	// every descendant of a prefab instance root.
@@ -649,6 +680,17 @@ void PanelHierarchy::refreshList()
 		const kString &objName = obj->getName();
 		if (!objName.empty() && objName[0] == '_')
 			return;
+
+		// Terrain tiles never get their own rows: the whole grid is shown as a
+		// single "Terrain" object (appendTerrainRow below).
+		if (kMesh *tileMesh = dynamic_cast<kMesh *>(obj))
+		{
+			if (tileMesh->getSerializeType() == "terrain")
+			{
+				++sceneTerrainTiles;
+				return;
+			}
+		}
 
 		kString type;
 		uint32_t icon = pickIcon(obj, type);
@@ -665,6 +707,30 @@ void PanelHierarchy::refreshList()
 
 		for (kObject *c : obj->getChildren())
 			addObject(raw, c, nextInside);
+	};
+
+	// Appends the single "Terrain" row for a scene whose walk found tiles. The
+	// row selects the tile currently being edited (or the grid's first tile), so
+	// clicking it opens the terrain editor in the Inspector.
+	auto appendTerrainRow = [&](Node *sceneNode)
+	{
+		if (sceneTerrainTiles <= 0 || !manager->terrainManager || sceneNode == nullptr)
+			return;
+
+		kTerrain *tile = nullptr;
+		if (manager->panelTerrain)
+			tile = manager->panelTerrain->getSelectedTerrainTile(manager->terrainManager);
+		if (tile == nullptr && !manager->terrainManager->getTiles().empty())
+			tile = manager->terrainManager->getTiles().begin()->second.get();
+
+		kMesh *tileMesh = tile ? tile->getMesh() : nullptr;
+		if (tileMesh == nullptr)
+			return;
+
+		auto terrainNode = std::make_unique<Node>(
+			"Terrain", tileMesh->getUuid(), iconTerrain, "terrain");
+		manager->objectMap[tileMesh->getUuid()] = ObjectInfo{tileMesh};
+		sceneNode->children.emplace_back(std::move(terrainNode));
 	};
 
 	// Use the manager's active hierarchy world — this switches between the
@@ -702,6 +768,7 @@ void PanelHierarchy::refreshList()
 			manager->objectMap[firstObj->getUuid()] = ObjectInfo{firstObj};
 
 			// Children of the first object go under the root.
+			sceneTerrainTiles = 0;
 			for (kObject *child : firstObj->getChildren())
 				addObject(&root, child, /*insidePrefab*/ false);
 		}
@@ -718,12 +785,14 @@ void PanelHierarchy::refreshList()
 			auto &sceneNode = root.children.emplace_back(
 				std::make_unique<Node>(scene0->getName(), scene0->getUuid(), iconScene, "scene"));
 
+			sceneTerrainTiles = 0;
 			kObject *rootNode = scene0->getRootNode();
 			if (rootNode != nullptr)
 			{
 				for (kObject *child : rootNode->getChildren())
 					addObject(sceneNode.get(), child, /*insidePrefab*/ false);
 			}
+			appendTerrainRow(sceneNode.get());
 		}
 
 		for (size_t i = 1; i < visibleScenes.size(); ++i)
@@ -733,11 +802,13 @@ void PanelHierarchy::refreshList()
 			auto &sceneNode = root.children.emplace_back(
 				std::make_unique<Node>(scene->getName(), scene->getUuid(), iconScene, "scene"));
 
+			sceneTerrainTiles = 0;
 			kObject *rootNode = scene->getRootNode();
 			if (rootNode == nullptr)
 				continue;
 			for (kObject *child : rootNode->getChildren())
 				addObject(sceneNode.get(), child, /*insidePrefab*/ false);
+			appendTerrainRow(sceneNode.get());
 		}
 	}
 }

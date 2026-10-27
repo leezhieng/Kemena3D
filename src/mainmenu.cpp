@@ -710,6 +710,9 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 				manager->saveOpenEditorFiles(workspacePath);
 				// Persist the game panel's aspect-ratio selection.
 				manager->saveGamePanelSettings();
+				// Persist project config (name, last world, and the focused
+				// panel to restore when the project is reopened).
+				manager->saveProjectConfig();
 				SDL_Log("Saved workspace to: %s", workspacePath.string().c_str());
 			}
 			gui->separator();

@@ -360,6 +360,11 @@ bool Manager::executeNewProject(const kString& name, const fs::path& dir, bool c
     // Load this project's workspace layout (falls back to the default).
     loadProjectWorkspace();
 
+    // A brand-new project has no previously focused panel to restore.
+    lastFocusedPanel = FocusedPanel::None;
+    restoreFocusWindow.clear();
+    restoreFocusFrames = 0;
+
     // Save the project name to config immediately
     saveProjectConfig();
 
@@ -543,6 +548,9 @@ bool Manager::openProject()
     // Restore the game panel's aspect-ratio selection recorded in this project.
     loadGamePanelSettings();
 
+    // Continue in the panel that had focus when the project was last saved.
+    loadEditorFocusSettings();
+
     addRecentProject(projectPath.string());
 
     return true;
@@ -637,6 +645,9 @@ bool Manager::openProjectFromPath(const kString &path)
 
     // Restore the game panel's aspect-ratio selection recorded in this project.
     loadGamePanelSettings();
+
+    // Continue in the panel that had focus when the project was last saved.
+    loadEditorFocusSettings();
 
     addRecentProject(path);
 
@@ -2531,7 +2542,56 @@ void Manager::deleteSelectedObjects()
 
     std::vector<DeletedObjectInfo> deleted;
 
+    // Terrain tiles are owned by the terrain manager, not by the scene graph.
+    // Removing just their mesh left the kTerrain alive with a detached mesh, and
+    // the next rebuild (adding a neighbour, sculpting, ensureTilesLoaded) put that
+    // mesh straight back — the "deleted tiles reappear" bug. Delete the tile
+    // itself instead.
+    std::vector<std::pair<int, int>> terrainTilesToRemove;
     for (const auto &uuid : selectedObjects)
+    {
+        kMesh *m = dynamic_cast<kMesh *>(findObjectByUuid(uuid));
+        if (m == nullptr || m->getSerializeType() != "terrain")
+            continue;
+        if (terrainManager == nullptr || panelTerrain == nullptr)
+            continue;
+        for (const auto &pair : terrainManager->getTiles())
+        {
+            kTerrain *tile = pair.second.get();
+            if (tile != nullptr && tile->getMesh() == m)
+            {
+                terrainTilesToRemove.emplace_back(tile->getGridX(), tile->getGridZ());
+                break;
+            }
+        }
+    }
+
+    for (const auto &coord : terrainTilesToRemove)
+    {
+        if (panelTerrain != nullptr)
+            panelTerrain->removeTerrainTile(coord.first, coord.second);
+    }
+
+    // Drop the removed tiles from the processed list: they are gone from the
+    // terrain manager, so the generic mesh removal below would touch a dangling
+    // mesh and the DeleteCommand would try to restore it.
+    std::vector<kString> remaining;
+    remaining.reserve(selectedObjects.size());
+    for (const auto &uuid : selectedObjects)
+    {
+        kObject *obj = findObjectByUuid(uuid);
+        if (obj == nullptr)
+            continue;
+        if (!terrainTilesToRemove.empty())
+        {
+            kMesh *m = dynamic_cast<kMesh *>(obj);
+            if (m != nullptr && m->getSerializeType() == "terrain")
+                continue;
+        }
+        remaining.push_back(uuid);
+    }
+
+    for (const auto &uuid : remaining)
     {
         kObject *obj = findObjectByUuid(uuid);
         if (!obj)
@@ -2548,7 +2608,14 @@ void Manager::deleteSelectedObjects()
     }
 
     if (deleted.empty())
+    {
+        // Only terrain tiles were selected (they are already removed).
+        selectedObjects.clear();
+        selectedObject = nullptr;
+        if (panelHierarchy)
+            panelHierarchy->refreshList();
         return;
+    }
 
     auto cmd = std::make_unique<DeleteCommand>(
         this, std::move(deleted), selectedObjects, selectedObject);
@@ -5509,8 +5576,110 @@ bool Manager::duplicateAsset(const fs::path &srcPath)
 }
 
 // ---------------------------------------------------------------------------
-// Save / Load world
+// Editor panel focus persistence
 // ---------------------------------------------------------------------------
+
+namespace
+{
+/// @brief project.json key for @p panel (see Manager::loadEditorFocusSettings).
+const char *focusedPanelKey(Manager::FocusedPanel panel)
+{
+    switch (panel)
+    {
+    case Manager::FocusedPanel::Project:   return "project";
+    case Manager::FocusedPanel::Hierarchy: return "hierarchy";
+    case Manager::FocusedPanel::Scene:     return "scene";
+    case Manager::FocusedPanel::Logic:     return "logic";
+    case Manager::FocusedPanel::Animator:  return "animator";
+    case Manager::FocusedPanel::Particle:  return "particle";
+    case Manager::FocusedPanel::Shader:    return "shader";
+    case Manager::FocusedPanel::Animation: return "animation";
+    case Manager::FocusedPanel::Gui:       return "gui";
+    case Manager::FocusedPanel::Prefab:    return "prefab";
+    default:                               return "none";
+    }
+}
+
+/// @brief Reverse of focusedPanelKey().
+Manager::FocusedPanel focusedPanelFromKey(const std::string &key)
+{
+    if (key == "project")   return Manager::FocusedPanel::Project;
+    if (key == "hierarchy") return Manager::FocusedPanel::Hierarchy;
+    if (key == "scene")     return Manager::FocusedPanel::Scene;
+    if (key == "logic")     return Manager::FocusedPanel::Logic;
+    if (key == "animator")  return Manager::FocusedPanel::Animator;
+    if (key == "particle")  return Manager::FocusedPanel::Particle;
+    if (key == "shader")    return Manager::FocusedPanel::Shader;
+    if (key == "animation") return Manager::FocusedPanel::Animation;
+    if (key == "gui")       return Manager::FocusedPanel::Gui;
+    if (key == "prefab")    return Manager::FocusedPanel::Prefab;
+    return Manager::FocusedPanel::None;
+}
+
+/// @brief ImGui window id focused by main.cpp for @p panel ("" when none).
+const char *focusedPanelWindowId(Manager::FocusedPanel panel)
+{
+    switch (panel)
+    {
+    case Manager::FocusedPanel::Project:   return "Project";
+    case Manager::FocusedPanel::Hierarchy: return "Hierarchy";
+    case Manager::FocusedPanel::Scene:     return "World";
+    case Manager::FocusedPanel::Logic:     return "Logic Graph";
+    case Manager::FocusedPanel::Animator:  return "AnimatorEditor";
+    case Manager::FocusedPanel::Particle:  return "Particle Editor";
+    case Manager::FocusedPanel::Shader:    return "Shader";
+    case Manager::FocusedPanel::Animation: return "CinematicEditor";
+    case Manager::FocusedPanel::Gui:       return "IngameUI";
+    case Manager::FocusedPanel::Prefab:    return "Prefab";
+    default:                               return "";
+    }
+}
+} // namespace
+
+void Manager::loadEditorFocusSettings()
+{
+    if (!projectOpened || projectPath.empty())
+        return;
+
+    fs::path cfgFile = projectPath / "Config" / "project.json";
+    if (!fs::exists(cfgFile))
+        return;
+
+    json cfg;
+    {
+        std::ifstream in(cfgFile);
+        if (!in.is_open())
+            return;
+        try { in >> cfg; }
+        catch (...) { return; }
+    }
+
+    // Restore the Inspector's context selection and queue the matching window
+    // for focus. The layout itself is applied on the *next* frame (see
+    // loadProjectWorkspace), so the focus is re-asserted for a few frames by
+    // main.cpp — applying it once here would be overwritten when the restored
+    // dock layout selects its tab (which is why a saved World focus used to
+    // reopen with the IngameUI editor in front).
+    lastFocusedPanel = focusedPanelFromKey(cfg.value("last_focused_panel", std::string("none")));
+    const char *windowId = focusedPanelWindowId(lastFocusedPanel);
+    if (windowId != nullptr && windowId[0] != '\0')
+        restoreFocusWindow = windowId;
+    else
+        restoreFocusWindow.clear();
+    armEditorFocusRestore();
+}
+
+void Manager::armEditorFocusRestore(int frames)
+{
+    if (restoreFocusWindow.empty())
+    {
+        restoreFocusFrames = 0;
+        return;
+    }
+    if (frames < 1)
+        frames = 1;
+    restoreFocusFrames = frames;
+}
 
 void Manager::saveProjectConfig()
 {
@@ -5542,6 +5711,9 @@ void Manager::saveProjectConfig()
         // Persist the editor's node-gizmo icon size so it is restored when the
         // project is reopened.
         j["icon_gizmo_size"] = iconGizmoSize;
+        // Remember which panel had focus so reopening the project continues in
+        // that panel (see loadEditorFocusSettings).
+        j["last_focused_panel"] = focusedPanelKey(lastFocusedPanel);
         if (!worldPath.empty() && fs::exists(worldPath))
         {
             std::error_code rel_ec;
@@ -6260,6 +6432,15 @@ static kObject *loadObjectFromJson(const json &obj, kScene *scene, kWorld *world
             if (tile)
             {
                 terrainMgr->setAssetDirectory(libDir.string());
+
+                // The .world stores each tile's own world size. Adopt it instead
+                // of trusting the manager initialisation (which took its values
+                // from the first terrain object), so opening a project built
+                // with a different world size restores every tile correctly.
+                const float savedWorldSize = obj.value("worldSize", 0.0f);
+                if (savedWorldSize > 0.0f &&
+                    std::fabs(savedWorldSize - tile->getWorldSize()) > 1e-4f)
+                    tile->setWorldSize(savedWorldSize);
 
                 // The .world records the exact filenames the tile was saved with;
                 // adopt them so older projects keep working. kMesh::serialize()
@@ -7098,25 +7279,38 @@ void Manager::loadWorld(const kString &path)
     // data files need to be loaded from Library/Terrains/.)
     if (terrainManager && projectOpened)
     {
+        // Pass 1 — read every tile's payload BEFORE any mesh is built. Stitching
+        // averages each shared edge with its neighbour, so interleaving
+        // "load tile / rebuild tile" made a tile stitch against neighbours that
+        // still held their construction-time zeros, and the tile whose data got
+        // folded afterwards never had its mesh refreshed. That is what left hard
+        // steps ("seams") between loaded tiles.
+        fs::path libDir = projectPath / "Library" / "Terrains";
+        for (auto &pair : terrainManager->getTiles())
+        {
+            kTerrain *tile = pair.second.get();
+            if (!tile || !tile->getMesh())
+                continue;
+
+            kString uuid = tile->getMesh()->getUuid();
+            kString hFile = libDir.string() + "/" + uuid + ".height";
+            kString sFile = libDir.string() + "/" + uuid + ".splat";
+            if (fs::exists(hFile))
+                tile->loadHeightData(hFile);
+            if (fs::exists(sFile))
+                tile->loadSplatMap(sFile);
+        }
+
+        // Pass 2 — build the meshes now that every neighbour's data is final.
+        // loadHeightData only updates the CPU arrays; reload() builds the GPU mesh
+        // and stitches the seams against complete data.
         for (auto &pair : terrainManager->getTiles())
         {
             kTerrain *tile = pair.second.get();
             if (tile && tile->getMesh())
-            {
-                fs::path libDir = projectPath / "Library" / "Terrains";
-                kString uuid = tile->getMesh()->getUuid();
-                kString hFile = libDir.string() + "/" + uuid + ".height";
-                kString sFile = libDir.string() + "/" + uuid + ".splat";
-                if (fs::exists(hFile))
-                    tile->loadHeightData(hFile);
-                if (fs::exists(sFile))
-                    tile->loadSplatMap(sFile);
-
-                // Rebuild the mesh so the GPU vertex buffer reflects the loaded height data.
-                // loadHeightData only updates the CPU array; reload() builds the GPU mesh.
                 tile->reload(true);
-            }
         }
+
         if (getRenderer())
             getRenderer()->setOctreeDirty();
     }

@@ -130,6 +130,27 @@ public:
     void cancelTerrainEdit();
 
     /**
+     * @brief Creates a terrain tile at a grid coordinate.
+     *
+     * The one and only "add tile" path: it fills/mirrors the height field,
+     * blends the shared borders into a band so the new tile stitches seamlessly
+     * with its existing neighbours, builds its mesh with seam stitching, writes
+     * the assets it owns and refreshes the neighbouring meshes. Both the terrain
+     * panel's "+X/-X/+Z/-Z" buttons and the Inspector's Tile Expansion section
+     * go through here so a tile is never created half-initialised.
+     *
+     * @param gridX        Integer X coordinate.
+     * @param gridZ        Integer Z coordinate.
+     * @param duplicateFrom When non-null, the new tile copies this tile's
+     *        height field, splat weights, layer stack and material parameters
+     *        instead of starting flat (the "Add neighbour" popup offers this).
+     *        The copy is mirrored along the axis facing the source so the
+     *        shared border continues instead of butting two unrelated edges
+     *        together.
+     */
+    void addTerrainTile(int gridX, int gridZ, kTerrain *duplicateFrom = nullptr);
+
+    /**
      * @brief Removes the terrain tile at a grid coordinate.
      *
      * The tile's scene mesh is deleted, so if it is currently selected the
@@ -201,21 +222,54 @@ public:
     void removeHeightLayerUndoable(kTerrain *tile, int layerIndex);
 
     /**
-     * @brief Applies the panel's "Tile Height" value to @p tile and saves it.
+     * @brief Applies a new base elevation (the panel's Position Y) to @p tile.
      *
-     * "Tile Height" is the tile's nominal base elevation. Applying a new value
+     * The base elevation is the tile's nominal height. Applying a new value
      * translates the sculpted base field by the difference, so the height map
      * and every effect layer (whose offsets are relative) are preserved.
      * Recorded as one undoable step and written to disk immediately.
+     * @param tile         Tile to edit.
+     * @param targetHeight New base elevation (world units).
      */
-    void applyTileHeight(kTerrain *tile);
+    void applyTileHeight(kTerrain *tile, float targetHeight);
 
     /**
-     * @brief Resets a tile's height map.
+     * @brief Returns the whole terrain grid's world-space offset.
      *
-     * The sculpted base returns to the panel's default height and every effect
-     * layer's contribution (its stored delta) is zeroed, so the tile reads flat
-     * again. Recorded as one undoable step for the base field.
+     * The terrain system addresses tiles by grid coordinate, while rendering
+     * uses each tile mesh's world position. The panel's Position control moves
+     * every tile together, so the difference between one tile's mesh position and
+     * its grid-derived position is the group offset. It is zero for a terrain
+     * that was never moved, and uniform across the grid after a move.
+     */
+    kVec3 getTerrainGroupOffset() const;
+
+    /**
+     * @brief Offsets every terrain tile's mesh by @p delta (X/Z).
+     *
+     * Used by the Position control so the grid keeps its internal layout when
+     * the whole terrain is moved. Only the mesh transforms change; height / splat
+     * data and the tile grid coordinates stay untouched.
+     */
+    void applyTerrainGroupOffset(const kVec3 &delta);
+
+    /**
+     * @brief Translates every terrain tile's base elevation by @p delta.
+     *
+     * All tiles shift by the same amount, so their relative relief is preserved.
+     * Every tile is snapshotted before the change and committed together, making
+     * the group shift one undoable step. Owned height files are written once.
+     */
+    void applyTerrainGroupHeight(float delta);
+
+    /**
+     * @brief Resets a tile's *sculpted* height field.
+     *
+     * Only the base (sculpt) field is cleared — it returns to the panel's default
+     * height. The non-destructive height-modifier (effect) layers keep their
+     * generated deltas and are recomposited on top of the cleared base, so the
+     * tile reads as the raw generated terrain instead of flat. Recorded as one
+     * undoable step for the base field.
      */
     void clearSelectedTileHeight(kTerrain *tile);
 
@@ -315,11 +369,34 @@ public:
     void applyHydrologyToTile(kTerrain *tile, int iterations, float k, float m, float n,
                               float deposition, float minSlope);
 
-private:
-    void addTerrainTile(int gridX, int gridZ);
-
-    /// @brief Rebuilds the meshes of the (up to four) loaded tiles adjacent to a coord.
+    /**
+     * @brief Rebuilds the meshes of all loaded tiles around a grid coordinate.
+     *
+     * Covers the eight surrounding tiles: the four edge neighbours (`X-`, `X+`,
+     * `Z-`, `Z+`) share a stitched seam, and the four diagonals share a corner
+     * sample that kTerrain::stitchSeams() averages across the 2x2 block, so their
+     * meshes must be refreshed too or the corner keeps the stale height.
+     */
     void rebuildNeighborMeshes(int gridX, int gridZ);
+
+    /**
+     * @brief Seeds a new tile so it continues the surrounding terrain.
+     *
+     * Writes every sample of @p tile's sculpted base from the neighbouring tiles'
+     * shared border profiles, weighted by distance to each side (bilinear blend of
+     * up to four profiles). A border sample therefore starts *exactly* at the
+     * neighbour's height, and the interior fades smoothly toward
+     * @p fallbackHeight where no neighbour constrains it.
+     *
+     * A flat tile can only ever meet a sculpted neighbour with a cliff, however
+     * well the seam row itself is stitched — which is what kept reading as an
+     * obvious seam when expanding the grid. With no neighbours at all the tile is
+     * simply flat at @p fallbackHeight.
+     *
+     * @param tile           Newly created tile (its neighbour links must be set).
+     * @param fallbackHeight Height used where no neighbour influences a sample.
+     */
+    void seedTileFromNeighborEdges(kTerrain *tile, float fallbackHeight);
 
     /// @brief Ensures every terrain tile has a live GPU mesh.
     ///
@@ -349,6 +426,25 @@ private:
     };
     std::vector<EditSnapshot> m_editSnapshots;
     EditSnapshot *findOrCreateEditSnapshot(kTerrain *tile);
+
+    /**
+     * @brief True when @p tile is still owned by the terrain manager.
+     *
+     * Tiles are owned by kTerrainManager, so a pointer that is no longer in its
+     * map is dangling — the tile was removed while an edit was pending, or the
+     * manager was replaced by loading another world/project.
+     */
+    bool isLiveTerrainTile(const kTerrain *tile) const;
+
+    /**
+     * @brief Drops every cached tile pointer whose tile no longer exists.
+     *
+     * Clears dead undo snapshots and the sculpt/paint/staged-settings "current
+     * tile" pointers. Without this, the stroke after a "remove tile → add tile →
+     * sculpt" sequence rebuilt (or diffed) a freed tile, which is the access
+     * violation seen in kTerrain::rebuildMesh().
+     */
+    void purgeStaleTileReferences();
 
     /**
      * @brief Scratch copy of a height-modifier layer while its tree node is open.
@@ -413,12 +509,11 @@ private:
         /// Terrain shading model: 0 = Flat, 1 = Phong, 2 = PBR.
         int shaderType = 2;
         float blendSharpness = 1.0f;
-        bool stochastic = true;
-        bool triplanar = true;
         bool rotateUV = false;
         float uvRotation = 0.0f; ///< Degrees.
-        float triplanarStrength = 0.75f;
-        float triplanarSharpness = 3.0f;
+        // Stochastic anti-tiling, triplanar projection, cell bombing and the
+        // Voronoi warp are all per material layer settings (kTerrainLayer), not
+        // material-wide.
         float noiseVariegation = 0.25f;
         float noiseScale = 0.02f;
         bool noiseEnabled = false; ///< Procedural noise variegation on/off.
@@ -445,6 +540,12 @@ private:
     // --- Terrain size / resolution settings (applied only after confirmation) ---
     float m_settingsWorldSize = 256.0f; ///< Edited value in the Terrain panel.
     int m_settingsHeightRes = 513;      ///< Edited value in the Terrain panel.
+    /// Manager values the staged settings above were last synced with. A project
+    /// load replaces the terrain manager (possibly with a different world size /
+    /// resolution), so the panel refreshes its fields whenever these change
+    /// instead of keeping the hard-coded defaults forever.
+    float m_syncedWorldSize = -1.0f;
+    int m_syncedHeightRes = -1;
     float m_pendingWorldSize = 256.0f;  ///< Value awaiting the confirmation modal.
     int m_pendingHeightRes = 513;       ///< Value awaiting the confirmation modal.
     bool m_resizeConfirmPending = false; ///< Set to open the resize warning modal.
@@ -492,6 +593,16 @@ private:
     kString m_messageBoxText;
     /// Set to open the message popup on the next frame.
     bool m_messageBoxPending = false;
+
+    // --- Deferred "Add neighbour" choice -------------------------------------
+    /// Set when an "Add neighbour" button was clicked; opens a modal asking
+    /// whether the new tile should duplicate the source tile or start empty.
+    bool m_addNeighbourPending = false;
+    /// Tile the new neighbour is spawned from (duplicated on request).
+    kTerrain *m_addNeighbourSource = nullptr;
+    int m_addNeighbourGridX = 0;      ///< Target grid X of the pending tile.
+    int m_addNeighbourGridZ = 0;      ///< Target grid Z of the pending tile.
+    kString m_addNeighbourText;       ///< Popup description (direction, coords).
 
     /// Re-entrancy guard: rebuilding one tile also refreshes its neighbours so the
     /// stitched seams stay closed, and a neighbour rebuild must not bounce back.

@@ -1392,10 +1392,19 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
             }
         }
 
-        // Helper lambda: expand in a given direction (create + fill + load).
+        // Helper lambda: expand in a given direction.
+        //
+        // This must go through PanelTerrain::addTerrainTile() — the single
+        // "create a tile" path — instead of creating the tile here. That path
+        // fills/mirrors the height field, blends the shared borders into a band
+        // so the new tile stitches seamlessly with its neighbours, rebuilds the
+        // neighbouring meshes, applies the grid's Position offset and writes the
+        // assets the tile owns. Calling createTile() directly left a flat,
+        // zero-height tile with a one-sample cliff along every shared edge (and
+        // no owned payload, so it also vanished on reload).
         auto expandInDir = [mgr, ownerTerrain](int gx, int gz, const char *dir)
         {
-            if (!mgr->terrainManager || !ownerTerrain)
+            if (!mgr->terrainManager || !ownerTerrain || !mgr->panelTerrain)
                 return;
             int nx = gx, nz = gz;
             if (strcmp(dir, "north") == 0)   nz += 1;
@@ -1403,18 +1412,10 @@ static void drawMeshSection(kGuiManager *gui, kMesh *mesh, Manager *mgr, PanelTe
             else if (strcmp(dir, "east") == 0)  nx += 1;
             else if (strcmp(dir, "west") == 0)  nx -= 1;
 
-            kTerrain *tile = mgr->terrainManager->createTile(nx, nz);
-            if (tile)
-            {
-                // Load immediately so it appears in the viewport
-                if (!tile->isLoaded())
-                {
-                    tile->reload(true);
-                    // Also register the mesh with the scene for rendering
-                    if (mgr->getRenderer())
-                        mgr->getRenderer()->setOctreeDirty();
-                }
-            }
+            if (mgr->terrainManager->getTile(nx, nz))
+                return;
+
+            mgr->panelTerrain->addTerrainTile(nx, nz);
         };
 
         if (ownerTerrain)
@@ -5789,13 +5790,25 @@ void PanelInspector::draw(bool &opened)
                 // terrain tile is selected, the Inspector shows the whole terrain
                 // editor (tile settings, brushes, effect layers, materials and
                 // collider) and nothing else.
+                //
+                // Any object whose mesh serializes as "terrain" counts, whatever
+                // its node type — the Hierarchy's icon logic does the same, so a
+                // tile selected from the tree gets the identical editor as one
+                // picked in the World viewport.
                 bool isTerrainObj = (type == NODE_TYPE_TERRAIN);
-                if (type == NODE_TYPE_MESH)
+                if (!isTerrainObj)
                 {
-                    kMesh *tm = dynamic_cast<kMesh *>(obj);
-                    if (tm && tm->getSerializeType() == "terrain")
-                        isTerrainObj = true;
+                    if (kMesh *tm = dynamic_cast<kMesh *>(obj))
+                        isTerrainObj = (tm->getSerializeType() == "terrain");
                 }
+
+                // Final fallback: resolve the active selection through the terrain
+                // manager. This keeps the terrain editor visible even when the
+                // object's type flags cannot be trusted (e.g. a tile mesh rebuilt
+                // by sculpting/painting since the Hierarchy last refreshed).
+                if (!isTerrainObj && manager->panelTerrain &&
+                    manager->panelTerrain->getSelectedTerrainTile(manager->terrainManager))
+                    isTerrainObj = true;
 
                 if (isTerrainObj)
                 {

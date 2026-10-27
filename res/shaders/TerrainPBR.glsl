@@ -157,31 +157,41 @@ uniform sampler2D u_AOMap[4];          // 4 AO maps
 // the 16-layer texture-array path).
 uniform float     u_BlendSharpness;    // Blend edge sharpness (0.5 - 4.0)
 
-// --- Stochastic / triplanar controls -----------------------------------------
+// --- Stochastic / anti-tiling controls ---------------------------------------
 // Learned from the "Procedural Stochastic Terrain Shader" and the
 // "SuperSimpleTerrainShader": per-repeat random rotation to kill visible tiling,
-// world-space UVs so the pattern stitches across neighbouring tiles, triplanar
-// projection on cliffs, and procedural noise variegation.
+// world-space UVs so the pattern stitches across neighbouring tiles, and
+// procedural noise variegation.
 // @var float     u_TileWorldSize       Tile World Size
-// @var float     u_Stochastic          Stochastic Anti-Tiling
-// @var float     u_Triplanar           Triplanar (enable)
-// @var float     u_TriplanarStrength   Triplanar Cliffs
-// @var float     u_TriplanarSharpness  Triplanar Sharpness
 // @var float     u_NoiseVariegation    Noise Variegation
 // @var float     u_NoiseScale          Noise Scale
 uniform float u_TileWorldSize;          // World size of one tile (for world-space UVs)
-uniform float u_Stochastic;             // 0 = off, 1 = full per-repeat rotation
-uniform float u_Triplanar;              // 0 = top-down projection only, 1 = blend side planes on cliffs
-uniform float u_TriplanarStrength;      // 0 = flat only, 1 = full triplanar on cliffs
-uniform float u_TriplanarSharpness;     // Slope falloff exponent for the triplanar blend
 uniform float u_NoiseVariegation;       // Amount of procedural noise tint variation
 uniform float u_NoiseScale;             // Noise frequency (1 / world units)
-// Per-layer UV transform. Tiling, offset and rotation are owned by each
-// material layer, never by the whole material.
+
+// Per-layer UV transform and anti-tiling controls. Tiling, offset, rotation,
+// stochastic anti-tiling, triplanar projection, cell bombing and Voronoi warp
+// are all owned by each material layer, never by the whole material.
 uniform float u_UVOffsetX[16];
 uniform float u_UVOffsetY[16];
 uniform float u_RotateUV[16];
 uniform float u_UVRotation[16];
+// Per-layer stochastic anti-tiling (replaces the old material-wide control).
+uniform float u_LayerStochastic[16];         // 0 = off, 1 = full per-repeat rotation
+// Per-layer triplanar projection (replaces the old material-wide controls).
+uniform float u_LayerTriplanar[16];          // 0 = top-down only, 1 = blend sides on cliffs
+uniform float u_LayerTriplanarStrength[16];  // 0..1 blend amount
+uniform float u_LayerTriplanarSharpness[16]; // Slope ramp (0.25..16)
+// Cell bombing: random per-repeat-cell offset/zoom to break tiling repetition.
+uniform float u_CellBombing[16];             // 0..1 amount
+uniform float u_CellBombingScale[16];        // Relative jitter-cell size
+// Voronoi UV warp: distorts the UV grid so straight repeats stop lining up.
+uniform float u_VoronoiStrength[16];         // 0..1 warp amount
+uniform float u_VoronoiScale[16];            // Voronoi frequency
+// Parallax occlusion mapping. The albedo luminance doubles as the height field
+// (terrain layer textures have no dedicated height map).
+uniform float u_ParallaxStrength[16];        // 0 = off, 1 = full
+uniform float u_ParallaxScale[16];           // UV depth at full strength
 // @var float     u_MaskedBlend         Masked Weight Blending
 uniform float u_MaskedBlend;            // 0 = luminance height blend, 1 = albedo-alpha mask blend
 
@@ -407,7 +417,9 @@ float terrainDirectNdotL(vec3 n, vec3 l)
     float ndl  = dot(n, l);
     float wrap = clamp(u_TerrainShadowSoftness, 0.0, 0.95);
     float softened = clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
-    float contrast = mix(1.0, 2.5, clamp(u_TerrainShadowStrength, 0.0, 1.0));
+    // Strength is authored 0..2: 1.0 reproduces the historical 2.5 contrast,
+    // values above 1.0 darken the shaded slopes further.
+    float contrast = 1.0 + clamp(u_TerrainShadowStrength, 0.0, 2.0) * 1.5;
     return pow(softened, contrast);
 }
 
@@ -501,6 +513,14 @@ float hash21(vec2 p)
     return fract(p.x * p.y);
 }
 
+// 2D hash returning [0,1) on both axes (used by the anti-tiling helpers).
+vec2 hash22(vec2 p)
+{
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
 // Smooth value noise in [0,1].
 float valueNoise(vec2 p)
 {
@@ -546,19 +566,122 @@ vec2 rotateUVTiles(vec2 uv, int i)
     return cell + 0.5 + vec2(c * d.x - s * d.y, s * d.x + c * d.y);
 }
 
-// Per-layer UV offset, applied after tiling so it shifts the repeat pattern.
+// Per-layer UV offset, applied independently inside every texture repeat cell
+// (the same way rotateUVTiles() rotates each cell). Offsetting the whole UV map
+// moved the tiling grid itself, so the pattern slid across the terrain; shifting
+// the content inside each cell keeps the repeat layout fixed.
 vec2 layerUVOffset(int i)
 {
     return vec2(u_UVOffsetX[i], u_UVOffsetY[i]);
 }
 
+// Shifts the content of each texture repeat cell by the layer's UV offset.
+vec2 offsetUVTiles(vec2 uv, int i)
+{
+    vec2 off = fract(layerUVOffset(i));
+    vec2 cell = floor(uv);
+    return cell + fract(fract(uv) + off);
+}
+
+// Voronoi UV warp: moves each sample toward the nearest feature point of a
+// Voronoi field, which breaks the straight repetition of the tiled texture.
+// The distortion is continuous, so neighbouring cells stay connected.
+vec2 voronoiDistort(vec2 uv, int i)
+{
+    float amount = clamp(u_VoronoiStrength[i], 0.0, 1.0);
+    if (amount <= 0.001)
+        return uv;
+
+    float scale = max(u_VoronoiScale[i], 0.0001);
+    vec2 p = uv * scale;
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    vec2 nearest = vec2(0.0);
+    float best = 8.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+        {
+            vec2 g = vec2(float(x), float(y));
+            vec2 r = g + hash22(n + g + float(i) * 19.3) - f;
+            float d = dot(r, r);
+            if (d < best)
+            {
+                best = d;
+                nearest = r;
+            }
+        }
+    // nearest is in Voronoi-cell units; convert back to UV space.
+    return uv + nearest * amount / scale;
+}
+
+// Cell bombing: jitters the texture content inside each bombing cell (random
+// offset + zoom) so identical repeat cells stop lining up. The jitter is faded
+// to zero at the cell borders, so the result stays seam-free.
+vec2 cellBombUV(vec2 uv, int i)
+{
+    float amount = clamp(u_CellBombing[i], 0.0, 1.0);
+    if (amount <= 0.001)
+        return uv;
+
+    float scale = max(u_CellBombingScale[i], 0.01);
+    vec2 p = uv / scale;
+    vec2 cell = floor(p);
+    vec2 f = fract(p) - 0.5;
+
+    vec2 h = hash22(cell + float(i) * 13.7);
+    float mask = cellEdgeMask(p) * amount;
+
+    vec2 jitter = (h - 0.5) * 0.6;
+    float zoom = mix(1.0, mix(0.7, 1.3, h.y), mask);
+    vec2 local = f * zoom + jitter * mask;
+
+    return (cell + 0.5 + local) * scale;
+}
+
 // Build one layer's UV for a projection plane: world position -> world UV ->
-// per-layer tiling and offset -> per-repeat-cell rotation.
+// per-layer tiling -> Voronoi warp -> cell bombing -> per-cell offset/rotation.
 vec2 layerUV(vec2 planePos, int i)
 {
     float tile = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
-    vec2 uv = (planePos / tile) * u_Tiling[i] + layerUVOffset(i);
+    vec2 uv = (planePos / tile) * u_Tiling[i];
+    uv = voronoiDistort(uv, i);
+    uv = cellBombUV(uv, i);
+    uv = offsetUVTiles(uv, i);
     return rotateUVTiles(uv, i);
+}
+
+// Steep parallax occlusion mapping for one layer. The albedo luminance acts as
+// the height field (terrain layer textures have no dedicated height map), so
+// bright detail reads as raised and dark detail as recessed.
+// Only the array path calls this: u_AlbedoArray is dynamically indexable, while
+// the legacy 4 albedo samplers are not.
+vec2 parallaxUVArray(vec2 uv, int i, vec3 viewDir)
+{
+    float strength = clamp(u_ParallaxStrength[i], 0.0, 1.0);
+    float scale = max(u_ParallaxScale[i], 0.0) * strength;
+    if (strength <= 0.001 || scale <= 0.0001)
+        return uv;
+
+    // Horizontal view component in top-projection UV space. The divisor keeps
+    // the offset finite when looking almost straight down.
+    vec2 viewUV = vec2(viewDir.x, viewDir.z) / max(abs(viewDir.y), 0.15);
+
+    const int kSteps = 8;
+    float stepHeight = 1.0 / float(kSteps);
+    vec2 stepUV = -viewUV * (scale / float(kSteps));
+
+    vec2 cur = uv;
+    float layer = 1.0;
+    for (int s = 0; s < kSteps; ++s)
+    {
+        float h = dot(texture(u_AlbedoArray, vec3(cur, float(i))).rgb,
+                      vec3(0.299, 0.587, 0.114));
+        if (h >= layer)
+            break;
+        layer -= stepHeight;
+        cur += stepUV;
+    }
+    return cur;
 }
 
 // Sample one legacy albedo slot. The texture is passed in by value: GLSL 330 does
@@ -570,11 +693,12 @@ vec4 sampleAlbedoSlot(sampler2D tex, int i, vec3 N, float triW)
     vec2 uvTop = layerUV(v_worldPos.xz, i);
 
     vec4 top = texture(tex, uvTop);
-    if (u_Stochastic > 0.0)
+    float stochastic = clamp(u_LayerStochastic[i], 0.0, 1.0);
+    if (stochastic > 0.001)
     {
         vec2 ruv = stochasticRotate(uvTop, float(i) * 31.7);
         top = mix(top, texture(tex, ruv),
-                  cellEdgeMask(uvTop) * clamp(u_Stochastic, 0.0, 1.0));
+                  cellEdgeMask(uvTop) * stochastic);
     }
 
     if (triW <= 0.001)
@@ -609,15 +733,16 @@ float getWeightLayer(int l)
 }
 
 // Albedo of layer i from the albedo sampler2DArray (stochastic + triplanar).
-vec4 sampleLayerAlbedoArray(int i, vec3 N, float triW)
+// @param uvTop Top-projection UV, already parallax-shifted by the caller.
+vec4 sampleLayerAlbedoArray(int i, vec3 N, float triW, vec2 uvTop)
 {
-    vec2 uvTop = layerUV(v_worldPos.xz, i);
     vec4 top = texture(u_AlbedoArray, vec3(uvTop, float(i)));
-    if (u_Stochastic > 0.0)
+    float stochastic = clamp(u_LayerStochastic[i], 0.0, 1.0);
+    if (stochastic > 0.001)
     {
         vec2 ruv = stochasticRotate(uvTop, float(i) * 31.7);
         top = mix(top, texture(u_AlbedoArray, vec3(ruv, float(i))),
-                  cellEdgeMask(uvTop) * clamp(u_Stochastic, 0.0, 1.0));
+                  cellEdgeMask(uvTop) * stochastic);
     }
     if (triW <= 0.001)
         return top;
@@ -644,14 +769,15 @@ void main()
     float nLen = length(N);
     N = (nLen > 1e-5) ? N / nLen : computeDisplacedNormal(v_worldPos);
 
-    // Triplanar weight — grows as the surface tilts away from horizontal.
-    // Opt-in: when disabled the projection stays purely top-down, so the strength /
-    // sharpness controls have an unambiguous on/off switch.
+    // Surface slope, used by the per-layer triplanar weight below. Each material
+    // layer owns its own triplanar enable/strength/sharpness, so the weight is
+    // computed inside the layer loop.
     float slope = clamp(1.0 - abs(N.y), 0.0, 1.0);
-    float triW  = 0.0;
-    if (u_Triplanar > 0.5)
-        triW = pow(slope, max(u_TriplanarSharpness, 1.0)) *
-               clamp(u_TriplanarStrength, 0.0, 1.0);
+
+    // Camera position reconstructed from the view matrix; the parallax ray uses
+    // the real view direction (viewPos is not declared for the terrain shader).
+    vec3 cameraPos = -(transpose(mat3(viewMatrix)) * viewMatrix[3].xyz);
+    vec3 toCamera = normalize(cameraPos - v_worldPos);
 
     // ----- Sample splat map -------------------------------------------------
     // Only the legacy path uses the RGBA control map; the array path leaves
@@ -692,9 +818,24 @@ void main()
         if (weight <= 0.001)
             continue;
 
+        // Per-layer triplanar weight. Sharpness scales the slope before the
+        // smoothstep, so low values blend gentle slopes and high values keep the
+        // projection on steep cliffs while remaining clearly visible.
+        float triW = 0.0;
+        if (u_LayerTriplanar[i] > 0.5)
+        {
+            float sharp = clamp(u_LayerTriplanarSharpness[i], 0.25, 16.0);
+            triW = smoothstep(0.0, 1.0, clamp(slope * sharp, 0.0, 1.0)) *
+                   clamp(u_LayerTriplanarStrength[i], 0.0, 1.0);
+        }
+
         // World-space detail UV (same tiling / offset / per-repeat rotation as
         // the albedo path).
         vec2 uv = layerUV(v_worldPos.xz, i);
+
+        // Parallax shifts the top-projection UV before the detail maps are
+        // sampled (array path only — the legacy samplers are not indexable).
+        vec2 detailUV = arrayPath ? parallaxUVArray(uv, i, toCamera) : uv;
 
         vec4  a;
         vec3  normSample;
@@ -702,11 +843,11 @@ void main()
 
         if (arrayPath)
         {
-            a          = sampleLayerAlbedoArray(i, N, triW);
-            normSample = texture(u_NormalArray, vec3(uv, float(i))).xyz;
-            vec3 orm   = texture(u_ORMArray, vec3(uv, float(i))).rgb;
+            a          = sampleLayerAlbedoArray(i, N, triW, detailUV);
+            normSample = texture(u_NormalArray, vec3(detailUV, float(i))).xyz;
+            vec3 orm   = texture(u_ORMArray, vec3(detailUV, float(i))).rgb;
             rSample    = orm.g; mSample = orm.b; aoSample = orm.r;
-            maskVal    = texture(u_MaskArray, vec3(uv, float(i))).a;
+            maskVal    = texture(u_MaskArray, vec3(detailUV, float(i))).a;
         }
         else
         {
