@@ -481,7 +481,8 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
         bool isSculpting = manager->panelTerrain->sculpt.active;
         bool isPainting = manager->panelTerrain->paint.active;
         bool isHeightPaint = manager->panelTerrain->paint.heightActive;
-        bool inToolMode = isSculpting || isPainting || isHeightPaint;
+        bool isFoliage = manager->panelTerrain->foliage.active;
+        bool inToolMode = isSculpting || isPainting || isHeightPaint || isFoliage;
 
         // Reset cursor validity every frame — only set to true below when
         // the raycast actually hits terrain. This prevents the cursor from
@@ -522,8 +523,14 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             // Height paint: left=lower, right=raise
             bool doHeightLower = isHeightPaint && ImGui::IsMouseDown(ImGuiMouseButton_Left);
             bool doHeightRaise = isHeightPaint && ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            // Foliage: left=scatter, right=erase painted instances.
+            bool doFoliage = isFoliage &&
+                             (ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                              ImGui::IsMouseDown(ImGuiMouseButton_Right));
+            bool doFoliageErase = isFoliage && ImGui::IsMouseDown(ImGuiMouseButton_Right);
 
-            if (doSculpt || doPaintAdd || doPaintErase || doHeightLower || doHeightRaise)
+            if (doSculpt || doPaintAdd || doPaintErase || doHeightLower || doHeightRaise ||
+                doFoliage)
             {
                 kVec3 origin, dir;
                 editorCamera->screenToRay(
@@ -629,7 +636,9 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
 
                         if (hitTerrain)
                         {
-                            if (doSculpt)
+                            if (doFoliage)
+                                manager->panelTerrain->paintFoliageAtWorldPos(hitPos, doFoliageErase);
+                            else if (doSculpt)
                                 manager->panelTerrain->sculptAtWorldPos(hitPos);
                             else if (doPaintAdd || doPaintErase)
                                 manager->panelTerrain->paintSplatAtWorldPos(hitPos, doPaintErase);
@@ -672,7 +681,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                     manager->panelTerrain->rebuildPaintedTile();
 
                 // Update cursor position even when not clicking (for paint cursor display)
-                if (isSculpting || isPainting || isHeightPaint)
+                if (isSculpting || isPainting || isHeightPaint || isFoliage)
                 {
                     kVec3 origin, dir;
                     editorCamera->screenToRay(
@@ -785,21 +794,33 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             }
         }
 
+        // Foliage strokes commit as soon as both mouse buttons are released —
+        // even when the cursor left the viewport before the release, which
+        // would otherwise leave the whole stroke unrecorded.
+        if (manager->panelTerrain->foliage.needsCommit &&
+            !ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+            !ImGui::IsMouseDown(ImGuiMouseButton_Right))
+            manager->panelTerrain->commitFoliageStroke();
+
         // --- Render paint cursor in the viewport (also shown for sculpt) ---
         // Only show the cursor when the mouse is actually over the terrain
-        if (isSculpting || isPainting || isHeightPaint)
+        if (isSculpting || isPainting || isHeightPaint || isFoliage)
         {
             ImDrawList *dl = ImGui::GetWindowDrawList();
+
+            // Foliage has its own brush radius; the other tools share sculpt.radius.
+            const float toolRadius = isFoliage ? manager->panelTerrain->foliage.brushRadius
+                                               : manager->panelTerrain->sculpt.radius;
 
             if (!manager->panelTerrain->paintCursorValid)
             {
                 // No terrain under the cursor yet — still draw a brush-size ring at
                 // the mouse so the operator can see how big the brush is.
                 kVec2 m = gui->getMousePos();
-                float r = (std::max)(8.0f, (std::min)(220.0f,
-                                                         manager->panelTerrain->sculpt.radius * 3.0f));
-                ImU32 col = isHeightPaint ? IM_COL32(112, 171, 100, 170)
-                                          : IM_COL32(255, 255, 255, 170);
+                float r = (std::max)(8.0f, (std::min)(220.0f, toolRadius * 3.0f));
+                ImU32 col = isFoliage      ? IM_COL32(120, 220, 140, 170)
+                            : isHeightPaint ? IM_COL32(112, 171, 100, 170)
+                                            : IM_COL32(255, 255, 255, 170);
                 dl->AddCircle(ImVec2(m.x, m.y), r, col, 48, 2.0f);
                 dl->AddCircleFilled(ImVec2(m.x, m.y), 2.0f, col);
             }
@@ -822,7 +843,7 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
                 float sy = panelPos.y + (0.5f - ndc.y * 0.5f) * panelSize.y;
 
                 // Scale circle by brush radius projected to screen
-                float brushRadius = manager->panelTerrain->sculpt.radius;
+                float brushRadius = toolRadius;
                 kVec3 offsetX = wp + kVec3(brushRadius, 0.0f, 0.0f);
                 glm::vec4 clipX = vp * glm::vec4(offsetX.x, offsetX.y, offsetX.z, 1.0f);
                 float screenRadius = 5.0f;

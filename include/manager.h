@@ -631,6 +631,27 @@ public:
     kObject *instantiatePrefabInScene(const fs::path &prefabPath);
 
     /**
+     * @brief Spawns a .prefab instance at an explicit transform.
+     *
+     * Used by the terrain foliage brush, which places many instances per stroke.
+     * Unlike instantiatePrefabInScene() this does not select the new instance,
+     * refresh the Hierarchy or push an undo command — the caller batches a whole
+     * stroke into a single FoliagePaintCommand. The prefab template JSON is
+     * cached per file so repeated spawns (dozens per stroke) do not re-parse the
+     * same .prefab from disk every time.
+     *
+     * @param prefabPath Path to the .prefab asset.
+     * @param position   World-space position of the instance root.
+     * @param rotation   World-space rotation of the instance root.
+     * @param scale      World-space scale of the instance root.
+     * @return The instance root, or nullptr on failure.
+     */
+    kObject *spawnPrefabInstanceAt(const fs::path &prefabPath,
+                                   const kVec3 &position,
+                                   const kQuat &rotation,
+                                   const kVec3 &scale);
+
+    /**
      * @brief Loads a .prefab's instantiated hierarchy into an arbitrary preview
      *        scene/world for embedded previews (e.g. the Inspector's prefab viewer).
      *
@@ -973,6 +994,19 @@ public:
 
     /** @brief Caches prefab root JSON by prefab UUID for efficient dirty checking. */
     std::unordered_map<kString, nlohmann::json> prefabTemplateCache;
+
+    /// @brief Cached .prefab template (uuid + object subtree) keyed by file path.
+    ///
+    /// The terrain foliage brush spawns many instances of the same prefab in a
+    /// single stroke, so the parsed template is kept here rather than re-read
+    /// from disk for every instance. Cleared whenever the prefab template cache
+    /// is cleared.
+    struct FoliagePrefabTemplate
+    {
+        kString uuid;          ///< Prefab asset UUID (stamped as the instance's prefab_ref).
+        nlohmann::json root;   ///< Object subtree template.
+    };
+    std::unordered_map<kString, FoliagePrefabTemplate> foliagePrefabCache;
 
     kString dragHoverObjectUuid;
 

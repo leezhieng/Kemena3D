@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <kemena/kemena.h>
@@ -54,6 +55,79 @@ public:
     };
     PaintState paint;
 
+    /**
+     * @brief One foliage scatter layer: a prefab plus how it is placed.
+     *
+     * A layer scatters instances of its prefab inside the brush footprint on a
+     * jittered grid (cell size → spacing → density), then offsets each instance
+     * by the layer's fixed offsets and a per-instance random variance. The
+     * brush paints the layer currently selected in the panel, mirroring how the
+     * splat brush targets one material layer.
+     */
+    struct FoliageLayer
+    {
+        kString name = "Foliage";
+        /// Project asset UUID of the .prefab to scatter. Empty = layer can't paint.
+        kString prefabUuid;
+        bool enabled = true;
+
+        // --- Fixed offsets, applied to every instance ---
+        kVec3 positionOffset = kVec3(0.0f);  ///< Added to the sampled terrain position.
+        kVec3 rotationOffset = kVec3(0.0f);  ///< Euler degrees added to the instance rotation.
+        kVec3 scaleOffset = kVec3(1.0f);     ///< Base instance scale.
+
+        // --- Per-instance random variance (± value) ---
+        kVec3 randomPosition = kVec3(0.0f);  ///< Max ± world-unit jitter per axis.
+        kVec3 randomRotation = kVec3(0.0f);  ///< Max ± degrees per axis (Y only when yawOnly).
+        kVec3 randomScale = kVec3(0.0f);     ///< Max ± scale variance per axis.
+
+        // --- Brush scatter / spacing ---
+        float cellSize = 3.0f;   ///< Scatter grid cell size in world units.
+        float scatter = 0.75f;   ///< 0..1 fraction of a cell used as random jitter.
+        float spacing = 1.5f;    ///< Minimum world distance between two instances.
+        float density = 0.6f;    ///< 0..1 probability that a cell produces an instance.
+        float maxSlope = 90.0f;  ///< Degrees; cells steeper than this are skipped.
+
+        bool alignToNormal = true; ///< Tilt instances to match the terrain slope.
+        bool yawOnly = true;       ///< Apply random rotation about Y only.
+        int seed = 1337;           ///< Deterministic scatter seed.
+    };
+    /// @brief Foliage layers painted by the brush. Always at least one.
+    std::vector<FoliageLayer> foliageLayers;
+
+    struct FoliageState
+    {
+        bool active = false;
+        /// Layer the brush scatters (index into foliageLayers).
+        int layerIndex = 0;
+        float brushRadius = 8.0f;
+        /// Set once the current stroke has spawned/erased something, so the
+        /// World panel can commit it on mouse-up.
+        bool needsCommit = false;
+        /// True while a stroke is in progress (set on the first stamp).
+        bool strokeActive = false;
+
+        /// Roots spawned by the current stroke (turned into undo entries).
+        std::vector<kObject *> strokeSpawned;
+        /// Roots erased by the current stroke, with their attach slot.
+        struct ErasedEntry
+        {
+            kObject *root = nullptr;
+            kObject *parent = nullptr;
+            kObject *nextSibling = nullptr;
+        };
+        std::vector<ErasedEntry> strokeErased;
+        /// Every foliage instance position (new + pre-existing) used for spacing.
+        std::vector<kVec3> strokePositions;
+        /// Scatter cells already used by this stroke. Each cell maps to one
+        /// deterministic candidate, so without this a stationary brush would
+        /// spawn a duplicate instance of the same cell every frame.
+        std::unordered_set<unsigned long long> strokeCellKeys;
+        /// Pre-existing foliage instances considered by erase mode this stroke.
+        std::vector<kObject *> sceneFoliage;
+    };
+    FoliageState foliage;
+
     kVec3 paintCursorPos = kVec3(0.0f);
     kVec3 paintCursorNormal = kVec3(0.0f, 1.0f, 0.0f);
     bool paintCursorValid = false;
@@ -67,6 +141,9 @@ public:
     /// The editor's raw SDL camera/picking handlers run before ImGui refreshes its
     /// capture state, so they consult this flag to avoid acting through the picker.
     bool isTexturePickerOpen() const { return m_texPickOpen; }
+
+    /// @brief True while the foliage prefab picker is on screen (same reasoning).
+    bool isFoliagePickerOpen() const;
 
     PanelTerrain(kGuiManager *setGuiManager, Manager *setManager);
 
@@ -87,6 +164,15 @@ public:
      * creates its own window plus a full-viewport input blocker.
      */
     void drawTexturePickerPopup();
+
+    /**
+     * @brief Draws the foliage prefab picker (a self-managed top-level window).
+     *
+     * Must be called *outside* the Inspector window (after its End()) because it
+     * creates its own window plus a full-viewport input blocker, exactly like
+     * the layer texture picker.
+     */
+    void drawFoliagePickerPopup();
 
     /**
      * @brief Draws the Terrain Size / resolution section and its confirm modal.
@@ -161,12 +247,50 @@ public:
     void removeTerrainTile(int gridX, int gridZ);
     void loadProjectTerrains();
     void saveProjectTerrains();
+
+    /**
+     * @brief Reads the foliage layer definitions stored beside the tile payloads.
+     *
+     * Foliage layers (prefab assignment + scatter settings) belong to the whole
+     * terrain rather than to one tile, so they live in
+     * `Library/Terrains/foliage_layers.json` and are loaded/saved together with
+     * the tiles. Missing or malformed files fall back to a single default layer.
+     */
+    void loadFoliageLayers(const fs::path &libDir);
+
+    /// @brief Writes the foliage layer definitions beside the tile payloads.
+    void saveFoliageLayers(const fs::path &libDir);
     void sculptAtWorldPos(const kVec3 &worldPos);
     void rebuildSculptedTile();
     void paintAtWorldPos(const kVec3 &worldPos, bool lower);
     void rebuildPaintedTile();
     void paintSplatAtWorldPos(const kVec3 &worldPos, bool erase);
     void rebuildPaintedSplatTile();
+
+    /**
+     * @brief Scatters (or erases) foliage instances for one brush stamp.
+     *
+     * Placement samples the terrain under the brush on a jittered grid: the
+     * selected layer's cell size/ density decide how many cells spawn, scatter
+     * jitters each instance inside its cell, spacing rejects instances that sit
+     * too close to one already placed, and the fixed/random offsets shape the
+     * instance transform. Erase mode removes foliage instances tagged by this
+     * tool within the brush radius.
+     *
+     * @param worldPos Position in terrain space (the grid offset is added back
+     *                 when the instance is actually spawned).
+     * @param erase    true → remove foliage instead of scattering it.
+     */
+    void paintFoliageAtWorldPos(const kVec3 &worldPos, bool erase);
+
+    /**
+     * @brief Ends the current foliage stroke: refreshes the scene once and
+     *        records the whole stroke as a single undoable command.
+     *
+     * Called on mouse-up by the World panel; also flushes when nothing was
+     * spawned or erased so the stroke state never lingers.
+     */
+    void commitFoliageStroke();
 
     /**
      * @brief Fills one material layer's whole weight map with @p value.
@@ -500,6 +624,12 @@ public:
     kString m_texPickSelected;         ///< Asset UUID chosen in the picker.
     bool m_texPickOpen = false;        ///< True while the picker window is shown.
     char m_texPickSearch[128] = "";
+
+    // --- Foliage layer prefab picker (modal) ---
+    int m_foliagePickLayer = -1;       ///< Foliage layer whose prefab is being chosen.
+    kString m_foliagePickSelected;     ///< Prefab asset UUID chosen in the picker.
+    bool m_foliagePickOpen = false;    ///< True while the picker window is shown.
+    char m_foliagePickSearch[128] = "";
 
     // --- Terrain material parameter staging ---
     // Tiling is deliberately NOT here: it is per material layer

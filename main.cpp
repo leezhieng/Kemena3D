@@ -43,7 +43,8 @@ static bool imguiOwnsPointer(Manager *mgr)
     if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
         return true;
     if (mgr != nullptr && mgr->panelTerrain != nullptr &&
-        mgr->panelTerrain->isTexturePickerOpen())
+        (mgr->panelTerrain->isTexturePickerOpen() ||
+         mgr->panelTerrain->isFoliagePickerOpen()))
         return true;
     return ImGui::GetIO().WantTextInput;
 }

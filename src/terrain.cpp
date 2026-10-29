@@ -12,8 +12,10 @@
 #include <set>
 #include <random>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <functional>
 #include <unordered_map>
 #include <vector>
@@ -59,6 +61,8 @@ void terrainLabel(const char *label)
 PanelTerrain::PanelTerrain(kGuiManager *setGuiManager, Manager *setManager)
     : gui(setGuiManager), manager(setManager)
 {
+    // The foliage brush always needs a target layer to paint.
+    foliageLayers.push_back(FoliageLayer{});
 }
 
 PanelTerrain::EditSnapshot *PanelTerrain::findOrCreateEditSnapshot(kTerrain *tile)
@@ -750,6 +754,402 @@ void PanelTerrain::rebuildPaintedSplatTile()
 
     // Mouse-up: record the splat-paint stroke as one undoable command.
     commitTerrainEdit();
+}
+
+// ---------------------------------------------------------------------------
+// Foliage scatter helpers
+// ---------------------------------------------------------------------------
+namespace
+{
+/// Tag stamped on every instance the foliage brush spawns. Erase mode and the
+/// spacing test only ever consider objects carrying it, so hand-placed prefabs
+/// that happen to use the same asset are left alone.
+constexpr const char *kFoliageTag = "foliage";
+
+bool hasFoliageTag(kObject *obj)
+{
+    if (obj == nullptr)
+        return false;
+    for (const kString &tag : obj->getTags())
+        if (tag == kFoliageTag)
+            return true;
+    return false;
+}
+
+void collectFoliageObjects(kObject *node, std::vector<kObject *> &out)
+{
+    if (node == nullptr)
+        return;
+    if (hasFoliageTag(node))
+        out.push_back(node);
+    for (kObject *child : node->getChildren())
+        collectFoliageObjects(child, out);
+}
+
+/// Deterministic 32-bit hash of a scatter cell (no std::hash — its values are
+/// not portable and the scatter must be reproducible between runs).
+unsigned int foliageHash(unsigned int x, unsigned int y, unsigned int seed)
+{
+    unsigned int h = seed ^ (x * 0x9E3779B1u);
+    h = (h ^ (h >> 15)) * 0x85EBCA77u;
+    h ^= y * 0xC2B2AE3Du;
+    h = (h ^ (h >> 13)) * 0x27D4EB2Fu;
+    return h ^ (h >> 16);
+}
+
+/// Maps a hash to [0, 1).
+float foliageRand01(unsigned int h)
+{
+    return static_cast<float>(h & 0x00FFFFFFu) / 16777216.0f;
+}
+
+/// Rotation that tilts the instance's local +Y onto the given terrain normal.
+kQuat foliageAlignYToNormal(const kVec3 &n)
+{
+    const kVec3 up(0.0f, 1.0f, 0.0f);
+    const float d = glm::clamp(glm::dot(up, n), -1.0f, 1.0f);
+    if (d > 0.99999f)
+        return kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+    if (d < -0.99999f)
+        return glm::angleAxis(glm::pi<float>(), kVec3(1.0f, 0.0f, 0.0f));
+    const kVec3 axis = glm::normalize(glm::cross(up, n));
+    return glm::angleAxis(std::acos(d), axis);
+}
+
+/// Returns the loaded tile whose footprint contains @p pos (terrain space).
+kTerrain *findTileAtPosition(kTerrainManager *mgr, const kVec3 &pos)
+{
+    if (mgr == nullptr)
+        return nullptr;
+    for (auto &pair : mgr->getTiles())
+    {
+        kTerrain *tile = pair.second.get();
+        if (tile == nullptr || !tile->isLoaded())
+            continue;
+        int hx, hz;
+        if (tile->worldToHeightmap(pos, hx, hz))
+            return tile;
+    }
+    return nullptr;
+}
+} // namespace
+
+void PanelTerrain::paintFoliageAtWorldPos(const kVec3 &worldPos, bool erase)
+{
+    if (manager == nullptr || manager->terrainManager == nullptr || !manager->projectOpened)
+        return;
+
+    // First stamp of a stroke: collect the scene's existing foliage so spacing
+    // and erase mode see what is already there, not just what this stroke adds.
+    if (!foliage.strokeActive)
+    {
+        foliage.strokeActive = true;
+        foliage.strokeSpawned.clear();
+        foliage.strokeErased.clear();
+        foliage.strokePositions.clear();
+        foliage.strokeCellKeys.clear();
+        foliage.sceneFoliage.clear();
+
+        if (kScene *scene = manager->getScene())
+        {
+            collectFoliageObjects(scene->getRootNode(), foliage.sceneFoliage);
+            for (kObject *obj : foliage.sceneFoliage)
+                if (obj != nullptr && obj->getParent() != nullptr)
+                    foliage.strokePositions.push_back(obj->getPosition());
+        }
+    }
+
+    const kVec3 groupOffset = getTerrainGroupOffset();
+    const float radius = (std::max)(0.5f, foliage.brushRadius);
+
+    if (erase)
+    {
+        const float radiusSq = radius * radius;
+        for (kObject *obj : foliage.sceneFoliage)
+        {
+            // Detached objects were already erased earlier in this stroke.
+            if (obj == nullptr || obj->getParent() == nullptr)
+                continue;
+
+            const kVec3 p = obj->getPosition();
+            const float dx = p.x - (worldPos.x + groupOffset.x);
+            const float dz = p.z - (worldPos.z + groupOffset.z);
+            if (dx * dx + dz * dz > radiusSq)
+                continue;
+
+            FoliageState::ErasedEntry entry;
+            entry.root = obj;
+            entry.parent = obj->getParent();
+            if (entry.parent != nullptr)
+            {
+                auto kids = entry.parent->getChildren();
+                for (size_t i = 0; i + 1 < kids.size(); ++i)
+                    if (kids[i] == obj)
+                    {
+                        entry.nextSibling = kids[i + 1];
+                        break;
+                    }
+            }
+
+            // Drop the object from the selection first, so the Inspector never
+            // keeps pointing at a detached instance.
+            const kString uuid = obj->getUuid();
+            auto &sel = manager->selectedObjects;
+            sel.erase(std::remove(sel.begin(), sel.end(), uuid), sel.end());
+            if (manager->selectedObject == obj)
+                manager->selectedObject = nullptr;
+
+            obj->detachFromParent();
+            foliage.strokeErased.push_back(entry);
+            foliage.needsCommit = true;
+        }
+        return;
+    }
+
+    // --- Scatter mode ---
+    if (foliage.layerIndex < 0 ||
+        foliage.layerIndex >= static_cast<int>(foliageLayers.size()))
+        return;
+
+    FoliageLayer &layer = foliageLayers[static_cast<size_t>(foliage.layerIndex)];
+    if (!layer.enabled || layer.prefabUuid.empty())
+        return;
+
+    const fs::path prefabPath = manager->findAssetPathByUuid(layer.prefabUuid);
+    if (prefabPath.empty() || !fs::exists(prefabPath))
+        return;
+
+    // The brush must actually sit on terrain; a hit only lands on a tile.
+    kTerrain *centreTile = findTileAtPosition(manager->terrainManager, worldPos);
+    if (centreTile == nullptr)
+        return;
+
+    const float cell = (std::max)(0.25f, layer.cellSize);
+    const float density = glm::clamp(layer.density, 0.0f, 1.0f);
+    if (density <= 0.0f)
+        return;
+
+    const float scatter = glm::clamp(layer.scatter, 0.0f, 1.0f);
+    const float spacing = (std::max)(0.0f, layer.spacing);
+    const float maxSlopeRad = glm::radians(glm::clamp(layer.maxSlope, 0.0f, 90.0f));
+    const float radiusSq = radius * radius;
+    const unsigned int seed = static_cast<unsigned int>((std::max)(0, layer.seed));
+
+    const int cellMinX = static_cast<int>(std::floor((worldPos.x - radius) / cell));
+    const int cellMaxX = static_cast<int>(std::floor((worldPos.x + radius) / cell));
+    const int cellMinZ = static_cast<int>(std::floor((worldPos.z - radius) / cell));
+    const int cellMaxZ = static_cast<int>(std::floor((worldPos.z + radius) / cell));
+
+    // A single stamp must never flood the scene, e.g. after a tiny cell size.
+    constexpr int kMaxInstancesPerStamp = 128;
+    int spawnedThisStamp = 0;
+
+    for (int cz = cellMinZ; cz <= cellMaxZ && spawnedThisStamp < kMaxInstancesPerStamp; ++cz)
+    {
+        for (int cx = cellMinX; cx <= cellMaxX && spawnedThisStamp < kMaxInstancesPerStamp; ++cx)
+        {
+            const unsigned int cellHash = foliageHash(
+                static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed);
+            if (foliageRand01(cellHash) > density)
+                continue;
+
+            // Scatter the instance inside its cell.
+            const float jitterX = (foliageRand01(foliageHash(
+                                       static_cast<unsigned int>(cx), static_cast<unsigned int>(cz),
+                                       seed + 101u)) - 0.5f) * cell * scatter;
+            const float jitterZ = (foliageRand01(foliageHash(
+                                       static_cast<unsigned int>(cx), static_cast<unsigned int>(cz),
+                                       seed + 977u)) - 0.5f) * cell * scatter;
+
+            const float px = (static_cast<float>(cx) + 0.5f) * cell + jitterX;
+            const float pz = (static_cast<float>(cz) + 0.5f) * cell + jitterZ;
+
+            const float distX = px - worldPos.x;
+            const float distZ = pz - worldPos.z;
+            if (distX * distX + distZ * distZ > radiusSq)
+                continue;
+
+            // Each cell maps to exactly one deterministic candidate. Once a cell
+            // has produced an instance in this stroke it must not produce
+            // another one, or holding the brush still would spawn duplicates
+            // every frame (spacing = 0 would not catch them either).
+            const unsigned long long cellKey =
+                (static_cast<unsigned long long>(static_cast<unsigned int>(cx)) << 32) |
+                static_cast<unsigned long long>(static_cast<unsigned int>(cz));
+            if (!foliage.strokeCellKeys.insert(cellKey).second)
+                continue;
+
+            // Terrain sample + slope for this candidate.
+            kTerrain *tile = findTileAtPosition(manager->terrainManager, kVec3(px, 0.0f, pz));
+            if (tile == nullptr)
+                continue;
+
+            const int res = tile->getHeightRes();
+            float *data = tile->getHeightData();
+            if (data == nullptr || res < 2)
+                continue;
+
+            int hx = 0, hz = 0;
+            if (!tile->worldToHeightmap(kVec3(px, 0.0f, pz), hx, hz))
+                continue;
+
+            const float sp = tile->getWorldSize() / static_cast<float>(res - 1);
+            const float hL = (hx > 0) ? data[hz * res + (hx - 1)] : data[hz * res + hx];
+            const float hR = (hx < res - 1) ? data[hz * res + (hx + 1)] : data[hz * res + hx];
+            const float hD = (hz > 0) ? data[(hz - 1) * res + hx] : data[hz * res + hx];
+            const float hU = (hz < res - 1) ? data[(hz + 1) * res + hx] : data[hz * res + hx];
+            const kVec3 normal = glm::normalize(kVec3(
+                -(hR - hL) / (sp * 2.0f), 1.0f, -(hU - hD) / (sp * 2.0f)));
+
+            const float slopeAngle = std::acos(glm::clamp(normal.y, -1.0f, 1.0f));
+            if (slopeAngle > maxSlopeRad)
+                continue;
+
+            // Spacing: reject candidates that sit too close to an existing or
+            // already-scattered instance. strokePositions stores world-space
+            // positions (existing instances and instances spawned earlier in this
+            // stroke), so the candidate is compared in world space too.
+            if (spacing > 0.0f)
+            {
+                const float worldPx = px + groupOffset.x;
+                const float worldPz = pz + groupOffset.z;
+                bool tooClose = false;
+                const float spacingSq = spacing * spacing;
+                for (const kVec3 &q : foliage.strokePositions)
+                {
+                    const float sdx = q.x - worldPx;
+                    const float sdz = q.z - worldPz;
+                    if (sdx * sdx + sdz * sdz < spacingSq)
+                    {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                if (tooClose)
+                    continue;
+            }
+
+            // --- Transform ---
+            const float terrainY = tile->sampleHeight(kVec3(px, 0.0f, pz));
+
+            kVec3 pos(px + groupOffset.x, terrainY + groupOffset.y, pz + groupOffset.z);
+            pos += layer.positionOffset;
+            pos.x += (foliageRand01(foliageHash(
+                          static_cast<unsigned int>(cx), static_cast<unsigned int>(cz),
+                          seed + 31u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomPosition.x);
+            pos.y += (foliageRand01(foliageHash(
+                          static_cast<unsigned int>(cx), static_cast<unsigned int>(cz),
+                          seed + 61u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomPosition.y);
+            pos.z += (foliageRand01(foliageHash(
+                          static_cast<unsigned int>(cx), static_cast<unsigned int>(cz),
+                          seed + 97u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomPosition.z);
+
+            kQuat rot(1.0f, 0.0f, 0.0f, 0.0f);
+            if (layer.alignToNormal)
+                rot = foliageAlignYToNormal(normal);
+
+            if (layer.yawOnly)
+            {
+                const float yaw = (foliageRand01(foliageHash(
+                                       static_cast<unsigned int>(cx), static_cast<unsigned int>(cz),
+                                       seed + 131u)) - 0.5f) * 2.0f *
+                                  (std::max)(0.0f, layer.randomRotation.y);
+                rot = rot * glm::angleAxis(glm::radians(yaw), kVec3(0.0f, 1.0f, 0.0f));
+            }
+            else
+            {
+                const kVec3 randomEuler(
+                    (foliageRand01(foliageHash(static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed + 131u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomRotation.x),
+                    (foliageRand01(foliageHash(static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed + 151u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomRotation.y),
+                    (foliageRand01(foliageHash(static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed + 173u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomRotation.z));
+                rot = rot * kQuat(glm::radians(randomEuler));
+            }
+
+            if (layer.rotationOffset.x != 0.0f || layer.rotationOffset.y != 0.0f ||
+                layer.rotationOffset.z != 0.0f)
+                rot = rot * kQuat(glm::radians(layer.rotationOffset));
+
+            kVec3 scale = layer.scaleOffset;
+            scale.x += (foliageRand01(foliageHash(static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed + 197u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomScale.x);
+            scale.y += (foliageRand01(foliageHash(static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed + 211u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomScale.y);
+            scale.z += (foliageRand01(foliageHash(static_cast<unsigned int>(cx), static_cast<unsigned int>(cz), seed + 233u)) - 0.5f) * 2.0f * (std::max)(0.0f, layer.randomScale.z);
+            scale = glm::max(scale, kVec3(0.001f));
+
+            kObject *root = manager->spawnPrefabInstanceAt(prefabPath, pos, rot, scale);
+            if (root == nullptr)
+                continue;
+
+            // Tag the instance so erase mode (and spacing across strokes) can
+            // find it again. Tags are serialised with the world file.
+            root->setTags({kString(kFoliageTag), layer.name});
+
+            foliage.strokeSpawned.push_back(root);
+            foliage.strokePositions.push_back(pos);
+            foliage.needsCommit = true;
+            ++spawnedThisStamp;
+        }
+    }
+
+    // Live feedback: the new instances are already in the scene graph, but the
+    // renderer's spatial index must be invalidated to draw them this frame.
+    if (spawnedThisStamp > 0 && manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+}
+
+void PanelTerrain::commitFoliageStroke()
+{
+    if (!foliage.needsCommit && foliage.strokeSpawned.empty() && foliage.strokeErased.empty())
+    {
+        foliage.strokeActive = false;
+        return;
+    }
+
+    foliage.strokeActive = false;
+    foliage.needsCommit = false;
+
+    if (manager != nullptr &&
+        (!foliage.strokeSpawned.empty() || !foliage.strokeErased.empty()))
+    {
+        auto cmd = std::make_unique<FoliagePaintCommand>();
+        cmd->manager = manager;
+
+        // Spawned instances are appended in spawn order, so re-attaching them
+        // in the same order restores the original layout without sibling math.
+        for (kObject *root : foliage.strokeSpawned)
+        {
+            if (root == nullptr)
+                continue;
+            FoliagePaintCommand::Spawned entry;
+            entry.root = root;
+            entry.parent = root->getParent();
+            entry.nextSibling = nullptr;
+            cmd->spawned.push_back(entry);
+        }
+
+        for (const auto &e : foliage.strokeErased)
+        {
+            FoliagePaintCommand::Erased entry;
+            entry.root = e.root;
+            entry.parent = e.parent;
+            entry.nextSibling = e.nextSibling;
+            cmd->erased.push_back(entry);
+        }
+
+        manager->undoRedo.push(std::move(cmd));
+
+        manager->projectSaved = false;
+        manager->refreshWindowTitle();
+        if (manager->panelHierarchy)
+            manager->panelHierarchy->refreshList();
+        if (manager->getRenderer())
+            manager->getRenderer()->setOctreeDirty();
+    }
+
+    foliage.strokeSpawned.clear();
+    foliage.strokeErased.clear();
+    foliage.strokePositions.clear();
+    foliage.strokeCellKeys.clear();
+    foliage.sceneFoliage.clear();
 }
 
 void PanelTerrain::fillLayerWeight(kTerrain *tile, int layer, unsigned char value)
@@ -2245,6 +2645,143 @@ void PanelTerrain::drawTexturePickerPopup()
     }
 }
 
+bool PanelTerrain::isFoliagePickerOpen() const
+{
+    return m_foliagePickOpen;
+}
+
+void PanelTerrain::drawFoliagePickerPopup()
+{
+    if (!m_foliagePickOpen)
+        return;
+
+    // Same self-managed top-level window pattern as the texture picker: only
+    // Select, Cancel or the close button dismiss it, and a full-viewport blocker
+    // keeps clicks from reaching the editor behind it.
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+
+    {
+        ImGui::SetNextWindowPos(vp->Pos);
+        ImGui::SetNextWindowSize(vp->Size);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::Begin("##foliagePrefabBlocker", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 460.0f), ImGuiCond_Appearing);
+
+    bool stayOpen = true;
+    bool doApply = false;
+
+    if (ImGui::Begin("Select Foliage Prefab###foliagePrefabPicker", &stayOpen,
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoSavedSettings))
+    {
+        if (ImGui::IsWindowAppearing())
+        {
+            ImGui::SetWindowFocus();
+            ImGui::SetKeyboardFocusHere();
+        }
+
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##foliageprefabsearch", "Search...", m_foliagePickSearch,
+                                 sizeof(m_foliagePickSearch));
+
+        std::string filter = m_foliagePickSearch;
+        std::transform(filter.begin(), filter.end(), filter.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        // Every prefab asset in the project, sorted by display name.
+        std::vector<std::pair<std::string, kString>> prefabs; // {display name, uuid}
+        if (manager)
+        {
+            for (const auto &kv : manager->fileMap)
+            {
+                if (kv.second.type != "prefab")
+                    continue;
+                prefabs.emplace_back(fs::path(kv.second.path).stem().string(), kv.first);
+            }
+            std::sort(prefabs.begin(), prefabs.end(),
+                      [](const auto &a, const auto &b) { return a.first < b.first; });
+        }
+
+        const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().WindowPadding.y;
+        ImGui::BeginChild("##foliageprefablist", ImVec2(0.0f, -footer), true);
+        {
+            auto row = [&](const char *label, const kString &uuid, bool none)
+            {
+                ImGui::PushID(none ? "##foliageNone" : uuid.c_str());
+                const bool selected = none ? m_foliagePickSelected.empty()
+                                           : (m_foliagePickSelected == uuid);
+                if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_AllowDoubleClick))
+                {
+                    m_foliagePickSelected = none ? kString() : uuid;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        doApply = true;
+                }
+                ImGui::PopID();
+            };
+
+            row("(None)", kString(), true);
+            for (const auto &p : prefabs)
+            {
+                if (!filter.empty())
+                {
+                    std::string lower = p.first;
+                    std::transform(lower.begin(), lower.end(), lower.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (lower.find(filter) == std::string::npos)
+                        continue;
+                }
+                row(p.first.c_str(), p.second, false);
+            }
+
+            if (prefabs.empty())
+                ImGui::TextDisabled("No prefabs in this project.");
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("Select", ImVec2(120.0f, 0.0f)))
+            doApply = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+            stayOpen = false;
+
+        // Esc dismisses the picker, matching a modal.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+            stayOpen = false;
+    }
+    ImGui::End();
+
+    if (doApply)
+    {
+        if (m_foliagePickLayer >= 0 &&
+            m_foliagePickLayer < static_cast<int>(foliageLayers.size()))
+        {
+            foliageLayers[static_cast<size_t>(m_foliagePickLayer)].prefabUuid = m_foliagePickSelected;
+            // Layer definitions are saved with the project.
+            if (manager)
+                manager->projectSaved = false;
+        }
+        stayOpen = false;
+    }
+
+    if (!stayOpen)
+    {
+        m_foliagePickOpen = false;
+        m_foliagePickLayer = -1;
+    }
+}
+
 kTerrain *PanelTerrain::getSelectedTerrainTile(kTerrainManager *terrainMgr)
 {
     if (!terrainMgr || !manager)
@@ -3081,6 +3618,261 @@ void PanelTerrain::drawContents()
         if (removeIndex >= 0)
             removeHeightLayerUndoable(noiseTile, removeIndex);
     }
+
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Foliage"))
+        {
+            ImGui::Spacing();
+
+            // The brush always needs a target layer, so the list is never empty.
+            if (foliageLayers.empty())
+                foliageLayers.push_back(FoliageLayer{});
+            if (foliage.layerIndex < 0 ||
+                foliage.layerIndex >= static_cast<int>(foliageLayers.size()))
+                foliage.layerIndex = 0;
+
+            if (beginTerrainTable("##terrainFoliageBrushTable"))
+            {
+                terrainLabel("Foliage Paint");
+                bool foliageModeActive = foliage.active;
+                if (ImGui::Checkbox("##foliageActive", &foliageModeActive))
+                {
+                    foliage.active = foliageModeActive;
+                    if (foliageModeActive)
+                    {
+                        // The foliage brush owns the mouse buttons while armed.
+                        sculpt.active = false;
+                        paint.active = false;
+                        paint.heightActive = false;
+                    }
+                    else if (foliage.strokeActive)
+                    {
+                        commitFoliageStroke();
+                    }
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Scatter the selected foliage layer with the brush.\n"
+                                      "L-click places instances, R-click erases painted instances.");
+
+                terrainLabel("Brush Radius");
+                ImGui::SliderFloat("##foliageRadius", &foliage.brushRadius, 1.0f, 200.0f, "%.1f");
+                ImGui::EndTable();
+            }
+
+            if (foliage.active)
+                ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.45f, 1.0f),
+                                   "L-click scatters the selected layer, R-click erases painted foliage.");
+
+            ImGui::Spacing();
+            ImGui::SeparatorText("Foliage Layers");
+
+            // Layer list.
+            for (int i = 0; i < static_cast<int>(foliageLayers.size()); ++i)
+            {
+                ImGui::PushID(i);
+                const FoliageLayer &l = foliageLayers[static_cast<size_t>(i)];
+                kString label = l.name;
+                if (!l.enabled)
+                    label += "  (disabled)";
+                if (l.prefabUuid.empty())
+                    label += "  [no prefab]";
+                if (ImGui::Selectable(label.c_str(), foliage.layerIndex == i))
+                    foliage.layerIndex = i;
+                ImGui::PopID();
+            }
+
+            if (ImGui::Button("Add Layer", ImVec2(110, 0)))
+            {
+                FoliageLayer layer;
+                layer.name = "Foliage " + std::to_string(foliageLayers.size() + 1);
+                foliageLayers.push_back(layer);
+                foliage.layerIndex = static_cast<int>(foliageLayers.size()) - 1;
+                manager->projectSaved = false;
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(foliageLayers.size() <= 1);
+            if (ImGui::Button("Remove Layer", ImVec2(120, 0)))
+            {
+                if (foliage.layerIndex >= 0 &&
+                    foliage.layerIndex < static_cast<int>(foliageLayers.size()))
+                {
+                    foliageLayers.erase(foliageLayers.begin() + foliage.layerIndex);
+                    if (foliageLayers.empty())
+                        foliageLayers.push_back(FoliageLayer{});
+                    if (foliage.layerIndex >= static_cast<int>(foliageLayers.size()))
+                        foliage.layerIndex = static_cast<int>(foliageLayers.size()) - 1;
+                    manager->projectSaved = false;
+                }
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Spacing();
+            FoliageLayer &layer = foliageLayers[static_cast<size_t>(foliage.layerIndex)];
+
+            // Layer definitions are persisted with the project (see
+            // saveFoliageLayers), so any edit below must mark the project dirty.
+            bool foliageEdited = false;
+
+            // Name + prefab assignment.
+            if (beginTerrainTable("##terrainFoliageLayerTable"))
+            {
+                terrainLabel("Layer Name");
+                char nameBuf[128];
+                std::snprintf(nameBuf, sizeof(nameBuf), "%s", layer.name.c_str());
+                if (ImGui::InputText("##foliageLayerName", nameBuf, sizeof(nameBuf)))
+                {
+                    layer.name = nameBuf;
+                    foliageEdited = true;
+                }
+
+                terrainLabel("Enabled");
+                foliageEdited |= ImGui::Checkbox("##foliageLayerEnabled", &layer.enabled);
+
+                // Prefab asset.
+                kString prefabLabel = "(None)";
+                if (!layer.prefabUuid.empty())
+                {
+                    auto it = manager->fileMap.find(layer.prefabUuid);
+                    prefabLabel = (it != manager->fileMap.end())
+                                      ? fs::path(it->second.path).stem().string()
+                                      : kString("(missing prefab)");
+                }
+                terrainLabel("Prefab");
+                const kString prefabButton = prefabLabel + "##foliagePrefabPick";
+                if (ImGui::Button(prefabButton.c_str(), ImVec2(-1, 0)))
+                {
+                    m_foliagePickLayer = foliage.layerIndex;
+                    m_foliagePickSelected = layer.prefabUuid;
+                    m_foliagePickOpen = true;
+                }
+
+                if (!layer.prefabUuid.empty())
+                {
+                    terrainLabel("");
+                    if (ImGui::Button("Clear Prefab##foliagePrefabClear", ImVec2(-1, 0)))
+                    {
+                        layer.prefabUuid.clear();
+                        foliageEdited = true;
+                    }
+                }
+                ImGui::EndTable();
+            }
+
+            ImGui::Spacing();
+            ImGui::SeparatorText("Initial Offsets");
+
+            if (beginTerrainTable("##terrainFoliageOffsetsTable"))
+            {
+                terrainLabel("Position");
+                foliageEdited |= ImGui::DragFloat3("##foliagePosOffset", &layer.positionOffset.x,
+                                                  0.05f, -10000.0f, 10000.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Added to the sampled terrain position of every instance.");
+
+                terrainLabel("Rotation");
+                foliageEdited |= ImGui::DragFloat3("##foliageRotOffset", &layer.rotationOffset.x,
+                                                  0.5f, -360.0f, 360.0f, "%.1f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Euler rotation in degrees added to every instance.");
+
+                terrainLabel("Scale");
+                foliageEdited |= ImGui::DragFloat3("##foliageScaleOffset", &layer.scaleOffset.x,
+                                                  0.01f, 0.001f, 1000.0f, "%.2f");
+                ImGui::EndTable();
+            }
+
+            ImGui::Spacing();
+            ImGui::SeparatorText("Random Offsets");
+
+            if (beginTerrainTable("##terrainFoliageRandomTable"))
+            {
+                terrainLabel("Position ±");
+                foliageEdited |= ImGui::DragFloat3("##foliageRandPos", &layer.randomPosition.x,
+                                                  0.05f, 0.0f, 10000.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Maximum random world-unit displacement per axis.");
+
+                terrainLabel("Rotation ±");
+                foliageEdited |= ImGui::DragFloat3("##foliageRandRot", &layer.randomRotation.x,
+                                                  0.5f, 0.0f, 360.0f, "%.1f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Maximum random rotation (degrees) per axis.\n"
+                                      "Only Y is used when 'Random Yaw Only' is on.");
+
+                terrainLabel("Scale ±");
+                foliageEdited |= ImGui::DragFloat3("##foliageRandScale", &layer.randomScale.x,
+                                                  0.01f, 0.0f, 100.0f, "%.2f");
+                ImGui::EndTable();
+            }
+
+            ImGui::Spacing();
+            ImGui::SeparatorText("Scatter");
+
+            if (beginTerrainTable("##terrainFoliageScatterTable"))
+            {
+                terrainLabel("Cell Size");
+                foliageEdited |= ImGui::DragFloat("##foliageCellSize", &layer.cellSize, 0.05f, 0.25f, 1000.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Scatter grid size in world units. Smaller = denser layout.");
+
+                terrainLabel("Density");
+                foliageEdited |= ImGui::SliderFloat("##foliageDensity", &layer.density, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Probability that a scatter cell produces an instance.");
+
+                terrainLabel("Scatter");
+                foliageEdited |= ImGui::SliderFloat("##foliageScatter", &layer.scatter, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How far an instance may drift from its cell centre,\n"
+                                      "as a fraction of the cell size.");
+
+                terrainLabel("Spacing");
+                foliageEdited |= ImGui::DragFloat("##foliageSpacing", &layer.spacing, 0.05f, 0.0f, 1000.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Minimum world distance between two instances.\n"
+                                      "0 disables the spacing test.");
+
+                terrainLabel("Max Slope");
+                foliageEdited |= ImGui::SliderFloat("##foliageMaxSlope", &layer.maxSlope, 0.0f, 90.0f, "%.0f°");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Cells steeper than this are skipped.");
+
+                terrainLabel("Align Normal");
+                foliageEdited |= ImGui::Checkbox("##foliageAlignNormal", &layer.alignToNormal);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Tilt each instance to match the terrain slope.");
+
+                terrainLabel("Random Yaw Only");
+                foliageEdited |= ImGui::Checkbox("##foliageYawOnly", &layer.yawOnly);
+
+                terrainLabel("Seed");
+                foliageEdited |= ImGui::InputInt("##foliageSeed", &layer.seed);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Deterministic scatter seed; change it to reshuffle the layout.");
+                ImGui::EndTable();
+            }
+
+            if (foliageEdited && manager)
+                manager->projectSaved = false;
+
+            if (foliage.active)
+            {
+                if (layer.prefabUuid.empty())
+                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.3f, 1.0f),
+                                       "Assign a prefab to this layer to paint foliage.");
+                else if (paintCursorValid)
+                    ImGui::Text("Cursor over terrain at (%.1f, %.1f, %.1f)",
+                                paintCursorPos.x, paintCursorPos.y, paintCursorPos.z);
+                else
+                    ImGui::TextDisabled("Cursor not over terrain - hover the tile in the viewport.");
+            }
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("Painted instances are tagged \"foliage\" so erase mode can find them.");
+
+            ImGui::Spacing();
 
             ImGui::EndTabItem();
         }
@@ -4232,6 +5024,9 @@ void PanelTerrain::loadProjectTerrains()
 
     setTerrainAssetDirectory(libDir.string());
 
+    // Foliage layer definitions travel with the terrain, not with a tile.
+    loadFoliageLayers(libDir);
+
     // Two passes: read every tile's payload first, then rebuild the meshes.
     // Stitching averages a shared edge with its neighbour, so loading and
     // rebuilding one tile at a time stitched against neighbours that had not been
@@ -4273,6 +5068,132 @@ void PanelTerrain::saveProjectTerrains()
     setTerrainAssetDirectory(libDir.string());
     saveAllOwnedAssets();
 
+    // Layer definitions are terrain-wide, so they are written once here.
+    saveFoliageLayers(libDir);
+
     std::cerr << "saveProjectTerrains: saved " << manager->terrainManager->getTotalCount()
               << " tiles to " << libDir << "\n";
+}
+
+void PanelTerrain::loadFoliageLayers(const fs::path &libDir)
+{
+    foliageLayers.clear();
+
+    const fs::path path = libDir / "foliage_layers.json";
+    std::error_code ec;
+    if (fs::exists(path, ec))
+    {
+        std::ifstream f(path);
+        if (f.is_open())
+        {
+            try
+            {
+                const nlohmann::json data = nlohmann::json::parse(f);
+                if (data.contains("layers") && data["layers"].is_array())
+                {
+                    auto readVec3 = [](const nlohmann::json &j, const char *key,
+                                       const kVec3 &fallback) -> kVec3
+                    {
+                        if (!j.contains(key) || !j[key].is_array() || j[key].size() != 3)
+                            return fallback;
+                        return kVec3(j[key][0].get<float>(),
+                                     j[key][1].get<float>(),
+                                     j[key][2].get<float>());
+                    };
+
+                    for (const auto &j : data["layers"])
+                    {
+                        FoliageLayer layer;
+                        layer.name = j.value("name", std::string("Foliage"));
+                        layer.prefabUuid = j.value("prefab_uuid", std::string());
+                        layer.enabled = j.value("enabled", true);
+
+                        layer.positionOffset = readVec3(j, "position", kVec3(0.0f));
+                        layer.rotationOffset = readVec3(j, "rotation", kVec3(0.0f));
+                        layer.scaleOffset = readVec3(j, "scale", kVec3(1.0f));
+
+                        layer.randomPosition = readVec3(j, "random_position", kVec3(0.0f));
+                        layer.randomRotation = readVec3(j, "random_rotation", kVec3(0.0f));
+                        layer.randomScale = readVec3(j, "random_scale", kVec3(0.0f));
+
+                        layer.cellSize = j.value("cell_size", 3.0f);
+                        layer.scatter = j.value("scatter", 0.75f);
+                        layer.spacing = j.value("spacing", 1.5f);
+                        layer.density = j.value("density", 0.6f);
+                        layer.maxSlope = j.value("max_slope", 90.0f);
+
+                        layer.alignToNormal = j.value("align_to_normal", true);
+                        layer.yawOnly = j.value("yaw_only", true);
+                        layer.seed = j.value("seed", 1337);
+
+                        foliageLayers.push_back(layer);
+                    }
+                }
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "loadFoliageLayers: " << e.what() << "\n";
+            }
+        }
+    }
+
+    if (foliageLayers.empty())
+        foliageLayers.push_back(FoliageLayer{});
+    if (foliage.layerIndex < 0 ||
+        foliage.layerIndex >= static_cast<int>(foliageLayers.size()))
+        foliage.layerIndex = 0;
+}
+
+void PanelTerrain::saveFoliageLayers(const fs::path &libDir)
+{
+    if (!manager)
+        return;
+
+    std::error_code ec;
+    fs::create_directories(libDir, ec);
+
+    nlohmann::json data;
+    data["version"] = 1;
+    data["layers"] = nlohmann::json::array();
+
+    auto writeVec3 = [](const kVec3 &v)
+    {
+        return nlohmann::json::array({v.x, v.y, v.z});
+    };
+
+    for (const FoliageLayer &layer : foliageLayers)
+    {
+        nlohmann::json j;
+        j["name"] = layer.name;
+        j["prefab_uuid"] = layer.prefabUuid;
+        j["enabled"] = layer.enabled;
+
+        j["position"] = writeVec3(layer.positionOffset);
+        j["rotation"] = writeVec3(layer.rotationOffset);
+        j["scale"] = writeVec3(layer.scaleOffset);
+
+        j["random_position"] = writeVec3(layer.randomPosition);
+        j["random_rotation"] = writeVec3(layer.randomRotation);
+        j["random_scale"] = writeVec3(layer.randomScale);
+
+        j["cell_size"] = layer.cellSize;
+        j["scatter"] = layer.scatter;
+        j["spacing"] = layer.spacing;
+        j["density"] = layer.density;
+        j["max_slope"] = layer.maxSlope;
+
+        j["align_to_normal"] = layer.alignToNormal;
+        j["yaw_only"] = layer.yawOnly;
+        j["seed"] = layer.seed;
+
+        data["layers"].push_back(std::move(j));
+    }
+
+    std::ofstream f(libDir / "foliage_layers.json");
+    if (!f.is_open())
+    {
+        std::cerr << "saveFoliageLayers: cannot write " << (libDir / "foliage_layers.json") << "\n";
+        return;
+    }
+    f << data.dump(2);
 }

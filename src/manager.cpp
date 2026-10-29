@@ -7286,6 +7286,12 @@ void Manager::loadWorld(const kString &path)
         // folded afterwards never had its mesh refreshed. That is what left hard
         // steps ("seams") between loaded tiles.
         fs::path libDir = projectPath / "Library" / "Terrains";
+
+        // Foliage layer definitions are terrain-wide, so they are read once here
+        // rather than per tile.
+        if (panelTerrain)
+            panelTerrain->loadFoliageLayers(libDir);
+
         for (auto &pair : terrainManager->getTiles())
         {
             kTerrain *tile = pair.second.get();
@@ -7675,6 +7681,55 @@ kObject *Manager::instantiatePrefabInScene(const fs::path &prefabPath)
     refreshWindowTitle();
 
     pushInstantiateCommand(this, root);
+    return root;
+}
+
+kObject *Manager::spawnPrefabInstanceAt(const fs::path &prefabPath,
+                                        const kVec3 &position,
+                                        const kQuat &rotation,
+                                        const kVec3 &scale)
+{
+    if (!projectOpened || !scene || prefabPath.empty())
+        return nullptr;
+
+    // Foliage painting spawns many instances of the same prefab in one stroke,
+    // so the parsed template is cached per file instead of being re-read for
+    // every instance.
+    const kString cacheKey = prefabPath.string();
+    auto it = foliagePrefabCache.find(cacheKey);
+    if (it == foliagePrefabCache.end())
+    {
+        kPrefab prefab;
+        if (!prefab.loadFromFile(cacheKey))
+            return nullptr;
+
+        FoliagePrefabTemplate tmpl;
+        tmpl.uuid = prefab.getUuid();
+        tmpl.root = prefab.getRootJson();
+        it = foliagePrefabCache.emplace(cacheKey, std::move(tmpl)).first;
+    }
+
+    // Fresh per-node UUIDs, template UUIDs preserved (same as a normal spawn).
+    json instanceJson = kPrefab::instantiateJson(it->second.root);
+
+    kAssetManager *am = getAssetManager();
+    kObject *root = loadObjectFromJson(instanceJson, scene, world, am,
+                                       projectPath, editorCamera, nullptr);
+    if (!root)
+        return nullptr;
+
+    if (!it->second.uuid.empty())
+        root->setPrefabRef(it->second.uuid);
+
+    // Force-setters: the prefab's serialised transform must be replaced, and a
+    // node flagged static by the prefab must still accept the placement.
+    root->setPositionForced(position);
+    root->setRotationForced(rotation);
+    root->setScaleForced(scale);
+
+    // The caller batches the stroke, so the selection / Hierarchy / undo entry
+    // and window-title refresh are deliberately left to it.
+    projectSaved = false;
     return root;
 }
 
@@ -10361,6 +10416,9 @@ void Manager::replacePrefabSubtree(const kString &rootUuid,
 void Manager::clearPrefabTemplateCache()
 {
     prefabTemplateCache.clear();
+    // Foliage spawns cache the parsed template per file; drop it together with
+    // the dirty-check cache so an edited prefab is re-read on the next spawn.
+    foliagePrefabCache.clear();
 }
 
 kTexture2D *Manager::getProjectTexture(const kString &textureUuid, const kString &uniformName)

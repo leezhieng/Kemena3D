@@ -434,4 +434,48 @@ struct SelectCommand : ICommand
     void redo() override; ///< Restore the "after" selection.
 };
 
+/**
+ * @brief Undoable terrain foliage paint stroke.
+ *
+ * A single brush stroke can spawn many prefab instances (and, in erase mode,
+ * remove many of them). Pushing one InstantiateCommand / DeleteCommand per
+ * instance would flood the history, so the whole stroke is recorded as one
+ * command holding both sides of the edit:
+ *  - `spawned`: instances created by the stroke (attached while the command sits
+ *    on the undo stack, detached — and owned here — after an undo).
+ *  - `erased`:  instances removed by the stroke (detached while the command sits
+ *    on the undo stack, re-attached after an undo).
+ *
+ * Undo detaches the spawned roots and restores the erased ones; redo does the
+ * opposite. The destructor reclaims whichever side is currently detached.
+ */
+struct FoliagePaintCommand : ICommand
+{
+    /// One spawned instance, plus the parent/sibling slot needed to restore it.
+    struct Spawned
+    {
+        kObject *root = nullptr;        ///< Instance root created by the stroke.
+        kObject *parent = nullptr;      ///< Parent it was attached to.
+        kObject *nextSibling = nullptr; ///< Following sibling (null → append).
+    };
+
+    /// One erased instance, plus the parent/sibling slot needed to restore it.
+    struct Erased
+    {
+        kObject *root = nullptr;        ///< Instance root removed by the stroke.
+        kObject *parent = nullptr;      ///< Parent it belonged to.
+        kObject *nextSibling = nullptr; ///< Following sibling (null → append).
+    };
+
+    Manager *manager = nullptr;       ///< Owning manager.
+    std::vector<Spawned> spawned;     ///< Instances created by the stroke.
+    std::vector<Erased> erased;       ///< Instances removed by the stroke.
+    bool ownsSpawned = false;         ///< true while spawned subtrees are detached (owned here).
+    bool ownsErased = false;          ///< true while erased subtrees are detached (owned here).
+
+    ~FoliagePaintCommand() override; ///< Frees whichever side is still detached.
+    void undo() override;            ///< Detach spawned instances, restore erased ones.
+    void redo() override;            ///< Re-attach spawned instances, detach erased ones.
+};
+
 #endif // COMMANDS_H

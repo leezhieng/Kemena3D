@@ -530,3 +530,98 @@ void TerrainEditCommand::redo()
         manager->projectSaved = false;
     }
 }
+
+// ---------------------------------------------------------------------------
+// FoliagePaintCommand
+// ---------------------------------------------------------------------------
+// One brush stroke collapses into a single command: every prefab instance the
+// stroke spawned is detached on undo (and owned by the command while detached),
+// and every instance it erased is re-attached on undo. This mirrors the
+// detach/own pattern used by InstantiateCommand, but for a whole stroke.
+
+FoliagePaintCommand::~FoliagePaintCommand()
+{
+    if (ownsSpawned)
+        for (auto &s : spawned)
+            if (s.root)
+                freeSubtree(s.root);
+
+    if (ownsErased)
+        for (auto &e : erased)
+            if (e.root)
+                freeSubtree(e.root);
+}
+
+void FoliagePaintCommand::undo()
+{
+    if (!manager)
+        return;
+
+    // Remove what the stroke added.
+    for (auto &s : spawned)
+    {
+        if (!s.root)
+            continue;
+        s.root->detachFromParent();
+    }
+    ownsSpawned = true;
+
+    // Put back what the stroke erased.
+    for (auto &e : erased)
+    {
+        if (!e.root)
+            continue;
+        if (e.parent)
+            insertChildBefore(e.parent, e.root, e.nextSibling);
+    }
+    ownsErased = false;
+
+    // A restored instance may have been the active selection; keep it valid by
+    // clearing anything that now points at a detached spawned root.
+    for (const auto &s : spawned)
+    {
+        if (!s.root)
+            continue;
+        kObject *&activeSelection = manager->getActiveSelectedObject();
+        if (activeSelection == s.root)
+            activeSelection = nullptr;
+        if (manager->selectedObject == s.root)
+            manager->selectedObject = nullptr;
+    }
+
+    if (manager->panelHierarchy)
+        manager->panelHierarchy->refreshList();
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+}
+
+void FoliagePaintCommand::redo()
+{
+    if (!manager)
+        return;
+
+    // Re-attach the instances the stroke spawned, in their original order.
+    for (auto &s : spawned)
+    {
+        if (!s.root || !s.parent)
+            continue;
+        insertChildBefore(s.parent, s.root, s.nextSibling);
+    }
+    ownsSpawned = false;
+
+    // Remove the instances the stroke erased again.
+    for (auto &e : erased)
+    {
+        if (!e.root)
+            continue;
+        e.root->detachFromParent();
+    }
+    ownsErased = true;
+
+    if (manager->panelHierarchy)
+        manager->panelHierarchy->refreshList();
+    if (manager->getRenderer())
+        manager->getRenderer()->setOctreeDirty();
+    manager->projectSaved = false;
+}

@@ -6089,6 +6089,11 @@ void PanelInspector::draw(bool &opened)
     // blocker), so it must be drawn after the Inspector window has ended.
     if (manager->panelTerrain)
         manager->panelTerrain->drawTexturePickerPopup();
+
+    // --- Terrain foliage prefab picker --------------------------------------
+    // Same reasoning: a self-managed top-level window with its own blocker.
+    if (manager->panelTerrain)
+        manager->panelTerrain->drawFoliagePickerPopup();
 }
 
 // ---------------------------------------------------------------------------
