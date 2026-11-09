@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "view_axis_gizmo.h"
+
 PanelWorld::PanelWorld(kGuiManager *setGuiManager, Manager *setManager)
 {
     gui = setGuiManager;
@@ -1175,6 +1177,19 @@ void PanelWorld::draw(bool &isOpened, kRenderer *renderer, kCamera *editorCamera
             dl->AddText(ImVec2(a.x + 4.0f, a.y - ts.y - 2.0f),
                         IM_COL32(235, 235, 240, 230), label.c_str());
         }
+    }
+
+    // ------------------------------------------------------------------
+    // View-orientation gizmo — always pinned to the top-right corner of the
+    // viewport. Its six axes are rotated by the editor camera's orientation
+    // so the user can read which way +X/-X, +Y/-Y and +Z/-Z currently face.
+    // ------------------------------------------------------------------
+    if (panelSize.x > 160.0f && panelSize.y > 120.0f)
+    {
+        drawViewAxisGizmo(ImGui::GetWindowDrawList(),
+                          editorCamera->getViewMatrix(),
+                          ImVec2(panelPos.x, panelPos.y),
+                          ImVec2(panelPos.x + panelSize.x, panelPos.y + panelSize.y));
     }
 
     gui->windowEnd();

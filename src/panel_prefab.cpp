@@ -4,6 +4,8 @@
 
 #include <glm/gtx/matrix_decompose.hpp>
 
+#include "view_axis_gizmo.h"
+
 PanelPrefab::PanelPrefab(kGuiManager *setGuiManager, Manager *setManager)
 {
     gui     = setGuiManager;
@@ -358,6 +360,16 @@ void PanelPrefab::draw(bool &isOpened)
             dl->AddText(ImVec2(a.x + 4.0f, a.y - ts.y - 2.0f),
                         IM_COL32(235, 235, 240, 230), label.c_str());
         }
+    }
+
+    // View-orientation gizmo pinned to the top-right corner of the prefab
+    // viewport, rotated by the prefab editor camera's orientation.
+    if (panelSize.x > 160.0f && panelSize.y > 120.0f)
+    {
+        drawViewAxisGizmo(ImGui::GetWindowDrawList(),
+                          manager->prefabCamera->getViewMatrix(),
+                          ImVec2(panelPos.x, panelPos.y),
+                          ImVec2(panelPos.x + panelSize.x, panelPos.y + panelSize.y));
     }
 
     gui->windowEnd();
