@@ -128,7 +128,8 @@ inline void drawViewAxisGizmo(ImDrawList *drawList, const glm::mat4 &viewMatrix,
         if (a.positive)
         {
             drawList->AddCircleFilled(a.tip, 8.0f * ballScale, axisCol, 16);
-            addCenteredLabel(a.tip, IM_COL32(15, 17, 20, alpha), a.label);
+            // White labels on every endpoint, matching the negative axes.
+            addCenteredLabel(a.tip, IM_COL32(235, 240, 248, alpha), a.label);
         }
         else
         {

@@ -1,6 +1,7 @@
 #pragma once
 #include "kemena/kemena.h"
 #include "manager.h"
+#include "scene_state_snapshot.h"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -128,7 +129,7 @@ struct AnimationDoc
 // ===========================================================================
 
 /**
- * @brief Cinematic editing panel with Timeline and Graph (curve) tabs.
+ * @brief Cinematic editing panel with Dopesheet and Graph (curve) tabs.
  *
  * Works with .cinematic files — editable scene-object animation keyframe tracks
  * for position/rotation/scale plus script events.
@@ -150,6 +151,21 @@ public:
     /** @brief Returns the currently open .cinematic file path ("" when unsaved). */
     std::string getFilePath() const { return filePath; }
 
+    /** @brief Whether the isolated (Edit Cinematic) editing mode is active. */
+    bool isCinematicEditing() const { return cinematicEditing; }
+
+    /**
+     * @brief Enable/disable isolated cinematic editing.
+     *
+     * Idempotent. On a false->true transition it captures a full snapshot of
+     * the current scene once, so everything the cinematic editor touches stays
+     * isolated and can be reverted. On true->false it restores that snapshot,
+     * discards the isolated edits and clears the flag — the same revert the
+     * Game panel performs when playback stops. Re-enabling while already
+     * editing does NOT overwrite the active snapshot.
+     */
+    void setCinematicEditing(bool enabled);
+
 private:
     kGuiManager* gui     = nullptr;
     Manager*     manager = nullptr;
@@ -158,7 +174,15 @@ private:
     std::string  filePath;
 
     // Active tab
-    int activeTab = 0; ///< 0 = Timeline, 1 = Graph Editor
+    int activeTab = 0; ///< 0 = Dopesheet Editor, 1 = Graph Editor
+    bool wasOpened = false; ///< Tracks open/close so the panel focuses its dock tab on (re)open.
+
+    // -----------------------------------------------------------------------
+    // Isolated cinematic editing ("Edit Cinematic")
+    // -----------------------------------------------------------------------
+    bool cinematicEditing = false; ///< When true, cinematic edits are isolated from the real scene.
+    std::vector<ObjectTransformSnapshot> sceneSnapshot; ///< Scene captured when cinematicEditing turned on.
+    bool projectSavedBeforeEdit = true; ///< projectSaved captured when edit mode began (restored on exit).
 
     // -----------------------------------------------------------------------
     // Timeline state

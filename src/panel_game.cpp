@@ -1,4 +1,5 @@
 #include "panel_game.h"
+#include "panel_animation.h"
 #include <algorithm>
 #include <cstdio>
 
@@ -142,43 +143,53 @@ float PanelGame::getEffectiveDeltaTime(float dt) const
 // Scene snapshot helpers
 // ---------------------------------------------------------------------------
 
-void PanelGame::captureNodeRecursive(kObject *node)
+namespace SceneStateSnapshot
 {
-    if (!node)
-        return;
-    ObjectTransformSnapshot snap;
-    snap.uuid   = node->getUuid();
-    // Keep the live pointer and the parent edge so a node that is destroyed
-    // (detached from the graph) during play can be re-attached on Stop. The
-    // engine retains the memory of runtime-destroyed objects, so the pointer
-    // stays valid even after the node leaves the scene graph.
-    snap.object = node;
-    snap.parent = node->getParent();
-    snap.pos    = node->getPosition();
-    snap.rot    = node->getRotation();
-    snap.scale  = node->getScale();
-    snap.active = node->getActive();
-    snap.state  = node->serialize();   // Full JSON snapshot for non-transform revert
-    sceneSnapshot.push_back(snap);
-    for (kObject *child : node->getChildren())
-        captureNodeRecursive(child);
-}
+    // Recursive worker for capture(): records a node and its descendants.
+    // The live pointer + parent edge let a node that was destroyed (detached
+    // from the graph) be re-attached on restore; the engine retains the memory
+    // of runtime-destroyed objects, so the pointer stays valid afterwards.
+    static void captureNodeRecursive(kObject *node, std::vector<ObjectTransformSnapshot> &out)
+    {
+        if (!node)
+            return;
+        ObjectTransformSnapshot snap;
+        snap.uuid   = node->getUuid();
+        snap.object = node;
+        snap.parent = node->getParent();
+        snap.pos    = node->getPosition();
+        snap.rot    = node->getRotation();
+        snap.scale  = node->getScale();
+        snap.active = node->getActive();
+        snap.state  = node->serialize();   // Full JSON snapshot for non-transform revert
+        out.push_back(snap);
+        for (kObject *child : node->getChildren())
+            captureNodeRecursive(child, out);
+    }
 
-void PanelGame::captureSnapshot()
-{
-    sceneSnapshot.clear();
-    kScene *scene = manager->getScene();
-    if (scene)
-        captureNodeRecursive(scene->getRootNode());
-}
+    void capture(Manager *manager, std::vector<ObjectTransformSnapshot> &out)
+    {
+        out.clear();
+        if (!manager)
+            return;
+        kScene *scene = manager->getScene();
+        if (scene)
+            captureNodeRecursive(scene->getRootNode(), out);
+    }
 
-void PanelGame::restoreSnapshot()
-{
-    // Tracks whether any node had to be put back on the graph so the hierarchy
-    // can be rebuilt once at the end.
-    bool revivedAny = false;
+    void restore(Manager *manager, std::vector<ObjectTransformSnapshot> &snapshots)
+    {
+        if (!manager)
+        {
+            snapshots.clear();
+            return;
+        }
 
-    for (const auto &snap : sceneSnapshot)
+        // Tracks whether any node had to be put back on the graph so the
+        // hierarchy can be rebuilt once at the end.
+        bool revivedAny = false;
+
+        for (const auto &snap : snapshots)
     {
         // Prefer the live pointer captured at Play. A node destroyed during
         // play is only detached from the scene graph (its memory is retained),
@@ -275,14 +286,26 @@ void PanelGame::restoreSnapshot()
                     mesh->setReceiveShadow(j["receive_shadow"].get<bool>());
             }
         }
+        }
+
+        // If anything was revived, the hierarchy tree no longer matches the
+        // scene graph — rebuild it so the restored objects reappear in the
+        // editor.
+        if (revivedAny && manager->panelHierarchy)
+            manager->panelHierarchy->refreshList();
+
+        snapshots.clear();
     }
+}
 
-    // If anything was revived, the hierarchy tree no longer matches the scene
-    // graph — rebuild it so the restored objects reappear in the editor.
-    if (revivedAny && manager->panelHierarchy)
-        manager->panelHierarchy->refreshList();
+void PanelGame::captureSnapshot()
+{
+    SceneStateSnapshot::capture(manager, sceneSnapshot);
+}
 
-    sceneSnapshot.clear();
+void PanelGame::restoreSnapshot()
+{
+    SceneStateSnapshot::restore(manager, sceneSnapshot);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +314,12 @@ void PanelGame::restoreSnapshot()
 
 void PanelGame::pressPlay()
 {
+    // Isolated cinematic editing and game playback are mutually exclusive. If a
+    // cinematic edit session is still active, restore its scene snapshot and
+    // clear the flag before the game captures its own snapshot below.
+    if (manager && manager->panelAnimation)
+        manager->panelAnimation->setCinematicEditing(false);
+
     // Entering Play mode must return the editor to the GameWorld view when it
     // is in a particle/animator preview. Otherwise main.cpp's game logic gate
     // would skip stepAnimators()/physics/scripts even though the Game panel is

@@ -4,6 +4,7 @@
 #include "kemena/kemena.h"
 #include <kemena/koffscreenrenderer.h>
 #include "manager.h"
+#include "scene_state_snapshot.h"
 
 #include <GL/glew.h>
 #include <imgui.h>
@@ -38,26 +39,6 @@ enum class GameAspectRatio
     Ratio16_9,  ///< 16:9 letterboxed.
     Ratio16_10, ///< 16:10 letterboxed.
     Custom      ///< User-defined width:height ratio.
-};
-
-/**
- * @brief Snapshot of a single object's full state.
- *
- * Captured for every scene node when play begins so the original editor scene
- * can be fully restored when play stops. Stores a complete JSON serialization
- * of the object so non-transform properties (camera FOV, light power, materials,
- * etc.) edited during play are also reverted on stop.
- */
-struct ObjectTransformSnapshot
-{
-    kString        uuid;  ///< UUID of the object this snapshot belongs to.
-    kObject       *object = nullptr; ///< Live object pointer at capture time.
-    kObject       *parent = nullptr; ///< Parent at capture time (used to re-attach a destroyed node).
-    kVec3          pos;   ///< Position at capture time.
-    kQuat          rot;   ///< Rotation at capture time.
-    kVec3          scale; ///< Scale at capture time.
-    bool           active; ///< Active/enabled flag at capture time.
-    nlohmann::json state; ///< Full serialized state for non-transform properties.
 };
 
 /**
@@ -192,12 +173,6 @@ private:
 
     /** @brief Restore all captured transform snapshots when play stops. */
     void restoreSnapshot();
-
-    /**
-     * @brief Recursively snapshot a node and its descendants.
-     * @param node Node to capture; ignored if nullptr.
-     */
-    void captureNodeRecursive(kObject* node);
 };
 
 #endif // PANEL_GAME_H

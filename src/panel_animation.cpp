@@ -1,4 +1,5 @@
 #include "panel_animation.h"
+#include "panel_game.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <SDL3/SDL_dialog.h>
@@ -334,6 +335,47 @@ PanelAnimation::PanelAnimation(kGuiManager* setGui, Manager* setManager)
     newDoc();
 }
 
+// ===========================================================================
+// Isolated cinematic editing ("Edit Cinematic")
+// ===========================================================================
+
+void PanelAnimation::setCinematicEditing(bool enabled)
+{
+    // Idempotent: re-enabling while already editing must NOT overwrite the
+    // snapshot taken when this edit session began.
+    if (enabled == cinematicEditing)
+        return;
+
+    if (enabled)
+    {
+        // Game playback and isolated cinematic editing are mutually exclusive:
+        // refuse to enter edit mode while the game is running.
+        if (manager && manager->panelGame &&
+            manager->panelGame->getPlayState() != GamePlayState::Stopped)
+            return;
+
+        // false->true: capture the real scene exactly once, before any isolated
+        // cinematic edit happens, so every change can be reverted on exit.
+        projectSavedBeforeEdit = manager ? manager->projectSaved : true;
+        SceneStateSnapshot::capture(manager, sceneSnapshot);
+        cinematicEditing = true;
+    }
+    else
+    {
+        // true->false: stop any cinematic preview playback, restore the saved
+        // scene (discarding isolated edits) and roll the dirty flag back — the
+        // same revert the Game panel performs when playback stops.
+        isPlaying = false;
+        SceneStateSnapshot::restore(manager, sceneSnapshot); // clears the snapshot
+        if (manager)
+        {
+            manager->projectSaved = projectSavedBeforeEdit;
+            manager->refreshWindowTitle();
+        }
+        cinematicEditing = false;
+    }
+}
+
 std::string PanelAnimation::generateUuid()
 {
     using namespace std::chrono;
@@ -485,9 +527,34 @@ void PanelAnimation::promptAddObjectTrack()
 
 void PanelAnimation::draw(bool& isOpened)
 {
-    if (!isOpened) return;
+    if (!isOpened)
+    {
+        // Closing/hiding the panel ends any isolated edit session so its scene
+        // snapshot is restored instead of leaking edits into the real scene.
+        if (cinematicEditing)
+            setCinematicEditing(false);
+        wasOpened = false;
+        return;
+    }
 
-    ImGui::SetNextWindowSize({ 1000, 700 }, ImGuiCond_FirstUseEver);
+    // Default to a wide, short strip placed along the bottom of the viewport,
+    // matching the timeline layout of Unity / Unreal. ImGuiCond_FirstUseEver
+    // preserves any saved docking/position, so the explicit position/size only
+    // apply the first time the panel opens without a docked layout (e.g. in a
+    // project whose workspace predates this panel). The default layout itself
+    // (res/layout.ini) docks this window into the bottom strip.
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSize({ vp->Size.x * 0.9f, 320.0f }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(
+        { vp->Pos.x + vp->Size.x * 0.05f,
+          vp->Pos.y + vp->Size.y - 360.0f },
+        ImGuiCond_FirstUseEver);
+
+    // The panel shares the bottom dock node with the Console. Focusing on the
+    // first frame it is (re)opened brings its dock tab to the front instead of
+    // leaving the user looking at the Console tab that shares the node.
+    if (!wasOpened)
+        ImGui::SetNextWindowFocus();
 
     kString title = doc.dirty ? "Cinematic *" : "Cinematic";
     title += "###CinematicEditor";
@@ -501,6 +568,7 @@ void PanelAnimation::draw(bool& isOpened)
     }
 
     focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    wasOpened = true;
 
     drawToolbar();
     ImGui::Separator();
@@ -508,7 +576,7 @@ void PanelAnimation::draw(bool& isOpened)
     // Tab bar
     if (ImGui::BeginTabBar("##AnimEditTabs"))
     {
-        if (ImGui::BeginTabItem("Timeline"))
+        if (ImGui::BeginTabItem("Dopesheet Editor"))
         {
             activeTab = 0;
             drawTimelineTab();
@@ -644,6 +712,21 @@ void PanelAnimation::drawToolbar()
     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
 
+    // Isolated edit mode. While enabled the cinematic preview is sandboxed:
+    // enabling captured the scene, so disabling restores it. Disabled while the
+    // Game panel is running (game playback forces this mode off).
+    bool gameRunning = manager->panelGame &&
+                       manager->panelGame->getPlayState() != GamePlayState::Stopped;
+    ImGui::BeginDisabled(gameRunning);
+    bool editing = cinematicEditing;
+    if (ImGui::Checkbox("Edit Cinematic", &editing))
+        setCinematicEditing(editing);
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+    ImGui::SameLine();
+
     bool hasDoc = !filePath.empty() || doc.dirty;
     if (!hasDoc)
     {
@@ -668,7 +751,7 @@ void PanelAnimation::drawToolbar()
 }
 
 // ===========================================================================
-// Timeline Tab
+// Dopesheet Tab
 // ===========================================================================
 
 float PanelAnimation::timeToScreen(float time, float originX, float width) const
@@ -710,8 +793,17 @@ void PanelAnimation::drawTimelineTab()
     ImGui::DragFloat("FPS", &doc.fps, 1.0f, 1.0f, 120.0f, "%.0f");
     ImGui::SameLine();
 
+    // Playback only runs inside isolated edit mode so a cinematic preview can
+    // never leak into the real scene. Pressing Play first ensures the mode is on
+    // (capturing the scene snapshot on first entry) and then starts playback.
+    ImGui::BeginDisabled(!cinematicEditing);
     if (ImGui::Button(isPlaying ? "|| Pause" : "> Play"))
+    {
+        if (!cinematicEditing)
+            setCinematicEditing(true);
         isPlaying = !isPlaying;
+    }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Stop"))
     {

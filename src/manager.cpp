@@ -1564,29 +1564,82 @@ void Manager::clearWorld(bool forced)
         }
     }
 
-    if (!world->getScenes().empty())
-    {
-        for (kScene *scene : world->getScenes())
-        {
-            if (scene && scene->getRootNode())
-            {
-                for (kObject *child : scene->getRootNode()->getChildren())
-                {
-                    deleteObjectRecursive(child);
-                }
-                scene->getRootNode()->getChildren().clear();
-                delete scene->getRootNode();
-                delete scene;
-            }
-        }
-        world->getScenes().clear();
-    }
+    if (!world)
+        return;
 
-    // Clear terrain manager
+    // If the game is running, Stop it first: the Play snapshot, the physics
+    // bodies and the script/animator runtimes all reference scene objects that
+    // are about to be deleted, and the eventual pressStop() would restore into
+    // freed memory.
+    if (panelGame && panelGame->getPlayState() != GamePlayState::Stopped)
+        panelGame->pressStop();
+
+    // Runtime animators keep a raw pointer to the mesh they drive — tear them
+    // down before that mesh is deleted or the per-frame stepAnimators() call
+    // will dereference freed nodes.
+    stopAnimators();
+
+    // Baked nav meshes are keyed by object UUIDs that are about to disappear.
+    clearAllNavMeshes();
+
+    // Tear the terrain down BEFORE the scene graph. kTerrain owns the kMesh it
+    // adds to the scene, and kTerrain::unload() removes that mesh from the
+    // (still-live) scene and deletes it. Destroying the mesh through
+    // deleteObjectRecursive() first would double-free it, and unloading after
+    // the scene was deleted would dereference a dangling kScene — that was the
+    // remaining crash on New World for worlds that contain terrain. The manager
+    // itself is destroyed so the next terrain is initialised against the new
+    // scene instead of the freed one.
     if (terrainManager)
     {
         terrainManager->clear();
+        delete terrainManager;
+        terrainManager = nullptr;
     }
+
+    // Unregister every non-editor camera BEFORE deleting scene objects so the
+    // world's camera list never holds pointers to freed cameras.
+    {
+        auto cams = world->getCameras();
+        for (kCamera *c : cams)
+            if (c != editorCamera)
+                world->removeCamera(c);
+    }
+
+    // Destroy the game scenes but keep the editor scene at index 0: it owns
+    // editor-only scenery (the grid mesh, ...) that main.cpp and the World
+    // panel keep raw pointers to, and kWorld::serialize(1) writes world files
+    // from index 1 onwards. Note that getScenes() returns a COPY of the scene
+    // list, so each scene must be unregistered with removeScene() — calling
+    // clear() on the returned vector was a no-op that left the world pointing
+    // at freed kScene objects. That dangling scene list was the crash when
+    // picking New World while a world was already open.
+    std::vector<kScene *> scenes = world->getScenes();
+    for (size_t i = 1; i < scenes.size(); ++i)
+    {
+        kScene *scene = scenes[i];
+        if (!scene)
+            continue;
+        if (scene->getRootNode())
+        {
+            for (kObject *child : scene->getRootNode()->getChildren())
+            {
+                deleteObjectRecursive(child);
+            }
+            scene->getRootNode()->getChildren().clear();
+            delete scene->getRootNode();
+        }
+        world->removeScene(scene);
+        delete scene;
+    }
+
+    // The manager's scene pointer and every selection referenced objects that
+    // have just been freed.
+    scene = nullptr;
+    selectedObject = nullptr;
+    selectedScene = nullptr;
+    selectedObjects.clear();
+    defaultGameCamera = nullptr;
 
     // Drop stale Ingame UI (.ui) object links (their objects are gone).
     clearObjectUiAssets();
@@ -1621,17 +1674,36 @@ bool Manager::newWorld()
 
 void Manager::resetToFreshWorld()
 {
-    // Ensure the editor scene exists (clearWorld did not delete it)
-    kScene *editorScene = nullptr;
-    auto scenes = world->getScenes();
+    if (!world)
+        return;
+
+    // A running game holds a snapshot of the very scene we are replacing.
+    if (panelGame && panelGame->getPlayState() != GamePlayState::Stopped)
+        panelGame->pressStop();
+
+    // Any animator runtime / nav mesh keyed to the old objects is stale.
+    stopAnimators();
+    clearAllNavMeshes();
+
+    // Terrain tiles own the meshes they registered in the old scene: let the
+    // manager unload them while that scene is still alive, then drop it so the
+    // next terrain is initialised against the fresh scene. (Same reasoning as
+    // in clearWorld().)
+    if (terrainManager)
+    {
+        terrainManager->clear();
+        delete terrainManager;
+        terrainManager = nullptr;
+    }
+
+    // The editor scene lives at index 0 (main.cpp creates it before the game
+    // scene and kWorld::serialize(1) skips it when saving). It must survive a
+    // reset: main.cpp and the World panel keep raw pointers to it and to the
+    // grid mesh it owns, so deleting it left dangling pointers in the render
+    // loop. Only recreate it in the degenerate case where it is missing.
+    std::vector<kScene *> scenes = world->getScenes();
     if (scenes.empty())
-    {
-        editorScene = world->createScene("Editor Scene");
-    }
-    else
-    {
-        editorScene = scenes[0];
-    }
+        world->createScene("_EditorScene_");
 
     // Remove non-editor cameras from the world before deleting game scene
     // objects — otherwise the world's camera list would hold dangling pointers.
@@ -1642,14 +1714,18 @@ void Manager::resetToFreshWorld()
                 world->removeCamera(c);
     }
 
-    // Remove any leftover game scenes
-    for (size_t i = 1; i < world->getScenes().size(); ++i)
+    // Remove any leftover game scenes (everything from index 1 on). getScenes()
+    // returns a copy, so iterate the snapshot and unregister each scene.
+    for (size_t i = 1; i < scenes.size(); ++i)
     {
-        kScene *s = world->getScenes()[i];
-        if (s && s->getRootNode())
+        kScene *s = scenes[i];
+        if (!s)
+            continue;
+        if (s->getRootNode())
         {
             for (kObject *child : s->getRootNode()->getChildren())
                 deleteObjectRecursive(child);
+            s->getRootNode()->getChildren().clear();
             delete s->getRootNode();
         }
         world->removeScene(s);
@@ -1657,11 +1733,32 @@ void Manager::resetToFreshWorld()
     }
 
     // Create a fresh default game scene
-    kScene *scene = world->createScene("Scene");
-    scene->setActive(true);
-    applyDefaultSkybox(scene);
-    loadDefaultWorldInto(scene);
-    setScene(scene);
+    kScene *freshScene = world->createScene("Scene");
+    freshScene->setActive(true);
+    applyDefaultSkybox(freshScene);
+    loadDefaultWorldInto(freshScene);
+    setScene(freshScene);
+
+    // Put the editor viewport camera back to the default framing it starts the
+    // session with, so a new world does not open looking wherever the previous
+    // world's camera happened to be left. The orbit pivot/distance are staged
+    // through editorCamLoadPending — the same channel loadWorld() uses to
+    // restore a saved pose — so main.cpp adopts them and the first orbit drag
+    // does not snap the camera.
+    if (editorCamera)
+    {
+        const kVec3 defaultPivot(0.0f, 3.5f, 0.0f);
+        const kVec3 defaultPos(-7.0f, 4.0f, 12.0f);
+
+        editorCamera->setCameraType(kCameraType::CAMERA_TYPE_FREE);
+        editorCamera->setPosition(defaultPos);
+        editorCamera->setLookAt(defaultPivot);
+        editorCamera->setFOV(60.0f);
+
+        editorCamOrbitPivot = defaultPivot;
+        editorCamOrbitDistance = glm::length(defaultPos - defaultPivot);
+        editorCamLoadPending = true;
+    }
 
     // Reset editor state
     selectedObject = nullptr;
@@ -7100,6 +7197,11 @@ void Manager::loadWorld(const kString &path)
         return;
     }
 
+    // Stop a running game first: the Play snapshot and the physics/script
+    // runtimes drive the very scene objects that are about to be deleted.
+    if (panelGame && panelGame->getPlayState() != GamePlayState::Stopped)
+        panelGame->pressStop();
+
     // Old baked nav meshes are keyed by now-stale object UUIDs — drop them.
     clearAllNavMeshes();
     stopAnimators();
@@ -7117,6 +7219,17 @@ void Manager::loadWorld(const kString &path)
     {
         std::cerr << "loadWorld: parse error: " << e.what() << "\n";
         return;
+    }
+
+    // Unload the previous world's terrain BEFORE its scene is destroyed:
+    // kTerrain owns the mesh it registered in that scene, so unloading later
+    // (or deleting the mesh through the scene graph) is a double-free. Dropping
+    // the manager also makes the block below re-init it against the new scene.
+    if (terrainManager)
+    {
+        terrainManager->clear();
+        delete terrainManager;
+        terrainManager = nullptr;
     }
 
     // Remove non-editor cameras from world first (before deleting scene objects)
