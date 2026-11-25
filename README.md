@@ -29,6 +29,34 @@ runs their lifecycle functions. Use **Run → Build Scripts** to compile manuall
 See the SDK's [Scripting guide](https://github.com/leezhieng/Kemena3D-SDK/blob/main/Documentation/Scripting.md)
 for the host API and node-graph reference.
 
+## MCP Server
+
+The editor can expose itself to AI agents and other
+[Model Context Protocol](https://modelcontextprotocol.io) clients through a built-in
+MCP server. Open **Window → General → MCP Server** to configure the listen address,
+port, endpoint, server name and optional bearer-token authentication, then press
+**Start Server**.
+
+The default endpoint is `http://127.0.0.1:8765/mcp` (Streamable HTTP transport).
+Settings are saved to `Config/mcp.json` inside the current project, or to
+`mcp_config.json` in the editor working directory when no project is open.
+The server binds to `127.0.0.1` by default; set the host to `0.0.0.0` to accept
+connections from other machines, and enable **Require Bearer Token** before doing so.
+
+Available tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `kemena_editor_status` | Report server/project state, scene object count and selection. |
+| `kemena_list_panels` | List editor panels and their visibility. |
+| `kemena_list_scene_objects` | List top-level objects (UUID, name, type) in the active scene. |
+| `kemena_set_panel_visibility` | Show or hide an editor panel. |
+| `kemena_console_log` | Write an informational/warning/error line to the Console panel. |
+| `kemena_select_object` | Select a scene object by UUID. |
+
+Tools that mutate editor state are marshalled onto the main thread, so they are
+safe to call while the editor is rendering.
+
 ## Game Export & Asset Packaging
 
 Kemena3D can export your project as a standalone distributable game.

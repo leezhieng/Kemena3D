@@ -34,6 +34,8 @@ set(SOURCES
     src/panel_animation.cpp
     src/panel_particle.cpp
     src/panel_gui.cpp
+    src/panel_mcp.cpp
+    src/mcp_server.cpp
     src/splash_screen.cpp
     src/crashhandler.cpp
     src/util.cpp
@@ -106,6 +108,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 target_include_directories(${PROJECT_NAME} PRIVATE
     include
     dep
+    # nlohmann/json is used directly by the editor's MCP server header.
+    "${KEMENA3D_SOURCE_DIR}/Dependencies/nlohmann/single_include"
     "$<$<CONFIG:Debug>:${KEMENA3D_SDK_DIR}/Debug/include>"
     "$<$<CONFIG:Release>:${KEMENA3D_SDK_DIR}/Release/include>"
     "$<$<CONFIG:Debug>:${KEMENA3D_SDK_DIR}/Debug/include/src>"
@@ -199,6 +203,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     version
     oleaut32
     uuid
+    ws2_32    # Winsock: embedded MCP HTTP server (mcp_server.cpp)
     dbghelp   # crash reporter stack walking (crashhandler.cpp)
 )
 

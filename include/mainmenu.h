@@ -37,6 +37,7 @@ struct ShowPanel
 	bool animationEditor = false;///< Show the Animation editor panel.
 	bool particleEditor = false; ///< Show the Particle editor panel.
 	bool guiEditor = false;      ///< Show the Ingame UI editor panel.
+	bool mcp = false;            ///< Show the MCP Server panel.
 };
 
 inline ShowPanel showPanel;                       ///< Global panel-visibility state shared across the editor UI.

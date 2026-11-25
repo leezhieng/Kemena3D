@@ -17,6 +17,7 @@
 #include "panel_animation.h"
 #include "panel_particle.h"
 #include "panel_gui.h"
+#include "panel_mcp.h"
 #include "splash_screen.h"
 #include "crashhandler.h"
 
@@ -162,6 +163,7 @@ int main()
 	PanelGui *panelGui = new PanelGui(gui, manager);
 	manager->panelGui = panelGui;
 	PanelPrefab *panelPrefab = new PanelPrefab(gui, manager);
+	PanelMcp *panelMcp = new PanelMcp(gui, manager);
 
 	// Route file double-clicks from the project panel to the editor panel that
 	// owns that file type: show the panel if it is hidden and record it in
@@ -1284,6 +1286,11 @@ int main()
 			}
 		}
 
+		// Pump the embedded MCP server every frame. This must happen even when
+		// the MCP panel is hidden so tool calls keep working; queued calls are
+		// executed here on the main thread before ImGui draws.
+		panelMcp->update();
+
 		gui->canvasStart();
 
 		// ImGuizmo must be told a frame has begun exactly once per frame, before
@@ -1364,6 +1371,8 @@ int main()
 		panelParticle->draw(showPanel.particleEditor);
 		applyPendingFocus("IngameUI", showPanel.guiEditor);
 		panelGui->draw(showPanel.guiEditor);
+		applyPendingFocus("MCP Server", showPanel.mcp);
+		panelMcp->draw(showPanel.mcp);
 
 		// Count down the restored-panel focus request now that every panel has
 		// been drawn this frame. Re-asserting it for a few frames survives the
@@ -1460,6 +1469,7 @@ int main()
 	delete panelGui;
 	delete panelAnimator;
 	delete panelTerrain;
+	delete panelMcp;        // stops the embedded MCP server thread
 	delete splashScreen;
 	delete manager;         // shuts down persistent audio engine
 	gui->destroy();

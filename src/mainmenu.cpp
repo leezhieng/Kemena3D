@@ -988,6 +988,8 @@ void MainMenu::draw(kWindow *window, ShowPanel &showPanel)
 					showPanel.animationEditor = !showPanel.animationEditor;
 				if (gui->menuItem("Ingame UI Editor", "", showPanel.guiEditor))
 					showPanel.guiEditor = !showPanel.guiEditor;
+				if (gui->menuItem("MCP Server", "", showPanel.mcp))
+					showPanel.mcp = !showPanel.mcp;
 				ImGui::EndMenu();
 			}
 
@@ -1258,6 +1260,8 @@ static void applyPanelStateLine(const char *line)
 		showPanel.animationEditor = (tmp != 0);
 	else if (sscanf_s(line, "PanelGuiEditorOpened=%d", &tmp) == 1)
 		showPanel.guiEditor = (tmp != 0);
+	else if (sscanf_s(line, "McpOpened=%d", &tmp) == 1)
+		showPanel.mcp = (tmp != 0);
 }
 
 void MainMenu::readLine(ImGuiContext *, ImGuiSettingsHandler *, void *, const char *line)
@@ -1281,6 +1285,7 @@ void MainMenu::writeAll(ImGuiContext *, ImGuiSettingsHandler *, ImGuiTextBuffer 
 	out_buf->appendf("AnimatorEditorOpened=%d\n", showPanel.animatorEditor ? 1 : 0);
 	out_buf->appendf("AnimationEditorOpened=%d\n", showPanel.animationEditor ? 1 : 0);
 	out_buf->appendf("PanelGuiEditorOpened=%d\n", showPanel.guiEditor ? 1 : 0);
+	out_buf->appendf("McpOpened=%d\n", showPanel.mcp ? 1 : 0);
 	out_buf->append("\n");
 }
 
@@ -1304,6 +1309,7 @@ void MainMenu::savePanelStateToFile(const kString &path)
 	f << "AnimatorEditorOpened=" << (showPanel.animatorEditor ? 1 : 0) << "\n";
 	f << "AnimationEditorOpened=" << (showPanel.animationEditor ? 1 : 0) << "\n";
 	f << "PanelGuiEditorOpened=" << (showPanel.guiEditor ? 1 : 0) << "\n";
+	f << "McpOpened=" << (showPanel.mcp ? 1 : 0) << "\n";
 	f << "\n";
 }
 

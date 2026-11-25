@@ -511,14 +511,47 @@ void PanelAnimation::promptAddObjectTrack()
 {
     if (doc.type != "scene") return;
 
-    auto objects = getSceneObjects();
-    if (objects.empty())
-    {
-        ImGui::OpenPopup("##NoSceneObjects");
-        return;
-    }
+    // Do not call ImGui::OpenPopup() here: this runs from inside a tab item,
+    // and BeginTabItem() pushes the tab ID onto the ID stack. A popup opened in
+    // that scope can only be begun in that same scope, so queue the request and
+    // let drawPopups() perform the OpenPopup()/BeginPopup() pair at the window
+    // root scope instead.
+    requestAddObjectTrack = true;
+}
 
-    ImGui::OpenPopup("##AddObjectTrack");
+kObject* PanelAnimation::findSceneObject(const std::string& uuid) const
+{
+    if (uuid.empty()) return nullptr;
+    for (auto* obj : getSceneObjects())
+        if (obj->getUuid() == uuid) return obj;
+    return nullptr;
+}
+
+void PanelAnimation::addDefaultTracksForObject(kObject* obj)
+{
+    if (!obj) return;
+
+    kString objUuid = obj->getUuid();
+    kString objName = obj->getName().empty() ? objUuid : obj->getName();
+
+    doc.addKeyframe(objUuid, objName, AnimTrackProperty::Position, currentTime, obj->getPosition());
+    kQuat rot = obj->getRotation();
+    doc.addKeyframe(objUuid, objName, AnimTrackProperty::Rotation, currentTime, kVec3(rot.x, rot.y, rot.z));
+    doc.addKeyframe(objUuid, objName, AnimTrackProperty::Scale,    currentTime, obj->getScale());
+    doc.dirty = true;
+
+    // Auto-select the new Position track so "+ Key" is immediately usable.
+    selectedTrackIdx    = -1;
+    selectedKeyframeIdx = -1;
+    for (int i = 0; i < (int)doc.tracks.size(); ++i)
+    {
+        if (doc.tracks[i].objectUuid == objUuid &&
+            doc.tracks[i].property == AnimTrackProperty::Position)
+        {
+            selectedTrackIdx = i;
+            break;
+        }
+    }
 }
 
 // ===========================================================================
@@ -591,30 +624,92 @@ void PanelAnimation::draw(bool& isOpened)
         ImGui::EndTabBar();
     }
 
-    // Popups
+    // Popups live at the window root ID scope so the IDs opened by the toolbar
+    // buttons (inside a tab item) match the IDs begun here.
+    drawPopups();
+
+    ImGui::End();
+}
+
+// ===========================================================================
+// Popups
+// ===========================================================================
+
+void PanelAnimation::drawPopups()
+{
+    // Flush deferred OpenPopup() requests queued by the toolbar buttons.
+    if (requestAddObjectTrack)
+    {
+        requestAddObjectTrack = false;
+        if (getSceneObjects().empty())
+            ImGui::OpenPopup("##NoSceneObjects");
+        else
+            ImGui::OpenPopup("##AddObjectTrack");
+    }
+    if (requestAddEventKeyframe)
+    {
+        requestAddEventKeyframe = false;
+        ImGui::OpenPopup("##AddEventKeyframe");
+    }
+
+    if (ImGui::BeginPopup("##NoSceneObjects"))
+    {
+        ImGui::TextUnformatted("No scene objects available.");
+        ImGui::TextDisabled("Open a scene first, or add a track using a custom UUID.");
+        ImGui::Separator();
+        if (ImGui::Button("OK"))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
     if (ImGui::BeginPopup("##AddObjectTrack"))
     {
-        ImGui::Text("Select Object:");
+        ImGui::TextUnformatted("Select Object:");
         ImGui::Separator();
 
         auto objects = getSceneObjects();
+        if (objects.empty())
+            ImGui::TextDisabled("(scene is empty)");
+
         for (auto* obj : objects)
         {
             kString objName = obj->getName().empty() ? obj->getUuid() : obj->getName();
             if (ImGui::Selectable(objName.c_str()))
             {
-                doc.addKeyframe(obj->getUuid(), objName, AnimTrackProperty::Position, 0.0f, obj->getPosition());
-                kQuat rot = obj->getRotation();
-                doc.addKeyframe(obj->getUuid(), objName, AnimTrackProperty::Rotation, 0.0f, kVec3(rot.x, rot.y, rot.z));
-                doc.addKeyframe(obj->getUuid(), objName, AnimTrackProperty::Scale, 0.0f, obj->getScale());
-                doc.dirty = true;
+                addDefaultTracksForObject(obj);
+                ImGui::CloseCurrentPopup();
             }
         }
 
         ImGui::Separator();
-        if (ImGui::Selectable("[Add custom UUID...]"))
+        ImGui::TextUnformatted("Or enter an object UUID:");
+
+        static char uuidBuf[128] = "";
+        ImGui::SetNextItemWidth(300.0f);
+        ImGui::InputText("##CustomObjectUuid", uuidBuf, sizeof(uuidBuf));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(uuidBuf[0] == '\0');
+        if (ImGui::Button("Add"))
         {
+            kObject* obj = findSceneObject(uuidBuf);
+            if (obj)
+            {
+                addDefaultTracksForObject(obj);
+            }
+            else
+            {
+                // Track an object that is not (yet) in the scene: create empty
+                // tracks that can be keyed manually.
+                std::string uuid(uuidBuf);
+                doc.addKeyframe(uuid, uuid, AnimTrackProperty::Position, currentTime, kVec3(0));
+                doc.addKeyframe(uuid, uuid, AnimTrackProperty::Rotation, currentTime, kVec3(0));
+                doc.addKeyframe(uuid, uuid, AnimTrackProperty::Scale,    currentTime, kVec3(1));
+                doc.dirty = true;
+            }
+            uuidBuf[0] = '\0';
+            ImGui::CloseCurrentPopup();
         }
+        ImGui::EndDisabled();
 
         ImGui::EndPopup();
     }
@@ -629,13 +724,30 @@ void PanelAnimation::draw(bool& isOpened)
         ImGui::InputText("Function", funcBuf, sizeof(funcBuf));
         ImGui::InputText("Params (JSON)", paramsBuf, sizeof(paramsBuf));
 
+        ImGui::BeginDisabled(funcBuf[0] == '\0');
         if (ImGui::Button("Add"))
         {
             AnimEventKeyframe ev;
             ev.time         = currentTime;
             ev.functionName = funcBuf;
             ev.params       = paramsBuf;
-            doc.events.push_back(ev);
+
+            // Re-keying the same function at the same time updates the event
+            // instead of stacking duplicates.
+            bool replaced = false;
+            for (auto& existing : doc.events)
+            {
+                if (std::abs(existing.time - currentTime) < 0.001f &&
+                    existing.functionName == ev.functionName)
+                {
+                    existing.params = ev.params;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+                doc.events.push_back(ev);
+
             doc.dirty = true;
 
             std::sort(doc.events.begin(), doc.events.end(),
@@ -645,6 +757,7 @@ void PanelAnimation::draw(bool& isOpened)
             paramsBuf[0] = 0;
             ImGui::CloseCurrentPopup();
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Cancel"))
         {
@@ -655,8 +768,6 @@ void PanelAnimation::draw(bool& isOpened)
 
         ImGui::EndPopup();
     }
-
-    ImGui::End();
 }
 
 // ===========================================================================
@@ -727,25 +838,19 @@ void PanelAnimation::drawToolbar()
     ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
     ImGui::SameLine();
 
-    bool hasDoc = !filePath.empty() || doc.dirty;
-    if (!hasDoc)
+    // A document always exists (newDoc() creates one), so the name is always
+    // editable even before the first save.
+    char nameBuf[128];
+    strncpy_s(nameBuf, doc.name.c_str(), sizeof(nameBuf));
+    ImGui::SetNextItemWidth(140.f);
+    if (ImGui::InputText("##AnimName", nameBuf, sizeof(nameBuf)))
     {
-        ImGui::TextDisabled("No cinematic loaded");
+        doc.name = nameBuf;
+        doc.dirty = true;
     }
-    else
-    {
-        char nameBuf[128];
-        strncpy_s(nameBuf, doc.name.c_str(), sizeof(nameBuf));
-        ImGui::SetNextItemWidth(140.f);
-        if (ImGui::InputText("##AnimName", nameBuf, sizeof(nameBuf)))
-        {
-            doc.name = nameBuf;
-            doc.dirty = true;
-        }
-        ImGui::SameLine();
+    ImGui::SameLine();
 
-        ImGui::TextColored({0.3f, 1.0f, 0.5f, 1.0f}, "Cinematic");
-    }
+    ImGui::TextColored({0.3f, 1.0f, 0.5f, 1.0f}, "Cinematic");
 
     ImGui::EndDisabled();
 }
@@ -773,19 +878,9 @@ void PanelAnimation::drawTimelineTab()
 
     float headerH = TIMELINE_HEADER_H;
     float labelW  = TRACK_LABEL_W;
-    float contentW = avail.x - labelW;
-    float contentH = avail.y - headerH;
 
-    bool hasContent = !filePath.empty() || doc.dirty;
-    if (!hasContent)
-    {
-        ImVec2 textSize = ImGui::CalcTextSize("Open or create a .cinematic file to begin editing");
-        ImGui::SetCursorPos({ (avail.x - textSize.x) * 0.5f, (avail.y - textSize.y) * 0.5f });
-        ImGui::TextDisabled("Open or create a .cinematic file to begin editing");
-        return;
-    }
-
-    // Cinematic timeline
+    // Cinematic timeline (always editable: the panel always owns a document,
+    // a brand-new one included, so the toolbar must stay reachable).
     ImGui::SetNextItemWidth(80.f);
     ImGui::DragFloat("Duration", &doc.duration, 0.1f, 0.5f, 120.0f, "%.1fs");
     ImGui::SameLine();
@@ -837,17 +932,26 @@ void PanelAnimation::drawTimelineTab()
         promptAddObjectTrack();
     ImGui::SameLine();
     if (ImGui::Button("+ Add Event"))
-        ImGui::OpenPopup("##AddEventKeyframe");
+        requestAddEventKeyframe = true; // deferred: see drawPopups()
     ImGui::SameLine();
     if (ImGui::Button("+ Key"))
         addKeyframeAtCursor();
+    if (ImGui::IsItemHovered() && selectedTrackIdx < 0)
+        ImGui::SetTooltip("Select a track row first (click a row in the timeline)");
 
     ImGui::Separator();
 
-    // Timeline canvas area
+    // Timeline canvas area: use whatever vertical space is left after the
+    // toolbar so the canvas never overflows the panel.
     ImVec2 canvasTL = ImGui::GetCursorScreenPos();
-    ImVec2 canvasSize = { contentW, contentH };
-    if (canvasSize.x < 10 || canvasSize.y < 10) return;
+    ImVec2 canvasAvail = ImGui::GetContentRegionAvail();
+    ImVec2 canvasSize = { canvasAvail.x, canvasAvail.y };
+    if (canvasSize.x < labelW + 10 || canvasSize.y < headerH + TRACK_ROW_H) return;
+
+    // Left part is the track-label column; keyframes/cursor are laid out in the
+    // remaining space to its right.
+    float timeX = canvasTL.x + labelW;
+    float timeW = canvasSize.x - labelW;
 
     std::vector<int> visibleTrackIndices;
     for (int i = 0; i < (int)doc.tracks.size(); ++i)
@@ -866,28 +970,30 @@ void PanelAnimation::drawTimelineTab()
             visibleTrackIndices.push_back(-1);
     }
 
-    float totalTrackH = visibleTrackIndices.size() * TRACK_ROW_H;
-    float totalContentH = totalTrackH > (canvasSize.y - headerH) ? totalTrackH : (canvasSize.y - headerH);
-
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(canvasTL, canvasTL + canvasSize, true);
 
     dl->AddRectFilled(canvasTL, canvasTL + canvasSize, IM_COL32(28, 28, 28, 255));
+
+    // Track label column background
+    dl->AddRectFilled(canvasTL, { timeX, canvasTL.y + canvasSize.y }, IM_COL32(30, 30, 30, 255));
+    dl->AddLine({ timeX, canvasTL.y }, { timeX, canvasTL.y + canvasSize.y }, IM_COL32(60, 60, 60, 255));
 
     // Time ruler
     {
         ImVec2 rulerTL = canvasTL;
         ImVec2 rulerBR = { canvasTL.x + canvasSize.x, canvasTL.y + headerH };
         dl->AddRectFilled(rulerTL, rulerBR, IM_COL32(40, 40, 40, 255));
+        dl->AddText({ rulerTL.x + 4, rulerTL.y + 4 }, IM_COL32(160, 160, 160, 255), "Track");
 
         float pixelsPerSec = 100.0f * timelineZoom;
         float startTime = (float)floor(timelineScroll / 0.5) * 0.5f;
-        float endTime = timelineScroll + canvasSize.x / pixelsPerSec + 0.5f;
+        float endTime = timelineScroll + timeW / pixelsPerSec + 0.5f;
 
         for (float t = startTime; t <= endTime; t += 0.5f)
         {
-            float x = timeToScreen(t, rulerTL.x, canvasSize.x);
-            if (x < rulerTL.x || x > rulerBR.x) continue;
+            float x = timeToScreen(t, timeX, timeW);
+            if (x < timeX || x > rulerBR.x) continue;
             bool isSec = (std::abs(t - (float)round(t)) < 0.01f);
 
             if (isSec)
@@ -908,8 +1014,8 @@ void PanelAnimation::drawTimelineTab()
         float frameStep = 1.0f / fps;
         for (float t = startTime; t <= endTime; t += frameStep)
         {
-            float x = timeToScreen(t, rulerTL.x, canvasSize.x);
-            if (x < rulerTL.x || x > rulerBR.x) continue;
+            float x = timeToScreen(t, timeX, timeW);
+            if (x < timeX || x > rulerBR.x) continue;
             dl->AddLine({ x, rulerBR.y - 3 }, { x, rulerBR.y }, IM_COL32(50, 50, 50, 255));
         }
     }
@@ -925,6 +1031,10 @@ void PanelAnimation::drawTimelineTab()
         if (vi % 2 == 0)
             dl->AddRectFilled(rowTL, rowBR, IM_COL32(35, 35, 35, 255));
 
+        // Selected row highlight also covers the label column.
+        if (ti >= 0 && ti == selectedTrackIdx)
+            dl->AddRectFilled(rowTL, rowBR, IM_COL32(70, 110, 170, 70));
+
         if (ti >= 0)
         {
             const auto& track = doc.tracks[ti];
@@ -935,7 +1045,7 @@ void PanelAnimation::drawTimelineTab()
             for (int ki = 0; ki < (int)track.keyframes.size(); ++ki)
             {
                 const auto& kf = track.keyframes[ki];
-                float kx = timeToScreen(kf.time, rowTL.x, canvasSize.x);
+                float kx = timeToScreen(kf.time, timeX, timeW);
                 float ky = rowTL.y + TRACK_ROW_H * 0.5f;
 
                 bool isSelected = (ti == selectedTrackIdx && ki == selectedKeyframeIdx);
@@ -943,7 +1053,7 @@ void PanelAnimation::drawTimelineTab()
 
                 if (ki > 0)
                 {
-                    float prevX = timeToScreen(track.keyframes[ki - 1].time, rowTL.x, canvasSize.x);
+                    float prevX = timeToScreen(track.keyframes[ki - 1].time, timeX, timeW);
                     dl->AddLine({ prevX, ky }, { kx, ky }, IM_COL32(100, 100, 100, 150), 1.0f);
                 }
             }
@@ -955,7 +1065,7 @@ void PanelAnimation::drawTimelineTab()
             for (size_t ei = 0; ei < doc.events.size(); ++ei)
             {
                 const auto& ev = doc.events[ei];
-                float ex = timeToScreen(ev.time, rowTL.x, canvasSize.x);
+                float ex = timeToScreen(ev.time, timeX, timeW);
                 float ey = rowTL.y + TRACK_ROW_H * 0.5f;
 
                 dl->AddTriangleFilled({ ex, ey - 5 }, { ex - 5, ey + 5 }, { ex + 5, ey + 5 }, IM_COL32(255, 80, 80, 220));
@@ -967,7 +1077,7 @@ void PanelAnimation::drawTimelineTab()
     }
 
     // Playback cursor
-    float cursorX = timeToScreen(currentTime, canvasTL.x, canvasSize.x);
+    float cursorX = timeToScreen(currentTime, timeX, timeW);
     drawPlaybackCursor(dl, cursorX, canvasTL.y, canvasSize.y);
 
     // Interaction
@@ -981,56 +1091,93 @@ void PanelAnimation::drawTimelineTab()
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
     {
         bool hitKeyframe = false;
-        for (size_t vi = 0; vi < visibleTrackIndices.size() && !hitKeyframe; ++vi)
+
+        // Keyframe hit-test (timeline side only).
+        if (mouse.x >= timeX)
         {
-            int ti = visibleTrackIndices[vi];
-            if (ti < 0) continue;
-            const auto& track = doc.tracks[ti];
-            for (int ki = 0; ki < (int)track.keyframes.size(); ++ki)
+            for (size_t vi = 0; vi < visibleTrackIndices.size() && !hitKeyframe; ++vi)
             {
-                const auto& kf = track.keyframes[ki];
-                float kx = timeToScreen(kf.time, canvasTL.x, canvasSize.x);
-                float ky = canvasTL.y + headerH + vi * TRACK_ROW_H + TRACK_ROW_H * 0.5f;
-                float dx = mouse.x - kx, dy = mouse.y - ky;
-                if (dx * dx + dy * dy <= KEYFRAME_HIT_R * KEYFRAME_HIT_R)
+                int ti = visibleTrackIndices[vi];
+                if (ti < 0) continue;
+                const auto& track = doc.tracks[ti];
+                for (int ki = 0; ki < (int)track.keyframes.size(); ++ki)
                 {
-                    selectedTrackIdx   = ti;
-                    selectedKeyframeIdx = ki;
-                    currentTime        = kf.time;
-                    hitKeyframe = true;
-                    break;
+                    const auto& kf = track.keyframes[ki];
+                    float kx = timeToScreen(kf.time, timeX, timeW);
+                    float ky = canvasTL.y + headerH + vi * TRACK_ROW_H + TRACK_ROW_H * 0.5f;
+                    float dx = mouse.x - kx, dy = mouse.y - ky;
+                    if (dx * dx + dy * dy <= KEYFRAME_HIT_R * KEYFRAME_HIT_R)
+                    {
+                        selectedTrackIdx   = ti;
+                        selectedKeyframeIdx = ki;
+                        currentTime        = kf.time;
+                        hitKeyframe = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Event marker hit-test, restricted to the event row.
+        if (!hitKeyframe && showEventTracks && !doc.events.empty())
+        {
+            int eventRowIdx = -1;
+            for (size_t vi = 0; vi < visibleTrackIndices.size(); ++vi)
+                if (visibleTrackIndices[vi] < 0) { eventRowIdx = (int)vi; break; }
+
+            if (eventRowIdx >= 0)
+            {
+                float ey = canvasTL.y + headerH + eventRowIdx * TRACK_ROW_H + TRACK_ROW_H * 0.5f;
+                if (std::abs(mouse.y - ey) <= TRACK_ROW_H * 0.5f)
+                {
+                    for (const auto& ev : doc.events)
+                    {
+                        float ex = timeToScreen(ev.time, timeX, timeW);
+                        if (std::abs(mouse.x - ex) < 8.0f)
+                        {
+                            currentTime = ev.time;
+                            hitKeyframe = true;
+                            break;
+                        }
+                    }
                 }
             }
         }
 
         if (!hitKeyframe)
         {
-            for (size_t ei = 0; ei < doc.events.size(); ++ei)
-            {
-                float ex = timeToScreen(doc.events[ei].time, canvasTL.x, canvasSize.x);
-                float dx = mouse.x - ex;
-                if (std::abs(dx) < 8)
-                {
-                    currentTime = doc.events[ei].time;
-                    hitKeyframe = true;
-                    break;
-                }
-            }
-        }
+            // Select the track row under the cursor. Clicking the label column
+            // selects without moving the playhead; clicking the timeline side
+            // also scrubs.
+            float relY = mouse.y - (canvasTL.y + headerH);
+            int rowIdx = (int)floorf(relY / TRACK_ROW_H);
+            bool overRow = (relY >= 0.0f && rowIdx >= 0 &&
+                            rowIdx < (int)visibleTrackIndices.size());
 
-        if (!hitKeyframe)
-        {
-            currentTime = screenToTime(mouse.x, canvasTL.x, canvasSize.x);
-            currentTime = std::max(0.0f, std::min(currentTime, doc.duration));
-            isDraggingTime = true;
-            selectedTrackIdx = -1;
-            selectedKeyframeIdx = -1;
+            if (overRow)
+            {
+                int ti = visibleTrackIndices[rowIdx];
+                selectedTrackIdx    = (ti >= 0) ? ti : -1;
+                selectedKeyframeIdx = -1;
+            }
+            else
+            {
+                selectedTrackIdx    = -1;
+                selectedKeyframeIdx = -1;
+            }
+
+            if (mouse.x >= timeX)
+            {
+                currentTime = screenToTime(mouse.x, timeX, timeW);
+                currentTime = std::max(0.0f, std::min(currentTime, doc.duration));
+                isDraggingTime = true;
+            }
         }
     }
 
     if (isDraggingTime && ImGui::IsMouseDown(ImGuiMouseButton_Left))
     {
-        currentTime = screenToTime(mouse.x, canvasTL.x, canvasSize.x);
+        currentTime = screenToTime(mouse.x, timeX, timeW);
         currentTime = std::max(0.0f, std::min(currentTime, doc.duration));
     }
 
@@ -1131,7 +1278,7 @@ void PanelAnimation::drawKeyframeDiamond(ImDrawList* dl, ImVec2 center, bool sel
 
 void PanelAnimation::drawPlaybackCursor(ImDrawList* dl, float cursorX, float topY, float height)
 {
-    if (cursorX < topY - 10) return;
+    // The draw list clip rect already trims the cursor at the canvas bounds.
     dl->AddLine({ cursorX, topY }, { cursorX, topY + height },
                 IM_COL32(255, 100, 50, 200), 2.0f);
     dl->AddTriangleFilled(
@@ -1145,11 +1292,52 @@ void PanelAnimation::addKeyframeAtCursor()
 {
     if (selectedTrackIdx < 0 || selectedTrackIdx >= (int)doc.tracks.size()) return;
 
-    auto& track = doc.tracks[selectedTrackIdx];
-    if (track.property == AnimTrackProperty::Event) return;
+    // Copy what is needed: addKeyframe() below may reallocate doc.tracks.
+    const std::string objUuid   = doc.tracks[selectedTrackIdx].objectUuid;
+    const std::string objName   = doc.tracks[selectedTrackIdx].objectName;
+    const AnimTrackProperty prop = doc.tracks[selectedTrackIdx].property;
+    if (prop == AnimTrackProperty::Event) return;
 
-    kVec3 val = doc.evaluate(track.objectUuid, track.property, currentTime);
-    doc.addKeyframe(track.objectUuid, track.objectName, track.property, currentTime, val);
+    // Prefer the object's live transform so "+ Key" records the pose the user
+    // actually sees; fall back to the curve value when the object is gone.
+    kVec3 val = doc.evaluate(objUuid, prop, currentTime);
+    if (kObject* obj = findSceneObject(objUuid))
+    {
+        switch (prop)
+        {
+            case AnimTrackProperty::Position:
+                val = obj->getPosition();
+                break;
+            case AnimTrackProperty::Rotation:
+            {
+                kQuat rot = obj->getRotation();
+                val = kVec3(rot.x, rot.y, rot.z);
+                break;
+            }
+            case AnimTrackProperty::Scale:
+                val = obj->getScale();
+                break;
+            default:
+                break;
+        }
+    }
+
+    doc.addKeyframe(objUuid, objName, prop, currentTime, val);
+    doc.dirty = true;
+
+    // Select the keyframe that was just added/updated.
+    if (AnimTrack* track = doc.findTrack(objUuid, prop))
+    {
+        selectedKeyframeIdx = -1;
+        for (int i = 0; i < (int)track->keyframes.size(); ++i)
+        {
+            if (std::abs(track->keyframes[i].time - currentTime) < 0.001f)
+            {
+                selectedKeyframeIdx = i;
+                break;
+            }
+        }
+    }
 }
 
 void PanelAnimation::deleteSelectedKeyframe()

@@ -198,6 +198,13 @@ private:
     int    selectedTrackIdx   = -1;
     int    selectedKeyframeIdx = -1;
 
+    // Deferred popup open requests. OpenPopup() must be called at the same ID
+    // scope as BeginPopup(); the toolbar buttons live inside a tab item (which
+    // pushes an extra ID), so requests are queued and flushed by drawPopups()
+    // at the window root scope.
+    bool requestAddObjectTrack  = false;
+    bool requestAddEventKeyframe = false;
+
     // Track visibility
     bool showPositionTracks = true;
     bool showRotationTracks = true;
@@ -233,6 +240,9 @@ private:
     void drawTimelineTab();
     void drawGraphEditorTab();
 
+    /** @brief Draw all modal/popup dialogs at the window root ID scope. */
+    void drawPopups();
+
     // Timeline sub-drawing
     void drawTimeRuler(ImDrawList* dl, ImVec2 origin, float width);
     void drawTrackRow(ImDrawList* dl, int trackIdx, ImVec2 rowOrigin, float width);
@@ -256,6 +266,12 @@ private:
 
     /** @brief Add a scene object track by picking from the scene or entering UUID. */
     void promptAddObjectTrack();
+
+    /** @brief Create Position/Rotation/Scale tracks for a scene object and select them. */
+    void addDefaultTracksForObject(kObject* obj);
+
+    /** @brief Look up a scene object by UUID, or nullptr when it is not in the scene. */
+    kObject* findSceneObject(const std::string& uuid) const;
 
     /** @brief Add a keyframe at the current time on the selected track. */
     void addKeyframeAtCursor();
